@@ -2,6 +2,27 @@ const fs = require('fs');
 const path = require('path');
 const { ensureDirSync } = require('./utils');
 
+function substituteEnvVars(value) {
+  if (typeof value === 'string') {
+    return value.replace(/\$\{([^}]+)\}/g, (match, varName) => {
+      return Object.prototype.hasOwnProperty.call(process.env, varName)
+        ? process.env[varName]
+        : match;
+    });
+  }
+  if (Array.isArray(value)) {
+    return value.map(substituteEnvVars);
+  }
+  if (value !== null && typeof value === 'object') {
+    const result = {};
+    for (const key of Object.keys(value)) {
+      result[key] = substituteEnvVars(value[key]);
+    }
+    return result;
+  }
+  return value;
+}
+
 function loadConfig(projectRoot) {
   const configPath = path.join(projectRoot, 'config.json');
   if (!fs.existsSync(configPath)) {
@@ -9,7 +30,7 @@ function loadConfig(projectRoot) {
   }
 
   const raw = fs.readFileSync(configPath, 'utf8');
-  const config = JSON.parse(raw);
+  const config = substituteEnvVars(JSON.parse(raw));
 
   const cacheDir = path.resolve(projectRoot, config.paths?.cacheDir || './.cache');
   ensureDirSync(cacheDir);
