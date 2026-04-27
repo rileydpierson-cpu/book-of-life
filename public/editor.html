@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LifeServer Editor</title>
+    <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css" />
+    <link rel="stylesheet" href="/editor.css?v=2026-04-24-2" />
+    <link rel="stylesheet" href="/media-viewer.css?v=2026-04-24-2" />
+  </head>
+  <body>
+    <div class="editor-shell">
+      <header class="editor-topbar">
+        <div class="editor-topbar-left">
+          <button id="editorBackButton" class="editor-icon-button" type="button" aria-label="Back"><i class="fa-solid fa-chevron-left"></i></button>
+          <div>
+            <h1 id="editorTitle" class="editor-title">Entry</h1>
+            <p id="editorSubtitle" class="editor-subtitle">Loading…</p>
+          </div>
+        </div>
+        <div class="editor-topbar-right">
+          <button id="undoButton" class="editor-icon-button" type="button" aria-label="Undo"><i class="fa-solid fa-rotate-left"></i></button>
+          <button id="redoButton" class="editor-icon-button" type="button" aria-label="Redo"><i class="fa-solid fa-rotate-right"></i></button>
+          <button id="saveButton" class="save-button" type="button" aria-label="Save entry"><i class="fa-solid fa-check"></i><span>Save</span></button>
+        </div>
+      </header>
+
+      <section class="editor-media-panel">
+        <div class="editor-media-panel-head">
+          <div class="editor-media-count"><i class="fa-regular fa-images"></i> <span id="editorPhotoCount">0 photos</span></div>
+          <button id="editorUploadButton" class="editor-icon-button" type="button" aria-label="Add photos"><i class="fa-solid fa-plus"></i></button>
+        </div>
+        <div id="editorPhotoStripWrap" class="editor-photo-strip-wrap hidden">
+          <div id="editorPhotoStrip" class="editor-photo-strip"></div>
+        </div>
+      </section>
+
+      <main class="editor-main">
+        <div class="editor-meta-row">
+          <div class="editor-mode-toggle" role="group" aria-label="Editor mode">
+            <button id="editorModeRaw" class="editor-mode-button is-active" type="button" data-editor-mode="raw" aria-pressed="true">Raw text</button>
+            <button id="editorModePreview" class="editor-mode-button" type="button" data-editor-mode="preview" aria-pressed="false">Preview</button>
+          </div>
+          <span id="saveStatus" class="save-status">Loading…</span>
+        </div>
+        <div class="editor-surface-stack">
+          <textarea id="editorTextarea" class="editor-textarea" spellcheck="false" autocomplete="off" autocapitalize="sentences"></textarea>
+          <div id="editorPreview" class="editor-preview hidden" tabindex="0" aria-label="Rendered markdown preview"></div>
+        </div>
+      </main>
+    </div>
+
+    <div id="editorUploadModal" class="editor-upload-modal hidden" role="dialog" aria-modal="true" aria-label="Upload media">
+      <div class="editor-upload-backdrop"></div>
+      <div class="editor-upload-window">
+        <div class="settings-window-head">
+          <h2 id="editorUploadTitle">Add media</h2>
+          <button id="editorUploadClose" class="editor-icon-button" type="button" aria-label="Close upload"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <button id="editorFolderButton" class="editor-folder-button" type="button">
+          <span class="upload-folder-icon"><i class="fa-solid fa-folder-open"></i></span>
+          <strong id="editorFolderLabel">Choose a folder</strong>
+        </button>
+        <div class="upload-folder-tree-shell editor-upload-folder-tree-shell">
+          <button id="editorNewFolderButton" class="editor-icon-button" type="button" aria-label="Create folder"><i class="fa-solid fa-plus"></i></button>
+          <div id="editorFolderTree" class="editor-folder-tree"></div>
+        </div>
+        <button id="editorAddFilesButton" class="editor-file-picker" type="button">
+          <span><i class="fa-solid fa-photo-film"></i> Add Files</span>
+        </button>
+        <label class="editor-file-input hidden" aria-hidden="true">
+          <input id="editorFileInput" type="file" multiple accept="image/*,video/*,.heic,.heif,.mov,.mp4,.m4v,.webm,.avi,.mkv,.3gp" />
+        </label>
+        <label class="editor-check-row">
+          <input id="editorSetExifDate" type="checkbox" checked />
+          <span id="editorExifDateLabel">Set EXIF created date to this day</span>
+        </label>
+        <div id="editorUploadSelectionLoading" class="upload-selection-loading hidden" aria-live="polite"><i class="fa-solid fa-spinner fa-spin"></i><span>Preparing previews...</span></div>
+        <div id="editorUploadPreviewList" class="upload-preview-list upload-preview-list-view"></div>
+        <div class="upload-actions upload-actions-stacked">
+          <button id="editorUploadSubmit" class="save-button upload-submit-button" type="button"><span class="upload-submit-fill"></span><span class="upload-submit-content"><i class="fa-solid fa-upload"></i><span id="editorUploadSubmitLabel">Upload</span></span></button>
+          <button id="editorUploadCancel" class="ghost-button upload-cancel-button hidden" type="button">Cancel upload</button>
+        </div>
+      </div>
+    </div>
+
+    <button id="editorUploadResume" class="upload-resume hidden" type="button" aria-label="Show upload progress"><i class="fa-solid fa-cloud-arrow-up"></i><span id="editorUploadResumeLabel">Uploading...</span></button>
+
+    <script src="/media-viewer.js?v=2026-04-24-2" defer></script>
+    <script src="/vendor/markdown-it/dist/markdown-it.min.js" defer></script>
+    <script src="/editor.js?v=2026-04-24-2" defer></script>
+  </body>
+</html>
