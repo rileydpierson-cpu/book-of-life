@@ -23,7 +23,7 @@ The app does **not** send the full timeline at once.
 
 ## Folder assumptions
 
-Your `config.json` should point to:
+Your folder configuration should point to:
 
 - a **Journal Vault** folder that contains:
   - a `Journal` folder with files like `April 17, 2025.md`
@@ -32,10 +32,25 @@ Your `config.json` should point to:
 
 ## Run locally
 
-1. Open `config.json`
-2. Replace the placeholder folder paths with your real absolute paths
-3. Optionally enable auth and set a long random `auth.accessSecret`
-4. In the project folder run:
+1. Copy `config.example.json` to `config.json`
+2. Create a `.env` file in the project root
+3. Add your folder paths:
+
+```dotenv
+LIFESERVER_JOURNAL_VAULT=D:\Notes\Journal Vault
+LIFESERVER_PHOTO_ROOT=D:\Mission Photos
+LIFESERVER_CACHE_DIR=./.cache
+```
+
+4. `config.json` can reference env vars with `${...}` placeholders, and the app will create these folders automatically if they do not exist
+5. Optionally set `LIFESERVER_PHOTO_FOLDERS` for multiple photo roots
+
+```dotenv
+LIFESERVER_PHOTO_FOLDERS=D:\Mission Photos;D:\Family Photos
+```
+
+6. Optionally enable auth and set a long random `auth.accessSecret`
+7. In the project folder run:
 
 ```bash
 npm install
@@ -71,6 +86,7 @@ Notes:
 - If you publish this on the internet, put it behind **HTTPS** and set `secureCookie` to `true`.
 - The login page uses one pasted secret instead of usernames and passwords.
 - Login sets an `httpOnly` session cookie.
+- Environment variables in `.env` are loaded automatically at startup. Existing system env vars take precedence over `.env`.
 
 ## Entry editing
 

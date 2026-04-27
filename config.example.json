@@ -4,18 +4,18 @@
   },
   "auth": {
     "enabled": false,
-    "accessSecret": "paste-a-very-long-random-secret-here",
+    "accessSecret": "${LIFESERVER_SECRET}",
     "sessionDays": 30,
     "secureCookie": false
   },
   "paths": {
-    "journalVault": "/absolute/path/to/Journal Vault folder",
+    "journalVault": "${LIFESERVER_JOURNAL_VAULT}",
     "journalFolderName": "Journal",
     "journalImagesFolderName": "Images",
     "photoFolders": [
-      "/absolute/path/to/Photos folder"
+      "${LIFESERVER_PHOTO_ROOT}"
     ],
-    "cacheDir": "./.cache"
+    "cacheDir": "${LIFESERVER_CACHE_DIR}"
   },
   "indexing": {
     "rebuildIntervalMs": 300000,
