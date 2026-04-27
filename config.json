@@ -3,7 +3,7 @@
     "port": 3000
   },
   "auth": {
-    "enabled": false,
+    "enabled": true,
     "accessSecret": "${LIFESERVER_SECRET}",
     "sessionDays": 30,
     "secureCookie": false
