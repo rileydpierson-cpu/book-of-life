@@ -1,0 +1,24 @@
+{
+  "server": {
+    "port": 3000
+  },
+  "auth": {
+    "enabled": false,
+    "accessSecret": "paste-a-very-long-random-secret-here",
+    "sessionDays": 30,
+    "secureCookie": false
+  },
+  "paths": {
+    "journalVault": "/absolute/path/to/Journal Vault folder",
+    "journalFolderName": "Journal",
+    "journalImagesFolderName": "Images",
+    "photoFolders": [
+      "/absolute/path/to/Photos folder"
+    ],
+    "cacheDir": "./.cache"
+  },
+  "indexing": {
+    "rebuildIntervalMs": 300000,
+    "chunkSize": 24
+  }
+}
