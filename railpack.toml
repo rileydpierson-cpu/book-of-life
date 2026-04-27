@@ -1,0 +1,4 @@
+[packages]
+libheif-dev = "*"
+libheif-examples = "*"
+libde265-dev = "*"
