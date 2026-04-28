@@ -6,7 +6,7 @@ const sharp = require('sharp');
 
 const execFileAsync = promisify(execFile);
 const EXIF_WRITABLE_EXTENSIONS = new Set([
-  '.jpg', '.jpeg', '.png', '.webp', '.avif', '.heic', '.heif'
+  '.jpg', '.jpeg', '.png', '.webp', '.avif'
 ]);
 const VIDEO_METADATA_WRITABLE_EXTENSIONS = new Set([
   '.mp4', '.mov', '.m4v', '.webm', '.avi', '.mkv', '.3gp'

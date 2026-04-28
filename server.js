@@ -159,6 +159,37 @@ async function runMulter(req, res, middleware) {
   });
 }
 
+async function copyUploadedFileWithOptionalDate({
+  file,
+  destination,
+  setExifDate,
+  targetIsoDate
+}) {
+  if (!setExifDate) {
+    await fs.promises.copyFile(file.path, destination);
+    return false;
+  }
+
+  if (isExifWritableImage(destination)) {
+    try {
+      await writeExifDatedImage(file.path, destination, targetIsoDate);
+      return true;
+    } catch (error) {
+      console.warn(`Upload metadata write skipped for ${destination}: ${error.message}`);
+    }
+  } else if (isVideoMetadataWritable(destination)) {
+    try {
+      await writeVideoCreatedDate(file.path, destination, targetIsoDate);
+      return true;
+    } catch (error) {
+      console.warn(`Upload metadata write skipped for ${destination}: ${error.message}`);
+    }
+  }
+
+  await fs.promises.copyFile(file.path, destination);
+  return false;
+}
+
 async function main() {
   const projectRoot = __dirname;
   const publicDir = path.join(projectRoot, 'public');
@@ -386,16 +417,12 @@ async function main() {
         const original = sanitizeFileName(file.originalname || path.basename(file.path));
         const destination = uniqueDestinationPath(destinationDir, original);
         try {
-          let createdDateApplied = false;
-          if (setExifDate && isExifWritableImage(destination)) {
-            await writeExifDatedImage(file.path, destination, targetIsoDate);
-            createdDateApplied = true;
-          } else if (setExifDate && isVideoMetadataWritable(destination)) {
-            await writeVideoCreatedDate(file.path, destination, targetIsoDate);
-            createdDateApplied = true;
-          } else {
-            await fs.promises.copyFile(file.path, destination);
-          }
+          const createdDateApplied = await copyUploadedFileWithOptionalDate({
+            file,
+            destination,
+            setExifDate,
+            targetIsoDate
+          });
           uploadedPaths.push(destination);
           copied.push({
             fileName: path.basename(destination),

@@ -47,6 +47,15 @@ function splitPathList(value) {
     .filter(Boolean);
 }
 
+function parseBoolean(value, fallbackValue = false) {
+  if (typeof value === 'boolean') return value;
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return fallbackValue;
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return fallbackValue;
+}
+
 function resolvePath(projectRoot, value, fallbackValue = '') {
   const finalValue = String(value || fallbackValue || '').trim();
   return path.resolve(projectRoot, finalValue);
@@ -77,9 +86,10 @@ function loadConfig(projectRoot) {
   );
   const journalFolderName = getConfigValue(config.paths?.journalFolderName, 'LIFESERVER_JOURNAL_FOLDER_NAME', 'Journal');
   const journalImagesFolderName = getConfigValue(config.paths?.journalImagesFolderName, 'LIFESERVER_JOURNAL_IMAGES_FOLDER_NAME', 'Images');
+  const photoFolderEnvValue = process.env.LIFESERVER_PHOTO_FOLDERS || process.env.LIFESERVER_PHOTO_ROOT || '';
   const photoFolders = (
-    process.env.LIFESERVER_PHOTO_FOLDERS
-      ? splitPathList(process.env.LIFESERVER_PHOTO_FOLDERS)
+    photoFolderEnvValue
+      ? splitPathList(photoFolderEnvValue)
       : (config.paths?.photoFolders || []).map((folder) => expandEnvString(folder))
   )
     .map((folder) => String(folder || '').trim())
@@ -103,10 +113,10 @@ function loadConfig(projectRoot) {
       port: Number(config.server?.port || 3000)
     },
     auth: {
-      enabled: Boolean(config.auth?.enabled),
-      accessSecret: String(config.auth?.accessSecret || ''),
-      sessionDays: Math.max(1, Number(config.auth?.sessionDays || 30)),
-      secureCookie: Boolean(config.auth?.secureCookie)
+      enabled: parseBoolean(getConfigValue(config.auth?.enabled, 'LIFESERVER_AUTH_ENABLED'), false),
+      accessSecret: getConfigValue(config.auth?.accessSecret, 'LIFESERVER_SECRET', ''),
+      sessionDays: Math.max(1, Number(getConfigValue(config.auth?.sessionDays, 'LIFESERVER_SESSION_DAYS', 30))),
+      secureCookie: parseBoolean(getConfigValue(config.auth?.secureCookie, 'LIFESERVER_SECURE_COOKIE'), false)
     },
     paths: {
       journalVault,
