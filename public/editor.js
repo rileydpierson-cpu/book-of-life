@@ -58,6 +58,8 @@ const dom = {
   viewerVideo: document.getElementById('editorViewerVideo')
 };
 
+const AUTOSAVE_INTERVAL_MS = 3000;
+
 const state = {
   isoDate: null,
   title: '',
@@ -65,6 +67,8 @@ const state = {
   editorMode: 'raw',
   dirty: false,
   saving: false,
+  saveTimer: 0,
+  autoSaveQueued: false,
   history: [],
   historyIndex: -1,
   historyTimer: 0,
@@ -293,6 +297,25 @@ function updateDirtyState() {
   if (state.saving) return;
   if (state.dirty) setStatus('Unsaved changes', 'is-dirty');
   else setStatus('Saved', 'is-saved');
+}
+
+function clearAutoSaveTimer() {
+  if (state.saveTimer) window.clearTimeout(state.saveTimer);
+  state.saveTimer = 0;
+}
+
+function scheduleAutoSave(delay = AUTOSAVE_INTERVAL_MS) {
+  clearAutoSaveTimer();
+  if (!state.dirty) return;
+  state.saveTimer = window.setTimeout(() => {
+    state.saveTimer = 0;
+    if (!state.dirty) return;
+    if (state.saving) {
+      state.autoSaveQueued = true;
+      return;
+    }
+    saveEntry({ navigateOnSuccess: false, source: 'auto' });
+  }, delay);
 }
 
 function snapshotCurrent() {
@@ -764,32 +787,43 @@ async function deleteCurrentPhoto() {
   }
 }
 
-async function saveEntry() {
+async function saveEntry({ navigateOnSuccess = true, source = 'manual' } = {}) {
   if (state.saving) return;
+  clearAutoSaveTimer();
+  state.autoSaveQueued = false;
   state.saving = true;
   dom.saveButton.disabled = true;
-  setStatus('Saving…');
+  const raw = dom.textarea.value;
+  let saveSucceeded = false;
+  setStatus(source === 'auto' ? 'Autosaving...' : 'Saving...');
   try {
     const payload = await fetchJson(`/api/entry/${state.isoDate}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ raw: dom.textarea.value })
+      body: JSON.stringify({ raw })
     });
-    state.loadedValue = dom.textarea.value;
+    saveSucceeded = true;
+    state.loadedValue = raw;
     pushHistorySnapshot(true);
     updateDirtyState();
     setStatus('Saved', 'is-saved');
+    if (!navigateOnSuccess) return payload;
     if (payload.day || state.photos.length) {
       sessionStorage.setItem('lifeserver-focus-date', state.isoDate);
       window.location.href = `/?focus=${state.isoDate}#day-${state.isoDate}`;
     } else {
       window.location.href = '/';
     }
+    return payload;
   } catch (error) {
     setStatus(error.message || 'Save failed', 'is-error');
   } finally {
     state.saving = false;
     dom.saveButton.disabled = false;
+    if (!navigateOnSuccess && saveSucceeded && state.dirty && state.autoSaveQueued) {
+      state.autoSaveQueued = false;
+      scheduleAutoSave(0);
+    }
   }
 }
 
@@ -1191,6 +1225,7 @@ dom.modeButtons.forEach((button) => {
 dom.textarea.addEventListener('input', () => {
   if (!state.applyFromHistory) scheduleHistorySnapshot();
   updateDirtyState();
+  scheduleAutoSave();
 });
 dom.photoStrip.addEventListener('click', (event) => {
   const button = event.target.closest('[data-photo-index]');
