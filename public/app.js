@@ -365,6 +365,44 @@ function dateRailLabel(isoDate) {
   return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(date);
 }
 
+function monthDayLabel(isoDate) {
+  if (!isoDate) return '';
+  const [y, m, d] = isoDate.split('-').map(Number);
+  const date = new Date(Date.UTC(y, (m || 1) - 1, d || 1));
+  return new Intl.DateTimeFormat(undefined, { month: 'long', day: 'numeric', timeZone: 'UTC' }).format(date);
+}
+
+function isoToUtcDate(isoDate) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(isoDate || ''))) return null;
+  const [y, m, d] = isoDate.split('-').map(Number);
+  const date = new Date(Date.UTC(y, (m || 1) - 1, d || 1));
+  if (date.getUTCFullYear() !== y || date.getUTCMonth() !== (m - 1) || date.getUTCDate() !== d) return null;
+  return date;
+}
+
+function addDaysToIso(isoDate, days) {
+  const date = isoToUtcDate(isoDate);
+  if (!date) return null;
+  date.setUTCDate(date.getUTCDate() + Number(days || 0));
+  return [
+    date.getUTCFullYear(),
+    `${date.getUTCMonth() + 1}`.padStart(2, '0'),
+    `${date.getUTCDate()}`.padStart(2, '0')
+  ].join('-');
+}
+
+function diffDaysBetweenIso(laterIso, earlierIso) {
+  const later = isoToUtcDate(laterIso);
+  const earlier = isoToUtcDate(earlierIso);
+  if (!later || !earlier) return 0;
+  return Math.round((later.getTime() - earlier.getTime()) / 86400000);
+}
+
+function openEditorForDate(isoDate, { create = false } = {}) {
+  if (!isoDate) return;
+  window.location.href = create ? `/edit/${isoDate}?create=1` : `/edit/${isoDate}`;
+}
+
 function formatWordCount(count) {
   const value = Number(count || 0);
   return `${value} word${value === 1 ? '' : 's'}`;
@@ -1302,6 +1340,36 @@ function buildUploadAction(day) {
   return `<button class="journal-edit-button icon-button" type="button" data-upload-date="${day.isoDate}" aria-label="Add media"><i class="fa-solid fa-plus"></i></button>`;
 }
 
+function buildGapCardHtml(newerDay, olderDay) {
+  const gapDays = diffDaysBetweenIso(newerDay?.isoDate, olderDay?.isoDate) - 1;
+  if (gapDays <= 0) return '';
+  const startIso = addDaysToIso(olderDay.isoDate, 1);
+  const endIso = addDaysToIso(newerDay.isoDate, -1);
+  if (!startIso || !endIso) return '';
+  const missingLabel = gapDays === 1 ? '1 missing day' : `${gapDays} missing days`;
+  const actionLabel = gapDays === 1
+    ? `Record what happened ${monthDayLabel(startIso)}`
+    : `Record what happened ${monthDayLabel(startIso)} - ${monthDayLabel(endIso)}`;
+  return `
+    <article class="gap-block">
+      <button
+        class="gap-card"
+        type="button"
+        data-gap-range-start="${startIso}"
+        data-gap-range-end="${endIso}"
+        data-gap-days="${gapDays}"
+        aria-label="${escapeHtml(actionLabel)}"
+      >
+        <span class="gap-card-icon" aria-hidden="true"><i class="fa-solid fa-plus"></i></span>
+        <span class="gap-card-copy">
+          <strong>${escapeHtml(actionLabel)}</strong>
+          <span>${escapeHtml(missingLabel)}</span>
+        </span>
+      </button>
+    </article>
+  `;
+}
+
 function buildSearchPhotoStack(media) {
   const stack = media.slice(0, 4);
   return `
@@ -1473,12 +1541,17 @@ function renderTimeline() {
   if (!state.searchMode && state.loadedEnd < state.totalDays - 1) html += '<div id="topSentinel" class="timeline-sentinel"></div>';
 
   let previousMonth = null;
-  for (const day of state.loadedDays) {
+  for (let index = 0; index < state.loadedDays.length; index += 1) {
+    const day = state.loadedDays[index];
     if (day.monthKey !== previousMonth) {
       html += `<div class="month-divider"><span class="month-divider-label">${escapeHtml(day.monthLabel)}</span></div>`;
       previousMonth = day.monthKey;
     }
     html += buildDayHtml(day);
+    if (!state.searchMode && index < state.loadedDays.length - 1) {
+      const olderDay = state.loadedDays[index + 1];
+      html += buildGapCardHtml(day, olderDay);
+    }
   }
 
   if (!state.searchMode && state.loadedStart > 0) html += '<div id="bottomSentinel" class="timeline-sentinel"></div>';
@@ -2069,6 +2142,51 @@ function handleJournalToggle(isoDate) {
   });
 }
 
+function getGapPickerInput() {
+  let input = document.getElementById('timelineGapDatePicker');
+  if (input) return input;
+  input = document.createElement('input');
+  input.type = 'date';
+  input.id = 'timelineGapDatePicker';
+  input.tabIndex = -1;
+  input.setAttribute('aria-hidden', 'true');
+  input.className = 'timeline-gap-picker-native';
+  document.body.appendChild(input);
+  return input;
+}
+
+function handleGapCardClick(card) {
+  const startIso = card?.dataset.gapRangeStart || '';
+  const endIso = card?.dataset.gapRangeEnd || '';
+  const gapDays = Number(card?.dataset.gapDays || 0);
+  if (!startIso || !endIso || gapDays <= 0) return;
+  if (gapDays === 1) {
+    openEditorForDate(startIso, { create: true });
+    return;
+  }
+  const input = getGapPickerInput();
+  input.min = startIso;
+  input.max = endIso;
+  input.value = startIso;
+  input.onchange = () => {
+    const selected = input.value;
+    if (!selected) return;
+    if (selected < startIso || selected > endIso) {
+      input.value = startIso;
+      return;
+    }
+    openEditorForDate(selected, { create: true });
+  };
+  input.focus();
+  if (typeof input.showPicker === 'function') {
+    try {
+      input.showPicker();
+      return;
+    } catch (error) {}
+  }
+  input.click();
+}
+
 async function runSearch(query) {
   const term = String(query || '').trim();
   state.searchQuery = term;
@@ -2460,6 +2578,12 @@ function attachEvents() {
       openViewerById(mediaButton.dataset.mediaId);
       return;
     }
+    const gapCard = event.target.closest('[data-gap-range-start][data-gap-range-end]');
+    if (gapCard) {
+      event.preventDefault();
+      handleGapCardClick(gapCard);
+      return;
+    }
     const toggle = event.target.closest('[data-journal-toggle]');
     if (toggle) { handleJournalToggle(toggle.dataset.journalToggle); return; }
     const edit = event.target.closest('[data-edit-date]');
@@ -2478,6 +2602,7 @@ function attachEvents() {
     if (uploadTrigger) {
       event.preventDefault();
       beginUploadSelection(uploadTrigger.dataset.uploadDate);
+      return;
     }
   });
 

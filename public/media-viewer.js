@@ -78,6 +78,7 @@
         velocityX: 0,
         velocityY: 0,
         momentumFrame: null,
+        chromeVisible: true,
         detailsOpen: false,
         detailsProgress: 0,
         detailsAnimationTimer: 0,
@@ -298,6 +299,7 @@
 
       this.attachEvents();
       this.applyStageGesture();
+      this.applyChromeState({ immediate: true });
       this.applyDetailsProgress(0, { immediate: true });
       this.setDescriptionValue('');
       this.setTagInputValue('');
@@ -368,7 +370,10 @@
       this.dom.stage.addEventListener('click', (event) => {
         if (performance.now() < this.state.suppressClickUntil) return;
         if (event.target.closest('button')) return;
-        if (event.target === this.dom.image || event.target === this.dom.video) return;
+        if (event.target === this.dom.image || event.target === this.dom.video) {
+          if (this.state.detailsProgress <= 0.02) this.toggleChrome();
+          return;
+        }
         if (this.state.detailsProgress > 0.08) {
           this.commitDetails(false);
           return;
@@ -1174,6 +1179,7 @@
       this.resetCloseAnimationState();
       this.state.pendingCloseRequest = null;
       this.state.closing = false;
+      this.setChromeVisible(true, { immediate: true });
       this.resetStageGesture(false);
       this.commitDetails(false, { immediate: true });
       this.options.onOpen?.({ viewer: this, item: this.getCurrentItem(), index: this.state.index, forceDateToast });
@@ -1370,6 +1376,33 @@
       this.applyDetailsProgress(this.state.detailsOpen ? 1 : 0, { immediate });
     }
 
+    toggleChrome() {
+      this.setChromeVisible(!this.state.chromeVisible);
+    }
+
+    setChromeVisible(visible, { immediate = false } = {}) {
+      const nextVisible = Boolean(visible);
+      if (!nextVisible && this.state.detailsProgress > 0.02) return;
+      this.state.chromeVisible = nextVisible;
+      this.applyChromeState({ immediate });
+    }
+
+    applyChromeState({ immediate = false } = {}) {
+      this.root.classList.toggle('is-chrome-hidden', !this.state.chromeVisible);
+      this.root.classList.toggle('is-chrome-immediate', immediate);
+
+      const activeElement = document.activeElement;
+      if (!this.state.chromeVisible && activeElement instanceof HTMLElement && activeElement.closest('.viewer-topbar, .viewer-nav, .viewer-toolbar')) {
+        activeElement.blur();
+      }
+
+      if (immediate) {
+        window.setTimeout(() => {
+          this.root.classList.remove('is-chrome-immediate');
+        }, 0);
+      }
+    }
+
     startDetailsAnimation() {
       if (this.state.detailsAnimationTimer) window.clearTimeout(this.state.detailsAnimationTimer);
       this.root.classList.add('is-details-animating');
@@ -1393,6 +1426,7 @@
       this.state.detailsProgress = clamp(progress, 0, 1);
       if (immediate) this.cancelDetailsAnimation();
       else this.startDetailsAnimation();
+      if (this.state.detailsProgress > 0.02) this.setChromeVisible(true, { immediate });
 
       const mobileOffset = Math.round((1 - this.state.detailsProgress) * this.getSheetTravel());
       const desktopShift = Math.round((1 - this.state.detailsProgress) * 28);
@@ -1446,7 +1480,7 @@
       this.root.style.setProperty('--viewer-dismiss-y', `${Math.round(this.state.dismissOffsetY)}px`);
       this.root.style.setProperty('--viewer-frame-scale', `${scale.toFixed(4)}`);
       this.root.style.setProperty('--viewer-frame-rotate', `${rotate.toFixed(2)}deg`);
-      this.root.style.setProperty('--viewer-backdrop-opacity', `${(1 - fade).toFixed(4)}`);
+      this.root.style.setProperty('--viewer-gesture-opacity', `${(1 - fade).toFixed(4)}`);
     }
 
     playStepAnimation(direction) {
