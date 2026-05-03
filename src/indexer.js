@@ -95,6 +95,17 @@ class TimelineIndexer {
     }
   }
 
+  thumbUrlForPhoto(photo) {
+    if (!photo?.id) return '';
+    const version = hash(`${photo.id}|${photo.mtimeMs || 0}|${photo.size || 0}|thumb-v5`);
+    return `/media/thumb/${photo.id}?v=${version}`;
+  }
+
+  thumbUrlForPhotoId(photoId) {
+    const photo = this.state.photosById.get(photoId);
+    return photo ? this.thumbUrlForPhoto(photo) : `/media/thumb/${photoId}`;
+  }
+
   async buildState() {
     const dayMap = new Map();
     const photosById = new Map();
@@ -383,7 +394,7 @@ class TimelineIndexer {
       today: this.serializeHomeDay(todayIsoDate),
       years: [...this.state.years].sort((a, b) => b.year - a.year).map((entry) => ({
         ...entry,
-        coverUrls: entry.coverPhotoIds.map((id) => `/media/thumb/${id}`)
+        coverUrls: entry.coverPhotoIds.map((id) => this.thumbUrlForPhotoId(id))
       })),
       monthsByYear: [...this.state.monthsByYear]
         .sort((a, b) => b.year - a.year)
@@ -393,7 +404,7 @@ class TimelineIndexer {
             .sort((a, b) => b.key.localeCompare(a.key))
             .map((month) => ({
               ...month,
-              coverUrls: month.coverPhotoIds.map((id) => `/media/thumb/${id}`)
+              coverUrls: month.coverPhotoIds.map((id) => this.thumbUrlForPhotoId(id))
             }))
         })),
       railDates: [...this.state.railDates].reverse(),
@@ -428,7 +439,7 @@ class TimelineIndexer {
         .sort((a, b) => b.key.localeCompare(a.key))
         .map((month) => ({
           ...month,
-          coverUrls: month.coverPhotoIds.map((id) => `/media/thumb/${id}`)
+          coverUrls: month.coverPhotoIds.map((id) => this.thumbUrlForPhotoId(id))
         }))
     };
   }
@@ -459,7 +470,7 @@ class TimelineIndexer {
             .map((photo) => ({
               id: photo.id,
               type: photo.type,
-              thumbUrl: `/media/thumb/${photo.id}`
+              thumbUrl: this.thumbUrlForPhoto(photo)
             }))
         };
       });
@@ -546,7 +557,7 @@ class TimelineIndexer {
           id: photo.id,
           type: photo.type,
           fileName: photo.fileName,
-          thumbUrl: `/media/thumb/${photo.id}`,
+          thumbUrl: this.thumbUrlForPhoto(photo),
           fullUrl: `/media/full/${photo.id}`,
           isoDate: photo.isoDate,
           dateLabel: longDateLabel(photo.isoDate),

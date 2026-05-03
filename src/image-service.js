@@ -95,7 +95,7 @@ class ImageService {
   }
 
   async ensureThumb(photo) {
-    const key = hash(`${photo.filePath}|${photo.mtimeMs}|${photo.size}|thumb-v3`);
+    const key = hash(`${photo.filePath}|${photo.mtimeMs}|${photo.size}|thumb-v4`);
     const outputPath = path.join(this.cacheDir, 'thumbs', `${key}.jpg`);
     if (fs.existsSync(outputPath)) return outputPath;
 
@@ -114,13 +114,15 @@ class ImageService {
       try {
         await sharp(source, { limitInputPixels: false, failOn: 'none' })
           .rotate()
-          .resize({ width: 700, height: 520, fit: 'cover', position: 'centre' })
+          // .resize({ width: 700, height: 520, fit: 'inside', withoutEnlargement: true })
+          .resize({ width: 300, height: null, fit: 'inside', withoutEnlargement: true })
           .jpeg({ quality: 58, mozjpeg: true })
           .toFile(outputPath);
       } catch (error) {
         await sharp(source, { limitInputPixels: false, failOn: 'none' })
           .rotate()
-          .resize({ width: 700, height: 520, fit: 'contain', background: { r: 24, g: 26, b: 31 } })
+          // .resize({ width: 700, height: 520, fit: 'inside', withoutEnlargement: true })
+          .resize({ width: 300, height: null, fit: 'inside', withoutEnlargement: true })
           .jpeg({ quality: 60, mozjpeg: true })
           .toFile(outputPath);
       }
@@ -132,8 +134,8 @@ class ImageService {
   async ensureVideoThumb(photo, outputPath) {
     const tempOutput = `${outputPath}.tmp.jpg`;
     const attempts = [
-      ['-hide_banner', '-loglevel', 'error', '-y', '-ss', '00:00:00.300', '-i', photo.filePath, '-frames:v', '1', '-vf', 'scale=700:520:force_original_aspect_ratio=increase,crop=700:520', tempOutput],
-      ['-hide_banner', '-loglevel', 'error', '-y', '-i', photo.filePath, '-frames:v', '1', '-vf', 'thumbnail,scale=700:520:force_original_aspect_ratio=increase,crop=700:520', tempOutput]
+      ['-hide_banner', '-loglevel', 'error', '-y', '-ss', '00:00:00.300', '-i', photo.filePath, '-frames:v', '1', '-vf', 'scale=700:520:force_original_aspect_ratio=decrease', tempOutput],
+      ['-hide_banner', '-loglevel', 'error', '-y', '-i', photo.filePath, '-frames:v', '1', '-vf', 'thumbnail,scale=700:520:force_original_aspect_ratio=decrease', tempOutput]
     ];
 
     for (const args of attempts) {

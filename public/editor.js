@@ -29,6 +29,7 @@ const dom = {
   checkRow: document.querySelector('.editor-check-row'),
   uploadPreviewList: document.getElementById('editorUploadPreviewList'),
   setExifDate: document.getElementById('editorSetExifDate'),
+  sharedDate: document.getElementById('editorSharedDate'),
   exifDateLabel: document.getElementById('editorExifDateLabel'),
   uploadSubmit: document.getElementById('editorUploadSubmit'),
   uploadSubmitLabel: document.getElementById('editorUploadSubmitLabel'),
@@ -400,14 +401,46 @@ function dateRailLabel(isoDate) {
   return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(date);
 }
 
-function formatUploadDateSummary(file, isoDate, setExifDate) {
-  if (setExifDate && isoDate) return `EXIF created date -> ${dateRailLabel(isoDate)}`;
-  if (file?.lastModified) {
-    const date = new Date(file.lastModified);
-    const localIso = [date.getFullYear(), `${date.getMonth() + 1}`.padStart(2, '0'), `${date.getDate()}`.padStart(2, '0')].join('-');
-    return `Keep current file date -> ${dateRailLabel(localIso)}`;
+function monthDayLabel(isoDate) {
+  if (!isoDate) return '';
+  const [y, m, d] = isoDate.split('-').map(Number);
+  const date = new Date(Date.UTC(y, (m || 1) - 1, d || 1));
+  return new Intl.DateTimeFormat(undefined, { month: 'long', day: 'numeric', timeZone: 'UTC' }).format(date);
+}
+
+function fileDateToLocalIso(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return [date.getFullYear(), `${date.getMonth() + 1}`.padStart(2, '0'), `${date.getDate()}`.padStart(2, '0')].join('-');
+}
+
+function isValidIsoDate(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
+}
+
+function uploadDateSourceLabel(item) {
+  if (item?.dateSource === 'exif') return 'Image metadata date';
+  if (item?.dateSource === 'last-modified') return 'File modified date';
+  if (item?.dateSource === 'shared') return 'Shared datestamp';
+  if (item?.dateSource === 'manual') return 'Custom date';
+  return 'Entry date';
+}
+
+async function extractUploadMetadataDate(file, fallbackIsoDate) {
+  const exifr = window.exifr;
+  const isImage = /^image\//.test(file?.type || '') || /\.(jpg|jpeg|png|webp|avif|heic|heif|tif|tiff)$/i.test(file?.name || '');
+  if (isImage && exifr?.parse) {
+    try {
+      const exif = await exifr.parse(file, { pick: ['DateTimeOriginal', 'CreateDate', 'ModifyDate'] });
+      const exifDate = exif?.DateTimeOriginal || exif?.CreateDate || exif?.ModifyDate;
+      const exifIsoDate = fileDateToLocalIso(exifDate);
+      if (exifIsoDate) return { isoDate: exifIsoDate, dateSource: 'exif' };
+    } catch (error) {}
   }
-  return 'Keep current file date metadata';
+  const modifiedIsoDate = fileDateToLocalIso(file?.lastModified);
+  if (modifiedIsoDate) return { isoDate: modifiedIsoDate, dateSource: 'last-modified' };
+  return { isoDate: fallbackIsoDate || '', dateSource: 'context' };
 }
 
 function clamp(value, min, max) {
@@ -418,7 +451,9 @@ function createSelectedUploadFile(file) {
   return {
     id: `editor-upload-${Date.now()}-${state.uploadFileSeq += 1}`,
     file,
-    objectUrl: URL.createObjectURL(file)
+    objectUrl: URL.createObjectURL(file),
+    isoDate: state.isoDate || '',
+    dateSource: 'context'
   };
 }
 
@@ -439,6 +474,34 @@ function clearUploadSelection() {
 function updateUploadButtonLabel() {
   const count = state.uploadSelectedFiles.length;
   if (dom.uploadSubmitLabel) dom.uploadSubmitLabel.textContent = count ? `Upload ${count} file${count === 1 ? '' : 's'}` : 'Upload';
+}
+
+function updateUploadDateToggleLabel() {
+  if (dom.exifDateLabel) dom.exifDateLabel.textContent = 'Specify Datestamp';
+}
+
+function updateUploadSharedDateUi() {
+  const enabled = Boolean(dom.setExifDate?.checked);
+  if (dom.sharedDate) {
+    dom.sharedDate.disabled = !enabled;
+    if (!dom.sharedDate.value) dom.sharedDate.value = state.isoDate || state.uploadSelectedFiles[0]?.isoDate || '';
+  }
+}
+
+function applySharedUploadDate(isoDate) {
+  if (!isValidIsoDate(isoDate)) return;
+  state.uploadSelectedFiles = state.uploadSelectedFiles.map((item) => ({ ...item, isoDate, dateSource: 'shared' }));
+}
+
+function setUploadFileDate(fileId, isoDate) {
+  if (!isValidIsoDate(isoDate)) return;
+  state.uploadSelectedFiles = state.uploadSelectedFiles.map((item) => (
+    item.id === fileId ? { ...item, isoDate, dateSource: 'manual' } : item
+  ));
+  if (dom.setExifDate?.checked && dom.sharedDate?.value && dom.sharedDate.value !== isoDate) {
+    dom.setExifDate.checked = false;
+  }
+  updateUploadSharedDateUi();
 }
 
 function setUploadPreparing(preparing) {
@@ -462,9 +525,21 @@ async function appendUploadFiles(fileList) {
   if (!files.length) return;
   const batchSize = 8;
   for (let index = 0; index < files.length; index += batchSize) {
-    const batch = files.slice(index, index + batchSize).map((file) => createSelectedUploadFile(file));
+    const batch = await Promise.all(files.slice(index, index + batchSize).map(async (file) => {
+      const item = createSelectedUploadFile(file);
+      const metadata = await extractUploadMetadataDate(file, state.isoDate || '');
+      item.isoDate = metadata.isoDate;
+      item.dateSource = metadata.dateSource;
+      if (dom.setExifDate?.checked && isValidIsoDate(dom.sharedDate?.value)) {
+        item.isoDate = dom.sharedDate.value;
+        item.dateSource = 'shared';
+      }
+      return item;
+    }));
     state.uploadSelectedFiles = [...state.uploadSelectedFiles, ...batch];
     updateUploadButtonLabel();
+    updateUploadSharedDateUi();
+    updateUploadUiState();
     renderUploadPreviews();
     if (index + batchSize < files.length) await nextFrame();
   }
@@ -482,6 +557,39 @@ function removeUploadFile(fileId) {
   state.uploadSelectedFiles = nextFiles;
   if (!state.uploadSelectedFiles.length && dom.fileInput) dom.fileInput.value = '';
   updateUploadButtonLabel();
+  updateUploadSharedDateUi();
+  updateUploadUiState();
+  renderUploadPreviews();
+}
+
+function renderUploadPreviews() {
+  if (!dom.uploadPreviewList) return;
+  const files = state.uploadSelectedFiles || [];
+  dom.uploadPreviewList.innerHTML = files.map((item) => {
+    const file = item.file;
+    const isVideo = /^video\//.test(file.type) || /\.(mp4|mov|m4v|webm|avi|mkv|3gp)$/i.test(file.name);
+    const displayName = uploadDisplayName(file.name);
+    const previewMedia = isVideo
+      ? `<video src="${item.objectUrl}" muted playsinline preload="none"></video><span class="upload-preview-video"><i class="fa-solid fa-play"></i></span>`
+      : `<img src="${item.objectUrl}" alt="${file.name}" loading="lazy" decoding="async" />`;
+    return `<div class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}"><div class="upload-preview-thumb">${previewMedia}${state.uploadXhr ? '' : `<button class="upload-preview-remove" type="button" data-upload-remove="${item.id}" aria-label="Remove ${displayName}"><i class="fa-solid fa-xmark"></i></button>`}</div><div class="upload-preview-meta"><div class="upload-preview-meta-row"><div class="upload-preview-meta-copy"><strong title="${displayName}">${displayName}</strong><span>${uploadDateSourceLabel(item)}</span><span>Size · ${formatFileSize(file.size)}</span></div><button class="upload-preview-date" type="button" data-upload-date-trigger="${item.id}" aria-label="Change date for ${displayName}"><i class="fa-solid fa-calendar-day"></i><strong title="${displayName}">${monthDayLabel(item.isoDate) || 'No date'}</strong></button><input class="upload-preview-date-input" type="date" data-upload-date-input="${item.id}" value="${item.isoDate || ''}" /></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></div></div>`;
+  }).join('');
+  updateUploadPreviewProgress();
+}
+
+function openUploadDatePicker(fileId) {
+  const input = dom.uploadPreviewList?.querySelector(`[data-upload-date-input="${fileId}"]`);
+  if (!input) return;
+  if (typeof input.showPicker === 'function') input.showPicker();
+  else input.click();
+}
+
+function handleUploadSharedDateToggle() {
+  if (dom.setExifDate?.checked) {
+    if (!isValidIsoDate(dom.sharedDate?.value)) dom.sharedDate.value = state.isoDate || state.uploadSelectedFiles[0]?.isoDate || '';
+    if (isValidIsoDate(dom.sharedDate?.value)) applySharedUploadDate(dom.sharedDate.value);
+  }
+  updateUploadSharedDateUi();
   renderUploadPreviews();
 }
 
@@ -581,15 +689,12 @@ function normalizeUploadTarget() {
   persistUploadTarget();
 }
 
-function updateUploadDateToggleLabel() {
-  if (!dom.exifDateLabel) return;
-  dom.exifDateLabel.textContent = `Set EXIF created date to ${dateRailLabel(state.isoDate) || 'this day'}`;
-}
-
 function updateUploadUiState() {
   dom.uploadWindow?.classList.toggle('is-uploading', Boolean(state.uploadXhr));
   dom.uploadWindow?.classList.toggle('is-preparing', Boolean(state.uploadPreparing));
   dom.addFilesButton?.classList.toggle('hidden', Boolean(state.uploadXhr));
+  if (dom.uploadSubmit) dom.uploadSubmit.hidden = !state.uploadSelectedFiles.length && !state.uploadXhr;
+  updateUploadSharedDateUi();
 }
 
 function focusPendingFolderInput() {
@@ -1155,6 +1260,122 @@ window.addEventListener('beforeunload', (event) => {
   event.returnValue = '';
 });
 
+function renderUploadPreviews() {
+  if (!dom.uploadPreviewList) return;
+  const files = state.uploadSelectedFiles || [];
+  dom.uploadPreviewList.innerHTML = files.map((item) => {
+    const file = item.file;
+    const isVideo = /^video\//.test(file.type) || /\.(mp4|mov|m4v|webm|avi|mkv|3gp)$/i.test(file.name);
+    const displayName = uploadDisplayName(file.name);
+    const previewMedia = isVideo
+      ? `<video src="${item.objectUrl}" muted playsinline preload="none"></video><span class="upload-preview-video"><i class="fa-solid fa-play"></i></span>`
+      : `<img src="${item.objectUrl}" alt="${file.name}" loading="lazy" decoding="async" />`;
+    return `<div class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}"><div class="upload-preview-thumb">${previewMedia}${state.uploadXhr ? '' : `<button class="upload-preview-remove" type="button" data-upload-remove="${item.id}" aria-label="Remove ${displayName}"><i class="fa-solid fa-xmark"></i></button>`}</div><div class="upload-preview-meta"><div class="upload-preview-meta-row"><div class="upload-preview-meta-copy"><strong title="${displayName}">${displayName}</strong><span>${uploadDateSourceLabel(item)}</span><span>Size · ${formatFileSize(file.size)}</span></div><button class="upload-preview-date" type="button" data-upload-date-trigger="${item.id}" aria-label="Change date for ${displayName}"><i class="fa-solid fa-calendar-day"></i><strong title="${displayName}">${monthDayLabel(item.isoDate) || 'No date'}</strong></button><input class="upload-preview-date-input" type="date" data-upload-date-input="${item.id}" value="${item.isoDate || ''}" /></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></div></div>`;
+  }).join('');
+  updateUploadPreviewProgress();
+}
+
+async function openUploadModal() {
+  dom.uploadTitle.textContent = `Add media for ${dom.subtitle.textContent}`;
+  if (!state.uploadXhr) {
+    state.uploadProgressRatio = 0;
+    dom.setExifDate.checked = false;
+    if (dom.sharedDate) dom.sharedDate.value = state.isoDate || '';
+    dom.uploadSubmit.style.setProperty('--upload-progress', '0%');
+    updateUploadButtonLabel();
+    dom.uploadCancel?.classList.add('hidden');
+  }
+  if (!state.folderRoots.length) await loadFolderRoots();
+  updateUploadDateToggleLabel();
+  renderFolderTree();
+  renderUploadPreviews();
+  updateUploadUiState();
+  dom.folderTree.classList.remove('is-open');
+  dom.uploadModal.classList.remove('hidden');
+  dom.uploadResume?.classList.add('hidden');
+  document.body.classList.add('viewer-open');
+}
+
+function uploadFiles() {
+  const files = state.uploadSelectedFiles.length ? state.uploadSelectedFiles.map((item) => item.file) : Array.from(dom.fileInput.files || []);
+  if (!files.length) return;
+  const fileDates = state.uploadSelectedFiles.map((item) => item.isoDate || state.isoDate || '');
+  const form = new FormData();
+  form.append('rootId', state.uploadTarget.rootId || '0');
+  form.append('relativePath', state.uploadTarget.relativePath || '');
+  form.append('targetIsoDate', state.isoDate);
+  form.append('fileDates', JSON.stringify(fileDates));
+  files.forEach((file) => form.append('files', file));
+
+  state.uploadProgressRatio = 0;
+  const xhr = new XMLHttpRequest();
+  state.uploadXhr = xhr;
+  dom.uploadSubmit.disabled = true;
+  dom.uploadSubmit.style.setProperty('--upload-progress', '0%');
+  if (dom.uploadSubmitLabel) dom.uploadSubmitLabel.textContent = `Uploading ${files.length} file${files.length === 1 ? '' : 's'} · 0%`;
+  dom.uploadCancel?.classList.remove('hidden');
+  updateUploadUiState();
+  renderFolderTree();
+  updateUploadPreviewProgress();
+  xhr.open('POST', '/api/upload/media');
+  xhr.upload.addEventListener('progress', (event) => {
+    if (!event.lengthComputable) return;
+    const ratio = Math.round((event.loaded / event.total) * 100);
+    state.uploadProgressRatio = ratio;
+    dom.uploadSubmit.style.setProperty('--upload-progress', `${ratio}%`);
+    if (dom.uploadSubmitLabel) dom.uploadSubmitLabel.textContent = `Uploading ${files.length} file${files.length === 1 ? '' : 's'} · ${ratio}%`;
+    dom.uploadResumeLabel.textContent = dom.uploadSubmitLabel?.textContent || 'Uploading…';
+    updateUploadPreviewProgress();
+  });
+  xhr.addEventListener('load', async () => {
+    state.uploadXhr = null;
+    state.uploadProgressRatio = 100;
+    dom.uploadSubmit.disabled = false;
+    dom.uploadCancel?.classList.add('hidden');
+    let payload = {};
+    try { payload = JSON.parse(xhr.responseText || '{}'); } catch (error) {}
+    if (xhr.status < 200 || xhr.status >= 300) {
+      updateUploadUiState();
+      if (dom.uploadSubmitLabel) dom.uploadSubmitLabel.textContent = payload.error || 'Upload failed';
+      renderFolderTree();
+      updateUploadPreviewProgress();
+      return;
+    }
+    dom.uploadSubmit.style.setProperty('--upload-progress', '100%');
+    if (dom.uploadSubmitLabel) dom.uploadSubmitLabel.textContent = `Uploaded ${payload.count || files.length} file${(payload.count || files.length) === 1 ? '' : 's'}`;
+    clearUploadSelection();
+    updateUploadUiState();
+    renderFolderTree();
+    renderUploadPreviews();
+    await loadEntry();
+    closeUploadModal();
+  });
+  xhr.addEventListener('abort', () => {
+    state.uploadXhr = null;
+    state.uploadProgressRatio = 0;
+    dom.uploadSubmit.disabled = false;
+    dom.uploadCancel?.classList.add('hidden');
+    dom.uploadSubmit.style.setProperty('--upload-progress', '0%');
+    if (dom.uploadSubmitLabel) dom.uploadSubmitLabel.textContent = 'Upload cancelled';
+    dom.uploadResumeLabel.textContent = 'Upload cancelled';
+    updateUploadUiState();
+    renderFolderTree();
+    updateUploadPreviewProgress();
+  });
+  xhr.addEventListener('error', () => {
+    state.uploadXhr = null;
+    state.uploadProgressRatio = 0;
+    dom.uploadSubmit.disabled = false;
+    dom.uploadCancel?.classList.add('hidden');
+    if (dom.uploadSubmitLabel) dom.uploadSubmitLabel.textContent = 'Upload failed';
+    dom.uploadResumeLabel.textContent = 'Upload failed';
+    updateUploadUiState();
+    renderFolderTree();
+    updateUploadPreviewProgress();
+  });
+  xhr.send(form);
+}
+
 dom.backButton.addEventListener('click', handleBack);
 dom.undoButton.addEventListener('click', undo);
 dom.redoButton.addEventListener('click', redo);
@@ -1163,7 +1384,12 @@ dom.uploadButton.addEventListener('click', () => dom.addFilesButton.click());
 dom.uploadClose.addEventListener('click', closeUploadModal);
 dom.uploadBackdrop.addEventListener('click', closeUploadModal);
 dom.newFolderButton?.addEventListener('click', () => promptNewFolder());
-dom.setExifDate?.addEventListener('change', renderUploadPreviews);
+dom.setExifDate?.addEventListener('change', handleUploadSharedDateToggle);
+dom.sharedDate?.addEventListener('change', () => {
+  if (!dom.setExifDate?.checked || !isValidIsoDate(dom.sharedDate?.value)) return;
+  applySharedUploadDate(dom.sharedDate.value);
+  renderUploadPreviews();
+});
 dom.uploadCancel?.addEventListener('click', cancelUpload);
 dom.addFilesButton?.addEventListener('click', () => dom.fileInput.click());
 dom.fileInput?.addEventListener('change', () => {
@@ -1202,8 +1428,18 @@ dom.folderTree.addEventListener('click', (event) => {
 });
 dom.uploadPreviewList?.addEventListener('click', (event) => {
   const removeButton = event.target.closest('[data-upload-remove]');
-  if (!removeButton) return;
-  removeUploadFile(removeButton.dataset.uploadRemove);
+  if (removeButton) {
+    removeUploadFile(removeButton.dataset.uploadRemove);
+    return;
+  }
+  const dateTrigger = event.target.closest('[data-upload-date-trigger]');
+  if (dateTrigger) openUploadDatePicker(dateTrigger.dataset.uploadDateTrigger);
+});
+dom.uploadPreviewList?.addEventListener('change', (event) => {
+  const dateInput = event.target.closest('[data-upload-date-input]');
+  if (!dateInput || !isValidIsoDate(dateInput.value)) return;
+  setUploadFileDate(dateInput.dataset.uploadDateInput, dateInput.value);
+  renderUploadPreviews();
 });
 dom.folderTree.addEventListener('input', (event) => {
   if (event.target?.id === 'uploadNewFolderInput' && state.uploadCreatingFolder) state.uploadCreatingFolder.name = event.target.value;

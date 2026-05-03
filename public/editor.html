@@ -65,18 +65,21 @@
           <button id="editorNewFolderButton" class="editor-icon-button" type="button" aria-label="Create folder"><i class="fa-solid fa-plus"></i></button>
           <div id="editorFolderTree" class="editor-folder-tree"></div>
         </div>
-        <button id="editorAddFilesButton" class="editor-file-picker" type="button">
-          <span><i class="fa-solid fa-photo-film"></i> Add Files</span>
-        </button>
         <label class="editor-file-input hidden" aria-hidden="true">
           <input id="editorFileInput" type="file" multiple accept="image/*,video/*,.heic,.heif,.mov,.mp4,.m4v,.webm,.avi,.mkv,.3gp" />
         </label>
-        <label class="editor-check-row">
-          <input id="editorSetExifDate" type="checkbox" checked />
-          <span id="editorExifDateLabel">Set EXIF created date to this day</span>
-        </label>
         <div id="editorUploadSelectionLoading" class="upload-selection-loading hidden" aria-live="polite"><i class="fa-solid fa-spinner fa-spin"></i><span>Preparing previews...</span></div>
         <div id="editorUploadPreviewList" class="upload-preview-list upload-preview-list-view"></div>
+        <div class="upload-shared-date-shell">
+          <label class="editor-check-row">
+            <input id="editorSetExifDate" type="checkbox" />
+            <span id="editorExifDateLabel">Specify Datestamp</span>
+          </label>
+          <input id="editorSharedDate" class="upload-shared-date-input" type="date" disabled />
+        </div>
+        <button id="editorAddFilesButton" class="editor-file-picker" type="button">
+          <span><i class="fa-solid fa-photo-film"></i> Add Files</span>
+        </button>
         <div class="upload-actions upload-actions-stacked">
           <button id="editorUploadSubmit" class="save-button upload-submit-button" type="button"><span class="upload-submit-fill"></span><span class="upload-submit-content"><i class="fa-solid fa-upload"></i><span id="editorUploadSubmitLabel">Upload</span></span></button>
           <button id="editorUploadCancel" class="ghost-button upload-cancel-button hidden" type="button">Cancel upload</button>
@@ -86,6 +89,7 @@
 
     <button id="editorUploadResume" class="upload-resume hidden" type="button" aria-label="Show upload progress"><i class="fa-solid fa-cloud-arrow-up"></i><span id="editorUploadResumeLabel">Uploading...</span></button>
 
+    <script src="/vendor/exifr/full.umd.js?v=2026-05-02-1" defer></script>
     <script src="/media-viewer.js?v=2026-04-24-2" defer></script>
     <script src="/vendor/markdown-it/dist/markdown-it.min.js" defer></script>
     <script src="/editor.js?v=2026-04-24-2" defer></script>

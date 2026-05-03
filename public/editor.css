@@ -297,9 +297,9 @@ body {
 .upload-preview-card {
   width: 100%;
   display: grid;
-  grid-template-columns: 64px 1fr;
+  grid-template-columns: 64px minmax(0, 1fr);
   gap: 10px;
-  align-items: center;
+  align-items: start;
   padding: 8px 10px;
   border-radius: 14px;
   background: color-mix(in srgb, var(--button) 94%, transparent);
@@ -330,10 +330,21 @@ body {
 }
 .upload-preview-meta {
   display: grid;
-  gap: 2px;
+  gap: 6px;
   font-size: 0.82rem;
   color: var(--muted);
   min-width: 0;
+}
+.upload-preview-meta-row {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.upload-preview-meta-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
 }
 .upload-preview-meta strong {
   color: var(--text);
@@ -347,6 +358,62 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.upload-preview-date {
+  text-align: center;
+  align-items: center;
+  border-radius: 24px;
+  padding: 15px 10px;
+  background: #ece4dd52;
+  display: flex;
+  justify-content: center;
+  color: var(--text);
+  border: 1px solid var(--border);
+  min-width: 112px;
+}
+.upload-preview-date i {
+  margin-right: 10px;
+}
+.upload-preview-date strong {
+  align-items: center;
+  justify-content: center;
+  display: flex;
+  line-height: 1;
+  white-space: nowrap;
+}
+.upload-preview-date-input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+  width: 1px;
+  height: 1px;
+}
+.upload-shared-date-shell {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.upload-shared-date-input {
+  min-height: 42px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 96%, transparent);
+  color: var(--text);
+  padding: 0 14px;
+  font: inherit;
+}
+.upload-shared-date-input:disabled {
+  opacity: 0.5;
+}
+.upload-actions[hidden] {
+  display: none !important;
+}
+.upload-preview-remove {
+  border: 0;
+  cursor: pointer;
 }
 .upload-resume {
   position: fixed;
@@ -398,6 +465,13 @@ body {
     width: 100vw;
     height: 100vh;
     padding: 0;
+  }
+  .upload-preview-meta-row {
+    flex-direction: column;
+  }
+  .upload-preview-date {
+    width: 100%;
+    min-width: 0;
   }
 }
 

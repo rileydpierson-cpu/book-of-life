@@ -47,6 +47,30 @@ function splitPathList(value) {
     .filter(Boolean);
 }
 
+function normalizePhotoFolderList(value) {
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => normalizePhotoFolderList(item));
+  }
+
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return [];
+
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((item) => String(item || '').trim())
+          .filter(Boolean);
+      }
+    } catch (error) {
+      // Fall through and treat the value as a normal path string/list.
+    }
+  }
+
+  return splitPathList(trimmed);
+}
+
 function parseBoolean(value, fallbackValue = false) {
   if (typeof value === 'boolean') return value;
   const normalized = String(value || '').trim().toLowerCase();
@@ -87,10 +111,11 @@ function loadConfig(projectRoot) {
   const journalFolderName = getConfigValue(config.paths?.journalFolderName, 'LIFESERVER_JOURNAL_FOLDER_NAME', 'Journal');
   const journalImagesFolderName = getConfigValue(config.paths?.journalImagesFolderName, 'LIFESERVER_JOURNAL_IMAGES_FOLDER_NAME', 'Images');
   const photoFolderEnvValue = process.env.LIFESERVER_PHOTO_FOLDERS || process.env.LIFESERVER_PHOTO_ROOT || '';
+  const configuredPhotoFolders = (config.paths?.photoFolders || []).flatMap((folder) => normalizePhotoFolderList(expandEnvString(folder)));
   const photoFolders = (
     photoFolderEnvValue
-      ? splitPathList(photoFolderEnvValue)
-      : (config.paths?.photoFolders || []).map((folder) => expandEnvString(folder))
+      ? normalizePhotoFolderList(photoFolderEnvValue)
+      : configuredPhotoFolders
   )
     .map((folder) => String(folder || '').trim())
     .filter(Boolean)

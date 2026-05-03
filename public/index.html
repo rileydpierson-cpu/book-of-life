@@ -174,18 +174,21 @@
           <button id="uploadNewFolder" class="ghost-button icon-button" type="button" aria-label="Create folder"><i class="fa-solid fa-plus"></i></button>
           <div id="uploadFolderTree" class="upload-folder-tree"></div>
         </div>
-        <button id="uploadAddFiles" class="upload-file-picker" type="button">
-          <span><i class="fa-solid fa-photo-film"></i> Add Files</span>
-        </button>
         <label class="upload-file-input hidden" aria-hidden="true">
           <input id="uploadFileInput" type="file" multiple accept="image/*,video/*,.heic,.heif,.mov,.mp4,.m4v,.webm,.avi,.mkv,.3gp" />
         </label>
-        <label class="upload-check-row">
-          <input id="uploadSetExifDate" type="checkbox" checked />
-          <span id="uploadExifDateLabel">Set EXIF created date to this day</span>
-        </label>
         <div id="uploadSelectionLoading" class="upload-selection-loading hidden" aria-live="polite"><i class="fa-solid fa-spinner fa-spin"></i><span>Preparing previews...</span></div>
         <div id="uploadPreviewList" class="upload-preview-list upload-preview-list-view"></div>
+        <div class="upload-shared-date-shell">
+          <label class="upload-check-row">
+            <input id="uploadSetExifDate" type="checkbox" />
+            <span id="uploadExifDateLabel">Specify Datestamp</span>
+          </label>
+          <input id="uploadSharedDate" class="upload-shared-date-input" type="date" disabled />
+        </div>
+        <button id="uploadAddFiles" class="upload-file-picker" type="button">
+          <span><i class="fa-solid fa-photo-film"></i> Add Files</span>
+        </button>
         <div class="upload-actions upload-actions-stacked">
           <button id="uploadSubmit" class="save-button upload-submit-button" type="button"><span class="upload-submit-fill"></span><span class="upload-submit-content"><i class="fa-solid fa-upload"></i><span id="uploadSubmitLabel">Upload</span></span></button>
           <button id="uploadCancel" class="ghost-button upload-cancel-button hidden" type="button">Cancel upload</button>
@@ -195,6 +198,7 @@
 
     <button id="uploadResume" class="upload-resume hidden" type="button" aria-label="Show upload progress"><i class="fa-solid fa-cloud-arrow-up"></i><span id="uploadResumeLabel">Uploading...</span></button>
 
+    <script src="/vendor/exifr/full.umd.js" defer></script>
     <script src="/media-viewer.js" defer></script>
     <script src="/app.js" defer></script>
   </body>

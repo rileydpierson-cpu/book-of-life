@@ -211,6 +211,10 @@ async function main() {
     etag: true,
     maxAge: '1d'
   }));
+  app.use('/vendor/exifr', express.static(path.join(projectRoot, 'node_modules', 'exifr', 'dist'), {
+    etag: true,
+    maxAge: '1d'
+  }));
   app.use('/vendor/markdown-it', express.static(path.join(projectRoot, 'node_modules', 'markdown-it'), {
     etag: true,
     maxAge: '1d'
@@ -398,7 +402,13 @@ async function main() {
       const rootId = String(req.body?.rootId || '0');
       const relativePath = String(req.body?.relativePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
       const targetIsoDate = typeof req.body?.targetIsoDate === 'string' ? req.body.targetIsoDate : '';
-      const setExifDate = isValidIsoDate(targetIsoDate) && (req.body?.setExifDate === '1' || req.body?.prefixDate === '1');
+      let fileDates = [];
+      try {
+        const parsed = JSON.parse(typeof req.body?.fileDates === 'string' ? req.body.fileDates : '[]');
+        fileDates = Array.isArray(parsed) ? parsed.map((value) => (isValidIsoDate(value) ? value : '')) : [];
+      } catch (error) {
+        fileDates = [];
+      }
       const selectedRoot = config.paths.photoFolders[Number(rootId)];
       if (!selectedRoot) {
         res.status(400).json({ error: 'Invalid upload root.' });
@@ -413,22 +423,24 @@ async function main() {
       await fs.promises.mkdir(destinationDir, { recursive: true });
 
       const copied = [];
-      for (const file of files) {
+      for (const [index, file] of files.entries()) {
         const original = sanitizeFileName(file.originalname || path.basename(file.path));
         const destination = uniqueDestinationPath(destinationDir, original);
+        const perFileIsoDate = fileDates[index] || targetIsoDate || '';
         try {
           const createdDateApplied = await copyUploadedFileWithOptionalDate({
             file,
             destination,
-            setExifDate,
-            targetIsoDate
+            setExifDate: isValidIsoDate(perFileIsoDate),
+            targetIsoDate: perFileIsoDate
           });
           uploadedPaths.push(destination);
           copied.push({
             fileName: path.basename(destination),
             folder: relativePath || '.',
             size: file.size || 0,
-            createdDateApplied
+            createdDateApplied,
+            isoDate: perFileIsoDate || null
           });
         } catch (error) {
           await fs.promises.rm(destination, { force: true }).catch(() => {});
@@ -439,13 +451,14 @@ async function main() {
       }
 
       await indexer.rebuild('upload');
+      const distinctDates = new Set(copied.map((item) => item.isoDate).filter(Boolean));
       res.json({
         ok: true,
         copied,
         count: copied.length,
         folder: relativePath || '.',
-        isoDate: targetIsoDate || null,
-        dateMode: setExifDate ? 'exif' : 'existing'
+        isoDate: distinctDates.size === 1 ? Array.from(distinctDates)[0] : (targetIsoDate || null),
+        dateMode: distinctDates.size ? 'per-file' : 'existing'
       });
     } catch (error) {
       for (const filePath of uploadedPaths) await fs.promises.rm(filePath, { force: true }).catch(() => {});

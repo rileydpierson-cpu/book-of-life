@@ -103,11 +103,21 @@
         dateSaving: false,
         suppressClickUntil: 0,
         pendingCloseRequest: null,
-        closeAnimationTimer: 0
+        closeAnimationTimer: 0,
+        carouselCommitTimer: 0,
+        suppressCarouselCommit: false,
+        loadedFullMedia: new Set(),
+        carouselAnimationFrame: 0,
+        carouselAnimationDirection: 0,
+        carouselAnimating: false,
+        queuedStepDirection: 0,
+        pendingFullImageLoads: new Map(),
+        slotMediaRegistry: new Map()
       };
 
       this.handleResize = this.handleResize.bind(this);
       this.handleKeydown = this.handleKeydown.bind(this);
+      this.handleCarouselScroll = this.handleCarouselScroll.bind(this);
       this.handleStagePointerMove = this.handleStagePointerMove.bind(this);
       this.handleStagePointerEnd = this.handleStagePointerEnd.bind(this);
       this.handleDetailsTouchMove = this.handleDetailsTouchMove.bind(this);
@@ -152,10 +162,20 @@
             </button>
 
             <div class="viewer-stage" data-role="stage">
-              <div class="viewer-media-frame" data-role="media-frame">
-                <div class="viewer-canvas" data-role="canvas">
-                  <img class="viewer-image hidden" data-role="image" alt="Selected media" draggable="false" />
-                  <video class="viewer-video hidden" data-role="video" controls playsinline preload="metadata" draggable="false"></video>
+              <div class="viewer-carousel" data-role="carousel">
+                <div class="viewer-slot viewer-slot-side" data-role="slot-prev">
+                  <div class="viewer-slot-preview" data-role="slot-prev-media"></div>
+                </div>
+                <div class="viewer-slot viewer-slot-current" data-role="slot-current">
+                  <div class="viewer-media-frame" data-role="media-frame">
+                    <div class="viewer-canvas" data-role="canvas">
+                      <img class="viewer-image hidden" data-role="image" alt="Selected media" draggable="false" />
+                      <video class="viewer-video hidden" data-role="video" controls playsinline preload="metadata" draggable="false"></video>
+                    </div>
+                  </div>
+                </div>
+                <div class="viewer-slot viewer-slot-side" data-role="slot-next">
+                  <div class="viewer-slot-preview" data-role="slot-next-media"></div>
                 </div>
               </div>
               <div class="viewer-loading hidden" data-role="loading" aria-hidden="true">
@@ -259,6 +279,12 @@
         prev: this.root.querySelector('[data-role="prev"]'),
         next: this.root.querySelector('[data-role="next"]'),
         stage: this.root.querySelector('[data-role="stage"]'),
+        carousel: this.root.querySelector('[data-role="carousel"]'),
+        slotPrev: this.root.querySelector('[data-role="slot-prev"]'),
+        slotCurrent: this.root.querySelector('[data-role="slot-current"]'),
+        slotNext: this.root.querySelector('[data-role="slot-next"]'),
+        slotPrevMedia: this.root.querySelector('[data-role="slot-prev-media"]'),
+        slotNextMedia: this.root.querySelector('[data-role="slot-next-media"]'),
         mediaFrame: this.root.querySelector('[data-role="media-frame"]'),
         canvas: this.root.querySelector('[data-role="canvas"]'),
         image: this.root.querySelector('[data-role="image"]'),
@@ -374,7 +400,7 @@
           if (this.state.detailsProgress <= 0.02) this.toggleChrome();
           return;
         }
-        if (this.state.detailsProgress > 0.08) {
+        if (this.state.detailsProgress > 0.08 && this.isMobileSheet()) {
           this.commitDetails(false);
           return;
         }
@@ -417,6 +443,7 @@
       window.addEventListener('pointerup', this.handleDetailsPointerEnd);
       window.addEventListener('pointercancel', this.handleDetailsPointerEnd);
 
+      this.dom.carousel.addEventListener('scroll', this.handleCarouselScroll, { passive: true });
       window.addEventListener('resize', this.handleResize);
       document.addEventListener('keydown', this.handleKeydown);
     }
@@ -424,6 +451,7 @@
     handleResize() {
       if (!this.isOpen()) return;
       this.applyDetailsProgress(this.state.detailsProgress, { immediate: true });
+      this.centerCarousel();
       this.updateTransform();
       this.updateLoadingPosition();
     }
@@ -463,11 +491,13 @@
         return;
       }
       if (event.key === 'ArrowUp') {
+        if (this.isDesktopSidePanel()) return;
         event.preventDefault();
         this.commitDetails(true);
         return;
       }
       if (event.key === 'ArrowDown') {
+        if (this.isDesktopSidePanel()) return;
         event.preventDefault();
         if (this.state.detailsOpen) this.commitDetails(false);
         else this.requestClose('keyboard-down');
@@ -500,6 +530,10 @@
       if (event.pointerType === 'mouse' && event.button !== 0) return;
       if (event.target === this.dom.video && event.pointerType === 'mouse') return;
       if (event.target.closest('.viewer-topbar, .viewer-toolbar')) return;
+      if (this.state.carouselAnimating) {
+        this.stopCarouselAnimation();
+        this.clearCarouselCommitTimer();
+      }
 
       this.stopMomentum();
       this.state.velocityX = 0;
@@ -579,20 +613,13 @@
         const absX = Math.abs(dxTotal);
         const absY = Math.abs(dyTotal);
         if (absX < 10 && absY < 10) return;
-        if (absX > absY * 1.1) gesture.mode = 'browse';
+        if (absX > absY * 1.1) gesture.mode = 'native-scroll';
         else if (dyTotal > 0 && this.state.detailsProgress < 0.05) gesture.mode = 'dismiss';
-        else gesture.mode = 'details';
+        else if (this.isMobileSheet()) gesture.mode = 'details';
+        else gesture.mode = 'idle';
       }
 
-      if (gesture.mode === 'browse') {
-        this.markGestureActivity();
-        this.cancelStageSettle();
-        this.state.swipeOffsetX = dxTotal;
-        this.applyStageGesture();
-        if (event.pointerType === 'touch') this.state.velocityX = dx;
-        event.preventDefault();
-        return;
-      }
+      if (gesture.mode === 'native-scroll') return;
 
       if (gesture.mode === 'dismiss') {
         this.markGestureActivity();
@@ -603,6 +630,8 @@
         event.preventDefault();
         return;
       }
+
+      if (gesture.mode === 'idle') return;
 
       this.markGestureActivity();
       const progress = clamp(gesture.startDetailsProgress - (dyTotal / Math.max(1, this.getSheetTravel())), 0, 1);
@@ -648,13 +677,8 @@
       this.state.primaryPointerId = null;
       this.state.primaryGesture = null;
 
-      if (gesture.mode === 'browse') {
-        const width = this.dom.stage.clientWidth || window.innerWidth || 1;
-        const projected = Math.abs(this.state.swipeOffsetX) + Math.abs(this.state.velocityX) * 14;
-        const shouldStep = projected > width * 0.18;
-        const direction = this.state.swipeOffsetX < 0 ? 1 : -1;
-        this.resetStageGesture(!shouldStep);
-        if (shouldStep) this.step(direction);
+      if (gesture.mode === 'native-scroll') {
+        this.resetStageGesture(false);
       } else if (gesture.mode === 'dismiss') {
         const height = this.dom.stage.clientHeight || window.innerHeight || 1;
         const projected = this.state.dismissOffsetY + Math.max(0, this.state.velocityY) * 14;
@@ -670,6 +694,7 @@
     }
 
     handleDetailsTouchStart(event) {
+      if (!this.isMobileSheet()) return;
       if (!this.isOpen() || this.state.dateModalOpen || this.state.detailsProgress < 0.99) return;
       const touch = event.changedTouches?.[0];
       if (!touch) return;
@@ -704,6 +729,7 @@
     }
 
     handleDetailsPointerStart(event) {
+      if (!this.isMobileSheet()) return;
       if (!this.isOpen() || this.state.dateModalOpen || this.state.detailsProgress < 0.99) return;
       if (event.pointerType === 'touch') return;
       if (event.button !== 0) return;
@@ -785,13 +811,13 @@
         return;
       }
 
-      if (!mostlyVertical) return;
+      if (!mostlyVertical || this.isDesktopSidePanel()) return;
       event.preventDefault();
       this.applyWheelDetailsDelta(event.deltaY);
     }
 
     handleDetailsWheel(event) {
-      if (!this.isOpen()) return;
+      if (!this.isOpen() || this.isDesktopSidePanel()) return;
       if (this.state.zoom > 1.01) return;
 
       const mostlyVertical = Math.abs(event.deltaY) > Math.abs(event.deltaX) * 1.15;
@@ -1111,6 +1137,10 @@
       return window.innerWidth <= 900;
     }
 
+    isDesktopSidePanel() {
+      return !this.isMobileSheet();
+    }
+
     getCurrentIndex() {
       return this.state.index;
     }
@@ -1124,6 +1154,101 @@
       this.state.closeAnimationTimer = 0;
     }
 
+    clearCarouselCommitTimer() {
+      if (this.state.carouselCommitTimer) window.clearTimeout(this.state.carouselCommitTimer);
+      this.state.carouselCommitTimer = 0;
+    }
+
+    stopCarouselAnimation() {
+      if (this.state.carouselAnimationFrame) cancelAnimationFrame(this.state.carouselAnimationFrame);
+      this.state.carouselAnimationFrame = 0;
+      this.state.carouselAnimating = false;
+      this.state.carouselAnimationDirection = 0;
+      this.state.suppressCarouselCommit = false;
+    }
+
+    clearQueuedStepDirection() {
+      this.state.queuedStepDirection = 0;
+    }
+
+    getCarouselPageWidth() {
+      return this.dom.carousel.clientWidth || this.dom.stage.clientWidth || 1;
+    }
+
+    setCarouselPage(pageIndex, behavior = 'auto') {
+      const left = this.getCarouselPageWidth() * pageIndex;
+      this.stopCarouselAnimation();
+      if (behavior === 'smooth') {
+        const startLeft = this.dom.carousel.scrollLeft || 0;
+        const delta = left - startLeft;
+        if (Math.abs(delta) <= 1) {
+          this.dom.carousel.scrollLeft = left;
+          this.state.suppressCarouselCommit = false;
+          return;
+        }
+        const duration = 150;
+        const startTime = performance.now();
+        this.state.suppressCarouselCommit = true;
+        this.state.carouselAnimating = true;
+        this.state.carouselAnimationDirection = delta > 0 ? 1 : -1;
+        const tick = (now) => {
+          const progress = Math.min(1, (now - startTime) / duration);
+          const eased = 1 - Math.pow(1 - progress, 3);
+          this.dom.carousel.scrollLeft = startLeft + (delta * eased);
+          if (progress < 1) {
+            this.state.carouselAnimationFrame = requestAnimationFrame(tick);
+            return;
+          }
+          this.state.carouselAnimationFrame = 0;
+          this.state.carouselAnimating = false;
+          this.state.carouselAnimationDirection = 0;
+          this.state.suppressCarouselCommit = false;
+        };
+        this.state.carouselAnimationFrame = requestAnimationFrame(tick);
+        return;
+      }
+      this.state.suppressCarouselCommit = true;
+      this.dom.carousel.scrollLeft = left;
+      this.state.suppressCarouselCommit = false;
+    }
+
+    centerCarousel() {
+      this.setCarouselPage(1, 'auto');
+    }
+
+    handleCarouselScroll() {
+      if (!this.isOpen() || this.state.suppressCarouselCommit || this.state.zoom > 1.01) return;
+      this.clearCarouselCommitTimer();
+      this.state.carouselCommitTimer = window.setTimeout(() => {
+        this.commitCarouselNavigation().catch((error) => this.handleError(error));
+      }, 110);
+    }
+
+    async commitCarouselNavigation() {
+      if (!this.isOpen() || this.state.suppressCarouselCommit) return;
+      this.clearCarouselCommitTimer();
+      const width = this.getCarouselPageWidth();
+      const page = Math.round((this.dom.carousel.scrollLeft || 0) / Math.max(width, 1));
+      if (page === 1) return;
+      const items = this.getItems();
+      if (items.length < 2) {
+        this.centerCarousel();
+        return;
+      }
+      const direction = page > 1 ? 1 : -1;
+      this.commitPendingTagInput();
+      await this.saveTagsIfNeeded({ force: true }).catch((error) => this.handleError(error));
+      await this.saveDescriptionIfNeeded({ force: true }).catch((error) => this.handleError(error));
+      this.state.index = (this.state.index + direction + items.length) % items.length;
+      this.rotateCarouselSlots(direction);
+      this.render(direction, { preserveCarousel: true });
+      if (this.state.queuedStepDirection) {
+        const nextDirection = this.state.queuedStepDirection;
+        this.clearQueuedStepDirection();
+        this.step(nextDirection);
+      }
+    }
+
     resetCloseAnimationState() {
       this.clearCloseAnimationTimer();
       this.root.classList.remove('is-closing', 'is-closing-fade', 'is-stage-closing');
@@ -1134,6 +1259,10 @@
         window.clearTimeout(this.state.wheelCommitTimer);
         this.state.wheelCommitTimer = 0;
       }
+      this.stopCarouselAnimation();
+      this.clearCarouselCommitTimer();
+      this.clearQueuedStepDirection();
+      this.state.suppressCarouselCommit = false;
       this.clearTagFocusOutTimer();
       this.closeDateModal({ force: true });
       this.stopMomentum();
@@ -1159,6 +1288,13 @@
       this.dom.loading.classList.add('hidden');
       this.dom.loading.style.right = '14px';
       this.dom.loading.style.bottom = '14px';
+      Array.from(this.dom.carousel.children).forEach((slot) => this.clearSlot(slot));
+      this.dom.carousel.replaceChildren();
+      this.dom.slotPrev = null;
+      this.dom.slotCurrent = null;
+      this.dom.slotNext = null;
+      this.dom.slotPrevMedia = null;
+      this.dom.slotNextMedia = null;
     }
 
     requestClose(reason = 'request', detail = {}) {
@@ -1176,6 +1312,8 @@
       this.state.index = clamp(index, 0, items.length - 1);
       this.state.descriptionDirty = false;
       this.root.classList.remove('hidden');
+      this.clearCarouselCommitTimer();
+      this.clearQueuedStepDirection();
       this.resetCloseAnimationState();
       this.state.pendingCloseRequest = null;
       this.state.closing = false;
@@ -1200,6 +1338,7 @@
 
       const finishClose = () => {
         this.clearRenderedMedia();
+        this.clearCarouselCommitTimer();
         this.resetStageGesture(false);
         this.commitDetails(false, { immediate: true });
         this.resetTransform();
@@ -1244,14 +1383,30 @@
       return true;
     }
 
-    async step(direction) {
+    step(direction) {
       const items = this.getItems();
-      if (!items.length) return;
-      this.commitPendingTagInput();
-      await this.saveTagsIfNeeded({ force: true }).catch((error) => this.handleError(error));
-      await this.saveDescriptionIfNeeded({ force: true }).catch((error) => this.handleError(error));
-      this.state.index = (this.state.index + direction + items.length) % items.length;
-      this.render(direction);
+      if (items.length < 2) return;
+      const normalizedDirection = direction > 0 ? 1 : -1;
+      if (this.state.carouselAnimating && this.state.carouselAnimationDirection === Math.sign(direction || 0)) {
+        this.state.queuedStepDirection = normalizedDirection;
+        this.stopCarouselAnimation();
+        this.clearCarouselCommitTimer();
+        this.dom.carousel.scrollLeft = this.getCarouselPageWidth() * (normalizedDirection > 0 ? 2 : 0);
+        this.commitCarouselNavigation().catch((error) => this.handleError(error));
+        return;
+      }
+      if (this.state.carouselAnimating) {
+        this.stopCarouselAnimation();
+        this.clearQueuedStepDirection();
+        this.centerCarousel();
+      }
+      if (this.state.zoom > 1.01) this.resetTransform();
+      this.clearCarouselCommitTimer();
+      this.clearQueuedStepDirection();
+      this.setCarouselPage(normalizedDirection > 0 ? 2 : 0, 'smooth');
+      this.state.carouselCommitTimer = window.setTimeout(() => {
+        this.commitCarouselNavigation().catch((error) => this.handleError(error));
+      }, 165);
     }
 
     stopMomentum() {
@@ -1334,21 +1489,31 @@
       if (!isVisible) {
         this.dom.zoomReset.textContent = '100%';
         this.dom.canvas.classList.remove('is-pannable', 'is-panning');
+        this.dom.carousel.classList.remove('is-zoomed');
+        this.root.style.setProperty('--viewer-canvas-pan-x', '0px');
+        this.root.style.setProperty('--viewer-canvas-pan-y', '0px');
+        this.root.style.setProperty('--viewer-canvas-scale', '1');
         return;
       }
 
       const base = this.getBaseSize();
-      const detailScale = 1 + (this.state.detailsProgress * (this.isMobileSheet() ? 0.08 : 0.02));
-      const detailLift = this.state.detailsProgress * (this.isMobileSheet() ? 84 : 0);
+      const detailScale = this.isMobileSheet() ? 1 + (this.state.detailsProgress * 0.08) : 1;
       const effectiveZoom = this.state.zoom * detailScale;
       const maxPanX = Math.max(0, (base.fittedWidth * effectiveZoom - base.stageWidth) / 2);
       const maxPanY = Math.max(0, (base.fittedHeight * effectiveZoom - base.stageHeight) / 2);
       this.state.panX = clamp(this.state.panX, -maxPanX, maxPanX);
       this.state.panY = clamp(this.state.panY, -maxPanY, maxPanY);
-      this.dom.canvas.style.transform = `translate3d(${this.state.panX}px, ${this.state.panY - detailLift}px, 0) scale(${effectiveZoom})`;
+      this.root.style.setProperty('--viewer-canvas-pan-x', `${this.state.panX}px`);
+      this.root.style.setProperty('--viewer-canvas-pan-y', `${this.state.panY}px`);
+      this.root.style.setProperty('--viewer-canvas-scale', `${this.state.zoom}`);
       this.dom.zoomReset.textContent = `${Math.round(this.state.zoom * 100)}%`;
       this.updateLoadingPosition();
       this.dom.canvas.classList.toggle('is-pannable', this.state.zoom > 1.01);
+      this.dom.carousel.classList.toggle('is-zoomed', this.state.zoom > 1.01);
+      if (this.state.zoom > 1.01) {
+        const centerLeft = this.getCarouselPageWidth();
+        if (Math.abs((this.dom.carousel.scrollLeft || 0) - centerLeft) > 1) this.centerCarousel();
+      }
     }
 
     setZoom(nextZoom, origin = null) {
@@ -1430,8 +1595,13 @@
 
       const mobileOffset = Math.round((1 - this.state.detailsProgress) * this.getSheetTravel());
       const desktopShift = Math.round((1 - this.state.detailsProgress) * 28);
+      const desktopWidth = Math.round(this.state.detailsProgress * 340);
+      const desktopGap = Math.round(this.state.detailsProgress * 18);
+      this.root.style.setProperty('--viewer-details-progress', this.state.detailsProgress.toFixed(4));
       this.root.style.setProperty('--viewer-details-offset', `${mobileOffset}px`);
       this.root.style.setProperty('--viewer-details-desktop-shift', `${desktopShift}px`);
+      this.root.style.setProperty('--viewer-details-desktop-width', `${desktopWidth}px`);
+      this.root.style.setProperty('--viewer-details-desktop-gap', `${desktopGap}px`);
       this.root.style.setProperty('--viewer-details-desktop-opacity', this.state.detailsProgress.toFixed(4));
       this.root.classList.toggle('details-open', this.state.detailsProgress > 0.02);
       this.dom.details.classList.toggle('open', this.state.detailsProgress > 0.55);
@@ -1483,13 +1653,176 @@
       this.root.style.setProperty('--viewer-gesture-opacity', `${(1 - fade).toFixed(4)}`);
     }
 
-    playStepAnimation(direction) {
-      this.dom.mediaFrame.classList.remove('slide-next', 'slide-prev');
-      void this.dom.mediaFrame.offsetWidth;
-      this.dom.mediaFrame.classList.add(direction > 0 ? 'slide-next' : 'slide-prev');
-      window.setTimeout(() => {
-        this.dom.mediaFrame.classList.remove('slide-next', 'slide-prev');
-      }, 340);
+    getRelativeItem(offset) {
+      const items = this.getItems();
+      if (!items.length) return null;
+      const index = (this.state.index + offset + items.length) % items.length;
+      return items[index] || null;
+    }
+
+    getSlotPreviewSrc(item) {
+      if (!item) return '';
+      if (item.type === 'video') return item.thumbUrl || '';
+      if (this.state.loadedFullMedia.has(item.id) && item.fullUrl) return item.fullUrl;
+      return item.thumbUrl || item.fullUrl || '';
+    }
+
+    registerSlotMedia(item, media) {
+      if (!item?.id || !media) return;
+      const key = item.id;
+      if (!this.state.slotMediaRegistry.has(key)) this.state.slotMediaRegistry.set(key, new Set());
+      this.state.slotMediaRegistry.get(key).add(media);
+    }
+
+    unregisterSlotMedia(itemId, media) {
+      if (!itemId || !media) return;
+      const bucket = this.state.slotMediaRegistry.get(itemId);
+      if (!bucket) return;
+      bucket.delete(media);
+      if (!bucket.size) this.state.slotMediaRegistry.delete(itemId);
+    }
+
+    updateRegisteredSlotMedia(item) {
+      if (!item?.id) return;
+      const bucket = this.state.slotMediaRegistry.get(item.id);
+      if (!bucket?.size) return;
+      const src = this.getSlotPreviewSrc(item);
+      bucket.forEach((media) => {
+        const img = media.querySelector('img');
+        if (img && src && img.getAttribute('src') !== src) img.setAttribute('src', src);
+      });
+    }
+
+    primeFullImage(item) {
+      if (!item || item.type === 'video' || !item.fullUrl || this.state.loadedFullMedia.has(item.id)) return;
+      if (this.state.pendingFullImageLoads.has(item.id)) return;
+      const loader = new Image();
+      const finish = () => {
+        this.state.pendingFullImageLoads.delete(item.id);
+      };
+      loader.onload = () => {
+        this.state.loadedFullMedia.add(item.id);
+        finish();
+        this.updateRegisteredSlotMedia(item);
+      };
+      loader.onerror = finish;
+      this.state.pendingFullImageLoads.set(item.id, loader);
+      loader.src = item.fullUrl;
+    }
+
+    buildSlotMediaElement(item) {
+      const src = this.getSlotPreviewSrc(item);
+      const media = document.createElement('div');
+      media.className = 'viewer-slot-preview';
+      if (!item || !src) {
+        media.classList.add('is-empty');
+        return media;
+      }
+      media.innerHTML = `
+        <img src="${escapeHtml(src)}" alt="" draggable="false" />
+        ${item.type === 'video' ? '<span class="viewer-slot-video-mark"><i class="fa-solid fa-play"></i></span>' : ''}
+      `;
+      media.dataset.mediaId = item.id;
+      this.registerSlotMedia(item, media);
+      this.primeFullImage(item);
+      return media;
+    }
+
+    syncCarouselSlotRefs() {
+      const slots = Array.from(this.dom.carousel.children).filter((node) => node instanceof HTMLElement);
+      const positions = ['prev', 'current', 'next'];
+      slots.forEach((slot, index) => {
+        const position = positions[index] || `slot-${index}`;
+        slot.classList.add('viewer-slot');
+        slot.classList.toggle('viewer-slot-current', index === 1);
+        slot.classList.toggle('viewer-slot-side', index !== 1);
+        slot.setAttribute('data-role', `slot-${position}`);
+        slot.dataset.slotPosition = position;
+      });
+      this.dom.slotPrev = slots[0] || null;
+      this.dom.slotCurrent = slots[1] || null;
+      this.dom.slotNext = slots[2] || null;
+      this.dom.slotPrevMedia = this.dom.slotPrev?.querySelector('.viewer-slot-preview') || null;
+      this.dom.slotNextMedia = this.dom.slotNext?.querySelector('.viewer-slot-preview') || null;
+    }
+
+    clearSlot(slot) {
+      if (!slot) return;
+      const preview = slot.querySelector('.viewer-slot-preview');
+      const mediaId = preview?.dataset?.mediaId || '';
+      if (preview) this.unregisterSlotMedia(mediaId, preview);
+      if (this.dom.mediaFrame.parentNode === slot) slot.removeChild(this.dom.mediaFrame);
+      slot.replaceChildren();
+      slot.dataset.itemId = '';
+      slot.classList.add('is-empty');
+    }
+
+    populateSideSlot(slot, item) {
+      if (!slot) return;
+      this.clearSlot(slot);
+      slot.dataset.itemId = item?.id || '';
+      if (!item) return;
+      slot.classList.remove('is-empty');
+      slot.appendChild(this.buildSlotMediaElement(item));
+    }
+
+    mountCurrentSlot(slot, item) {
+      if (!slot) return;
+      this.clearSlot(slot);
+      slot.dataset.itemId = item?.id || '';
+      if (!item) return;
+      slot.classList.remove('is-empty');
+      slot.appendChild(this.dom.mediaFrame);
+    }
+
+    createCarouselSlot(item, { current = false } = {}) {
+      const slot = document.createElement('div');
+      slot.className = 'viewer-slot';
+      if (current) this.mountCurrentSlot(slot, item);
+      else this.populateSideSlot(slot, item);
+      return slot;
+    }
+
+    rebuildCarouselSlots() {
+      const items = this.getItems();
+      const currentItem = this.getCurrentItem();
+      const prevItem = items.length > 1 ? this.getRelativeItem(-1) : null;
+      const nextItem = items.length > 1 ? this.getRelativeItem(1) : null;
+      Array.from(this.dom.carousel.children).forEach((slot) => this.clearSlot(slot));
+      this.dom.carousel.replaceChildren(
+        this.createCarouselSlot(prevItem),
+        this.createCarouselSlot(currentItem, { current: true }),
+        this.createCarouselSlot(nextItem)
+      );
+      this.syncCarouselSlotRefs();
+      this.centerCarousel();
+    }
+
+    rotateCarouselSlots(direction) {
+      const slots = Array.from(this.dom.carousel.children).filter((node) => node instanceof HTMLElement);
+      if (slots.length !== 3) {
+        this.rebuildCarouselSlots();
+        return;
+      }
+
+      if (direction > 0) {
+        const [prevSlot, currentSlot, nextSlot] = slots;
+        this.mountCurrentSlot(nextSlot, this.getCurrentItem());
+        this.populateSideSlot(currentSlot, this.getRelativeItem(-1));
+        this.clearSlot(prevSlot);
+        prevSlot.remove();
+        this.dom.carousel.appendChild(this.createCarouselSlot(this.getRelativeItem(1)));
+      } else {
+        const [prevSlot, currentSlot, nextSlot] = slots;
+        this.mountCurrentSlot(prevSlot, this.getCurrentItem());
+        this.populateSideSlot(currentSlot, this.getRelativeItem(1));
+        this.clearSlot(nextSlot);
+        nextSlot.remove();
+        this.dom.carousel.prepend(this.createCarouselSlot(this.getRelativeItem(-1)));
+      }
+
+      this.syncCarouselSlotRefs();
+      this.centerCarousel();
     }
 
     updateStatus(item) {
@@ -1539,7 +1872,7 @@
       this.applyDetailsProgress(this.state.detailsProgress, { immediate: true });
     }
 
-    render(direction = 0, { forceDateToast = false } = {}) {
+    render(direction = 0, { forceDateToast = false, preserveCarousel = false } = {}) {
       const item = this.getCurrentItem();
       if (!item) return;
 
@@ -1561,31 +1894,59 @@
       this.state.velocityY = 0;
       this.resetStageGesture(false);
       this.resetTransform();
+      if (!preserveCarousel) this.rebuildCarouselSlots();
       this.dom.loading.classList.remove('hidden');
       this.dom.loading.style.right = '14px';
       this.dom.loading.style.bottom = '14px';
-      this.dom.image.classList.add('hidden');
+      const initialImageSrc = item.type === 'image' ? this.getSlotPreviewSrc(item) : '';
+      if (item.type === 'image' && initialImageSrc) {
+        this.dom.image.src = initialImageSrc;
+        this.dom.image.classList.remove('hidden');
+      } else {
+        this.dom.image.classList.add('hidden');
+        this.dom.image.removeAttribute('src');
+      }
       this.dom.video.classList.add('hidden');
+      this.dom.video.removeAttribute('src');
+      this.dom.video.load();
+      this.dom.video.poster = '';
+      this.primeFullImage(item);
 
       if (item.type === 'video') {
         this.dom.video.classList.remove('hidden');
-        this.dom.video.poster = item.thumbUrl;
+        if (item.thumbUrl) {
+          const posterImage = new Image();
+          posterImage.onload = () => {
+            if (token !== this.state.loadToken) return;
+            this.dom.video.poster = item.thumbUrl;
+          };
+          posterImage.src = item.thumbUrl;
+        }
         this.dom.video.addEventListener('loadeddata', () => {
           if (token !== this.state.loadToken) return;
+          this.state.loadedFullMedia.add(item.id);
           this.dom.loading.classList.add('hidden');
           this.updateTransform();
         }, { once: true });
         this.dom.video.src = item.fullUrl;
         this.dom.video.load();
       } else {
-        this.dom.image.classList.remove('hidden');
         this.dom.image.alt = item.fileName || 'Selected media';
-        this.dom.image.src = item.thumbUrl;
-
+        if (this.state.loadedFullMedia.has(item.id) && item.fullUrl) {
+          this.dom.image.src = item.fullUrl;
+          this.dom.image.classList.remove('hidden');
+          this.dom.loading.classList.add('hidden');
+          this.updateTransform();
+          this.updateLoadingPosition();
+          this.options.onItemChange?.(item, this.state.index, { direction, forceDateToast, viewer: this });
+          return;
+        }
         const fullImage = new Image();
         fullImage.onload = () => {
           if (token !== this.state.loadToken) return;
+          this.state.loadedFullMedia.add(item.id);
           this.dom.image.src = item.fullUrl;
+          this.dom.image.classList.remove('hidden');
           this.dom.loading.classList.add('hidden');
           this.updateTransform();
         };
@@ -1601,7 +1962,6 @@
         });
       }
 
-      if (direction) this.playStepAnimation(direction);
       this.options.onItemChange?.(item, this.state.index, { direction, forceDateToast, viewer: this });
     }
 
