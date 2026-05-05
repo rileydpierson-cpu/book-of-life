@@ -6,6 +6,20 @@ function nextFrame() {
   return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
 }
 
+const renderPhIcon = window.renderPhIcon || function renderFallbackIcon(name, { variant = 'regular', className = '', spin = false } = {}) {
+  const family = variant === 'fill'
+    ? 'ph-fill'
+    : variant === 'duotone'
+      ? 'ph-duotone'
+      : variant === 'bold'
+        ? 'ph-bold'
+        : 'ph';
+  const classes = [family, `ph-${name}`];
+  if (className) classes.push(className);
+  if (spin) classes.push('is-spinning');
+  return `<i class="${classes.join(' ')}" aria-hidden="true"></i>`;
+};
+
 const UPLOAD_TARGET_STORAGE_KEY = 'lifeserver-upload-target-v1';
 
 function loadStoredUploadTarget() {
@@ -113,17 +127,10 @@ const dom = {
   logoutButton: document.getElementById('logoutButton'),
   themeLight: document.getElementById('themeLight'),
   themeDark: document.getElementById('themeDark'),
-  todaySection: document.getElementById('todaySection'),
   yearSection: document.getElementById('yearSection'),
   yearSectionTitle: document.getElementById('yearSectionTitle'),
   yearSectionSubtitle: document.getElementById('yearSectionSubtitle'),
   yearCarouselShell: document.querySelector('.year-carousel-shell'),
-  todayEntryCard: document.getElementById('todayEntryCard'),
-  todayEntryHeading: document.getElementById('todayEntryHeading'),
-  todayEntryMeta: document.getElementById('todayEntryMeta'),
-  todayEntryPreview: document.getElementById('todayEntryPreview'),
-  todayEntryMedia: document.getElementById('todayEntryMedia'),
-  todayEntryStatus: document.getElementById('todayEntryStatus'),
   yearCarousel: document.getElementById('yearCarousel'),
   yearBackButton: document.getElementById('yearBackButton'),
   yearNextButton: document.getElementById('yearNextButton'),
@@ -230,6 +237,56 @@ const mediaViewer = window.createMediaViewer({
     syncViewerMediaMutation(item.id, (photo) => { photo.description = item.description; });
     return { description: item.description };
   },
+  onValidateFileName: async (item, baseName, viewer) => {
+    try {
+      return await fetchJson(`/api/media/${item.id}/validate-name`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baseName })
+      });
+    } catch (error) {
+      const current = state.viewerSequence.find((photo) => photo.id === item.id) || item;
+      const siblingConflict = (viewer?.getItems?.() || state.viewerSequence).some((photo) => (
+        photo.id !== item.id
+        && (photo.folderRootId || '') === (current.folderRootId || '')
+        && (photo.folder || '') === (current.folder || '')
+        && `${baseName}${current.ext || ''}`.toLowerCase() === String(photo.fileName || '').toLowerCase()
+      ));
+      return { valid: Boolean(baseName) && !siblingConflict, exists: siblingConflict, fallback: true };
+    }
+  },
+  onRename: async (item, baseName) => {
+    const payload = await fetchJson(`/api/media/${item.id}/rename`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ baseName })
+    });
+    await refreshBootstrap(payload.photo?.isoDate || item.isoDate || state.bootstrap?.lastDate || null);
+    return payload;
+  },
+  onMove: async (item, target) => {
+    const payload = await fetchJson(`/api/media/${item.id}/move`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(target)
+    });
+    if (payload?.photo) {
+      const nextPhoto = {
+        ...item,
+        ...payload.photo,
+        thumbUrl: `/media/thumb/${payload.photo.id}`,
+        previewUrl: payload.photo.type === 'video' ? `/media/preview/${payload.photo.id}` : '',
+        fullUrl: `/media/full/${payload.photo.id}`
+      };
+      syncViewerMediaMutation(item.id, (photo) => {
+        Object.assign(photo, nextPhoto);
+      });
+      state.viewerSequence = state.loadedDays.flatMap((day) => day.photos.map((photo) => photo));
+    }
+    void refreshBootstrap(payload.photo?.isoDate || item.isoDate || state.bootstrap?.lastDate || null).catch(console.error);
+    return payload;
+  },
+  onLoadFolders: async () => fetchJson('/api/upload/folders'),
   onToggleLike: async (item, liked) => {
     const payload = await fetchJson(`/api/media/${item.id}/like`, {
       method: 'POST',
@@ -238,15 +295,27 @@ const mediaViewer = window.createMediaViewer({
     });
     item.liked = Boolean(payload.liked);
     syncViewerMediaMutation(item.id, (photo) => { photo.liked = item.liked; });
+    syncMediaTileLikedState(item.id, item.liked);
     return { liked: item.liked };
   },
-  onSaveDate: async (item, isoDate) => {
-    const payload = await fetchJson(`/api/media/${item.id}/date`, {
+  onDelete: async (item, index, viewer) => {
+    if (!item) return;
+    if (!window.confirm(`Delete ${item.fileName}?`)) return;
+    await fetchJson(`/api/media/${item.id}`, { method: 'DELETE' });
+    await refreshBootstrap(item.isoDate || state.bootstrap?.lastDate || null);
+    if (!state.viewerSequence.length) {
+      viewer.close({ animate: false });
+      return;
+    }
+    viewer.refresh({ preferredIndex: Math.min(index, state.viewerSequence.length - 1), forceDateToast: true });
+  },
+  onSaveDateTime: async (item, value) => {
+    const payload = await fetchJson(`/api/media/${item.id}/date-time`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ isoDate: isoDate || '' })
+      body: JSON.stringify(value)
     });
-    await refreshBootstrap(payload.isoDate || item.isoDate || state.bootstrap?.lastDate || null);
+    await refreshBootstrap(payload.photo?.isoDate || item.isoDate || state.bootstrap?.lastDate || null);
     return payload;
   },
   onError: (error) => {
@@ -373,6 +442,13 @@ function monthDayLabel(isoDate) {
   return new Intl.DateTimeFormat(undefined, { month: 'long', day: 'numeric', timeZone: 'UTC' }).format(date);
 }
 
+function monthLabelForIso(isoDate) {
+  if (!isoDate) return '';
+  const [y, m] = isoDate.split('-').map(Number);
+  const date = new Date(Date.UTC(y, (m || 1) - 1, 1));
+  return new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(date);
+}
+
 function fileDateToLocalIso(value) {
   if (!value) return '';
   const date = new Date(value);
@@ -420,6 +496,19 @@ function formatWordCount(count) {
   return `${value} word${value === 1 ? '' : 's'}`;
 }
 
+function formatCountLabel(value, singular, plural = `${singular}s`) {
+  const count = Math.max(0, Math.round(Number(value || 0)));
+  return `${count.toLocaleString()} ${count === 1 ? singular : plural}`;
+}
+
+function renderDefaultYearSubtitle() {
+  if (!dom.yearSectionSubtitle) return;
+  const entries = formatCountLabel(state.bootstrap?.totalEntries || 0, 'Entrie');
+  const words = formatCountLabel(state.bootstrap?.totalWords || 0, 'Word');
+  const media = formatCountLabel(state.bootstrap?.totalMedia || 0, 'Media', 'Media');
+  dom.yearSectionSubtitle.innerHTML = `<span>${entries}</span> | <span>${words}</span> | <span>${media}</span>`;
+}
+
 function formatFileSize(bytes) {
   const size = Number(bytes || 0);
   if (size <= 0) return '';
@@ -434,10 +523,10 @@ function formatFileSize(bytes) {
 }
 
 function uploadDateSourceLabel(item) {
-  if (item?.dateSource === 'exif') return 'Image metadata date';
+  if (item?.dateSource === 'exif') return 'Date taken metadata';
   if (item?.dateSource === 'last-modified') return 'File modified date';
-  if (item?.dateSource === 'shared') return 'Shared datestamp';
-  if (item?.dateSource === 'manual') return 'Custom date';
+  if (item?.dateSource === 'shared') return 'Shared LifeServer datestamp';
+  if (item?.dateSource === 'manual') return 'Custom LifeServer date';
   return 'Upload context date';
 }
 
@@ -488,7 +577,7 @@ function updateUploadButtonLabel() {
 }
 
 function updateUploadDateToggleLabel() {
-  if (dom.uploadExifDateLabel) dom.uploadExifDateLabel.textContent = 'Specify Datestamp';
+  if (dom.uploadExifDateLabel) dom.uploadExifDateLabel.textContent = 'Override LifeServer datestamp';
 }
 
 function updateUploadSharedDateUi() {
@@ -607,37 +696,6 @@ function buildPreviewLines(journal, maxChars = 300, maxLines = 3) {
   return lines.slice(0, maxLines);
 }
 
-function getTodayEntryHref() {
-  const today = state.bootstrap?.today;
-  if (!today?.isoDate) return '/today';
-  return today.hasJournal ? `/edit/${today.isoDate}` : `/edit/${today.isoDate}?create=1`;
-}
-
-function buildTodayEntryMeta(today, includeDate = true) {
-  const parts = includeDate ? [today?.dateLabel || 'Today'] : [];
-  if (today?.hasJournal) parts.push(formatWordCount(today.wordCount));
-  if (today?.photoCount) parts.push(`${today.photoCount} media`);
-  if (!today?.hasJournal && !today?.photoCount && !today?.hasTimelineItem) parts.push('Nothing here yet');
-  return parts.join(' / ');
-}
-
-function buildTodayEntryPreview(today) {
-  if (today?.hasJournal) {
-    const preview = buildPreviewLines({
-      previewLines: today.previewLines,
-      previewText: today.previewText
-    }, 220, 3).map((line) => String(line || '').trim()).filter(Boolean).join('\n');
-    return preview || "Today's entry is ready to keep editing.";
-  }
-  if (today?.photoCount) {
-    return today.photoCount === 1
-      ? "1 media item is already on today's timeline. Add the journal entry so the story for today is easy to pick up."
-      : `${today.photoCount} media items are already on today's timeline. Add the journal entry so the story for today is easy to pick up.`;
-  }
-  return "";
-  // return "Nothing is written for today yet. Click to create today's entry and keep moving.";
-}
-
 function currentTopbarDateLabel() {
   if (state.activeDate) return dateRailLabel(state.activeDate);
   if (state.bootstrap?.today?.dateLabel) return state.bootstrap.today.dateLabel;
@@ -665,41 +723,6 @@ function buildInlineMediaCollection(media, {
       </div>
     </div>
   `;
-}
-
-function renderTodayEntryCard() {
-  if (!dom.todayEntryCard) return;
-  const today = state.bootstrap?.today || {};
-  const hasJournal = Boolean(today.hasJournal);
-  const photos = Array.isArray(today.photos) ? today.photos : [];
-  const hasMedia = photos.length > 0 || Boolean(today.photoCount);
-  const shouldHideTodaySection = hasJournal || hasMedia;
-
-  dom.todaySection?.classList.toggle('hidden', shouldHideTodaySection);
-
-  if (dom.todayEntryHeading) dom.todayEntryHeading.textContent = hasJournal ? ("Today: " + today.dateLabel) : "Create today's journal";
-  if (dom.todayEntryMeta) dom.todayEntryMeta.textContent = buildTodayEntryMeta(today, false) == "Nothing here yet" ? "What happened today?" : buildTodayEntryMeta(today, false);
-  if (dom.todayEntryPreview) {
-    dom.todayEntryPreview.textContent = buildTodayEntryPreview(today);
-    dom.todayEntryPreview.classList.toggle('is-placeholder', !hasJournal);
-  }
-  if (dom.todayEntryMedia) {
-    const mediaHtml = buildInlineMediaCollection(photos, { maxItems: 3 });
-    dom.todayEntryMedia.innerHTML = mediaHtml;
-    dom.todayEntryMedia.classList.toggle('hidden', !mediaHtml);
-    dom.todayEntryMedia.setAttribute('aria-hidden', mediaHtml ? 'false' : 'true');
-  }
-  // if (dom.todayEntryStatus) {
-  //   dom.todayEntryStatus.textContent = hasJournal ? 'Edit today' : 'Create today';
-  //   dom.todayEntryStatus.dataset.mode = hasJournal ? 'edit' : 'create';
-  // }
-
-  dom.todayEntryCard.dataset.mode = hasJournal ? 'edit' : 'create';
-  dom.todayEntryCard.setAttribute('aria-label', hasJournal
-    ? `Edit today's entry for ${today.dateLabel || 'today'}`
-    : `Create today's entry for ${today.dateLabel || 'today'}`);
-  if (state.mediaObserver) setupMediaObserver();
-  updateTopbarDateLabel();
 }
 
 function getFolderChildren(rootId, parentPath = '') {
@@ -926,7 +949,7 @@ function normalizeWheelDelta(event) {
 }
 
 function createCoverHtml(urls, { journalOnly = false } = {}) {
-  if (!urls || !urls.length) return `<div class="card-fallback ${journalOnly ? 'is-journal-only' : ''}">${journalOnly ? '<span class="card-fallback-icon"><i class="fa-regular fa-note-sticky"></i></span>' : ''}</div>`;
+  if (!urls || !urls.length) return `<div class="card-fallback ${journalOnly ? 'is-journal-only' : ''}">${journalOnly ? `<span class="card-fallback-icon">${renderPhIcon('note', { variant: 'duotone' })}</span>` : ''}</div>`;
   if (urls.length === 1) {
     return `<div class="cover-single"><img src="${urls[0]}" alt="" loading="lazy" fetchpriority="low" decoding="async" /></div>`;
   }
@@ -1061,7 +1084,7 @@ async function refreshBootstrap(focusDate = null) {
   state.loadedEnd = null;
   state.bootstrap = await fetchJson('/api/bootstrap', { cache: 'no-store' });
   state.totalDays = state.bootstrap.totalDays;
-  renderTodayEntryCard();
+  renderDefaultYearSubtitle();
   renderYearCarousel();
   renderRail();
   renderScrollYearMarks();
@@ -1100,17 +1123,19 @@ function renderFolderNode(node, rootId, depth = 0) {
   const createRow = isCreatingHere ? `
     <div class="upload-folder-node depth-${depth + 1} is-creating">
       <div class="upload-folder-item upload-folder-item-creating" style="padding-left:${12 + ((depth + 1) * 14)}px">
-        <span class="upload-folder-item-main"><i class="fa-solid fa-folder-plus"></i><input id="uploadNewFolderInput" class="upload-folder-input" type="text" value="${escapeHtml(state.uploadCreatingFolder.name || 'New Folder')}" /></span>
-        <label class="upload-folder-item-meta upload-folder-confirm" aria-label="Create folder"><input id="uploadNewFolderConfirm" type="checkbox" /><i class="fa-solid fa-check"></i></label>
+        <span class="upload-folder-item-main">${renderPhIcon('folder-plus', { variant: 'duotone' })}<input id="uploadNewFolderInput" class="upload-folder-input" type="text" value="${escapeHtml(state.uploadCreatingFolder.name || 'New Folder')}" /></span>
+        <label class="upload-folder-item-meta upload-folder-confirm" aria-label="Create folder"><input id="uploadNewFolderConfirm" type="checkbox" />${renderPhIcon('check', { variant: 'bold' })}</label>
       </div>
     </div>
   ` : '';
-  const icon = node.pending ? 'spinner fa-spin' : escapeHtml(node.icon || 'folder');
+  const icon = node.pending
+    ? renderPhIcon('spinner-gap', { spin: true })
+    : renderPhIcon(escapeHtml(node.icon || 'folder'), { variant: 'duotone' });
   const meta = `${node.mediaCount || 0}${modified ? ` · ${escapeHtml(modified)}` : ''}`;
   return `
     <div class="upload-folder-node depth-${depth}">
       <button class="upload-folder-item ${isSelected ? 'is-selected' : ''} ${node.pending ? 'is-pending' : ''}" type="button" style="padding-left:${12 + indent}px" data-upload-root="${rootId}" data-upload-path="${escapeHtml(node.relativePath)}">
-        <span class="upload-folder-item-main"><i class="fa-solid fa-${icon}"></i><span>${escapeHtml(node.displayPath === '.' ? '(root)' : node.label)}</span></span>
+        <span class="upload-folder-item-main">${icon}<span>${escapeHtml(node.displayPath === '.' ? '(root)' : node.label)}</span></span>
         <span class="upload-folder-item-meta">${meta}</span>
       </button>
       ${(node.children || []).map((child) => renderFolderNode(child, rootId, depth + 1)).join('')}
@@ -1127,7 +1152,7 @@ function renderUploadPreviewsFilenameLegacy() {
     const file = item.file;
     const isVideo = /^video\//.test(file.type) || /\.(mp4|mov|m4v|webm|avi|mkv|3gp)$/i.test(file.name);
     const displayName = uploadDisplayName(file.name);
-    return `<button class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}" type="button" ${state.uploadXhr ? 'disabled' : ''} data-upload-remove="${item.id}" aria-label="Remove ${escapeHtml(file.name)}"><div class="upload-preview-thumb">${isVideo ? `<video src="${item.objectUrl}" muted playsinline preload="none"></video><span class="upload-preview-video"><i class="fa-solid fa-play"></i></span>` : `<img src="${item.objectUrl}" alt="${escapeHtml(file.name)}" loading="lazy" decoding="async" />`}${state.uploadXhr ? '' : '<span class="upload-preview-remove"><i class="fa-solid fa-xmark"></i></span>'}</div><div class="upload-preview-meta"><strong title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</strong><span>EXIF date · ${escapeHtml(formatUploadDateSummary(file, state.uploadContext?.isoDate, prefix))}</span><span>Size · ${escapeHtml(formatFileSize(file.size))}</span></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></button>`;
+    return `<button class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}" type="button" ${state.uploadXhr ? 'disabled' : ''} data-upload-remove="${item.id}" aria-label="Remove ${escapeHtml(file.name)}"><div class="upload-preview-thumb">${isVideo ? `<video src="${item.objectUrl}" muted playsinline preload="none"></video><span class="upload-preview-video">${renderPhIcon('play-fill', { variant: 'fill' })}</span>` : `<img src="${item.objectUrl}" alt="${escapeHtml(file.name)}" loading="lazy" decoding="async" />`}${state.uploadXhr ? '' : `<span class="upload-preview-remove">${renderPhIcon('x', { variant: 'bold' })}</span>`}</div><div class="upload-preview-meta"><strong title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</strong><span>EXIF date · ${escapeHtml(formatUploadDateSummary(file, state.uploadContext?.isoDate, prefix))}</span><span>Size · ${escapeHtml(formatFileSize(file.size))}</span></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></button>`;
   }).join('');
   updateUploadPreviewProgress();
 }
@@ -1141,9 +1166,9 @@ function renderUploadPreviewsExifLegacy() {
     const isVideo = /^video\//.test(file.type) || /\.(mp4|mov|m4v|webm|avi|mkv|3gp)$/i.test(file.name);
     const displayName = uploadDisplayName(file.name);
     const previewThumb = isVideo
-      ? `<video src="${item.objectUrl}" muted playsinline preload="none"></video><span class="upload-preview-video"><i class="fa-solid fa-play"></i></span>`
+      ? `<video src="${item.objectUrl}" muted playsinline preload="none"></video><span class="upload-preview-video">${renderPhIcon('play-fill', { variant: 'fill' })}</span>`
       : `<img src="${item.objectUrl}" alt="${escapeHtml(file.name)}" loading="lazy" decoding="async" />`;
-    return `<button class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}" type="button" ${state.uploadXhr ? 'disabled' : ''} data-upload-remove="${item.id}" aria-label="Remove ${escapeHtml(file.name)}"><div class="upload-preview-thumb">${previewThumb}${state.uploadXhr ? '' : '<span class="upload-preview-remove"><i class="fa-solid fa-xmark"></i></span>'}</div><div class="upload-preview-meta"><strong title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</strong><span>${escapeHtml(formatUploadDateSummary(file, state.uploadContext?.isoDate, setExifDate))}</span><span>Size Â· ${escapeHtml(formatFileSize(file.size))}</span></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></button>`;
+    return `<button class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}" type="button" ${state.uploadXhr ? 'disabled' : ''} data-upload-remove="${item.id}" aria-label="Remove ${escapeHtml(file.name)}"><div class="upload-preview-thumb">${previewThumb}${state.uploadXhr ? '' : `<span class="upload-preview-remove">${renderPhIcon('x', { variant: 'bold' })}</span>`}</div><div class="upload-preview-meta"><strong title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</strong><span>${escapeHtml(formatUploadDateSummary(file, state.uploadContext?.isoDate, setExifDate))}</span><span>Size Â· ${escapeHtml(formatFileSize(file.size))}</span></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></button>`;
   }).join('');
   updateUploadPreviewProgress();
 }
@@ -1157,9 +1182,9 @@ function renderUploadPreviews() {
     const isVideo = /^video\//.test(file.type) || /\.(mp4|mov|m4v|webm|avi|mkv|3gp)$/i.test(file.name);
     const displayName = uploadDisplayName(file.name);
     const previewThumb = isVideo
-      ? `<video src="${item.objectUrl}" muted playsinline preload="none"></video><span class="upload-preview-video"><i class="fa-solid fa-play"></i></span>`
+      ? `<video src="${item.objectUrl}" muted playsinline preload="none"></video><span class="upload-preview-video">${renderPhIcon('play-fill', { variant: 'fill' })}</span>`
       : `<img src="${item.objectUrl}" alt="${escapeHtml(file.name)}" loading="lazy" decoding="async" />`;
-    return `<button class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}" type="button" ${state.uploadXhr ? 'disabled' : ''} data-upload-remove="${item.id}" aria-label="Remove ${escapeHtml(file.name)}"><div class="upload-preview-thumb">${previewThumb}${state.uploadXhr ? '' : '<span class="upload-preview-remove"><i class="fa-solid fa-xmark"></i></span>'}</div><div class="upload-preview-meta"><strong title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</strong><span>${escapeHtml(formatUploadDateSummary(file, state.uploadContext?.isoDate, setExifDate))}</span><span>Size - ${escapeHtml(formatFileSize(file.size))}</span></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></button>`;
+    return `<button class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}" type="button" ${state.uploadXhr ? 'disabled' : ''} data-upload-remove="${item.id}" aria-label="Remove ${escapeHtml(file.name)}"><div class="upload-preview-thumb">${previewThumb}${state.uploadXhr ? '' : `<span class="upload-preview-remove">${renderPhIcon('x', { variant: 'bold' })}</span>`}</div><div class="upload-preview-meta"><strong title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</strong><span>${escapeHtml(formatUploadDateSummary(file, state.uploadContext?.isoDate, setExifDate))}</span><span>Size - ${escapeHtml(formatFileSize(file.size))}</span></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></button>`;
   }).join('');
   updateUploadPreviewProgress();
 }
@@ -1181,7 +1206,7 @@ function renderUploadFolderTree() {
     : state.folderRoots;
   dom.uploadFolderTree.innerHTML = roots.map((root) => `
     <div class="upload-folder-root ${root.rootId === state.uploadTarget.rootId ? 'is-active-root' : ''}">
-      <div class="upload-folder-root-label"><i class="fa-solid fa-hard-drive"></i> ${escapeHtml(root.rootLabel)} <span class="upload-folder-root-count">${root.tree.mediaCount || 0}</span></div>
+      <div class="upload-folder-root-label">${renderPhIcon('hard-drives', { variant: 'duotone' })} ${escapeHtml(root.rootLabel)} <span class="upload-folder-root-count">${root.tree.mediaCount || 0}</span></div>
       ${renderFolderNode(root.tree, root.rootId)}
     </div>
   `).join('');
@@ -1191,7 +1216,8 @@ function renderUploadFolderTree() {
 
 async function openUploadModal(isoDate) {
   state.uploadContext = { isoDate };
-  dom.uploadTitle.textContent = `Add media for ${dateRailLabel(isoDate)}`;
+  // dom.uploadTitle.textContent = `Add media for ${dateRailLabel(isoDate)}`;
+  dom.uploadTitle.textContent = `Add media`;
   if (!state.uploadXhr) {
     state.uploadProgressRatio = 0;
     dom.uploadSetExifDate.checked = true;
@@ -1243,9 +1269,9 @@ function renderUploadPreviews() {
     const isVideo = /^video\//.test(file.type) || /\.(mp4|mov|m4v|webm|avi|mkv|3gp)$/i.test(file.name);
     const displayName = uploadDisplayName(file.name);
     const previewThumb = isVideo
-      ? `<video src="${item.objectUrl}" muted playsinline preload="none"></video><span class="upload-preview-video"><i class="fa-solid fa-play"></i></span>`
+      ? `<video src="${item.objectUrl}" muted playsinline preload="none"></video><span class="upload-preview-video">${renderPhIcon('play-fill', { variant: 'fill' })}</span>`
       : `<img src="${item.objectUrl}" alt="${escapeHtml(file.name)}" loading="lazy" decoding="async" />`;
-    return `<div class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}"><div class="upload-preview-thumb">${previewThumb}${state.uploadXhr ? '' : `<button class="upload-preview-remove" type="button" data-upload-remove="${item.id}" aria-label="Remove ${escapeHtml(file.name)}"><i class="fa-solid fa-xmark"></i></button>`}</div><div class="upload-preview-meta"><div class="upload-preview-meta-row"><div class="upload-preview-meta-copy"><strong title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</strong><span>${escapeHtml(uploadDateSourceLabel(item))}</span><span>Size · ${escapeHtml(formatFileSize(file.size))}</span></div><button class="upload-preview-date" type="button" data-upload-date-trigger="${item.id}" aria-label="Change date for ${escapeHtml(displayName)}"><i class="fa-solid fa-calendar-day"></i><strong title="${escapeHtml(displayName)}">${escapeHtml(monthDayLabel(item.isoDate) || 'No date')}</strong></button><input class="upload-preview-date-input" type="date" data-upload-date-input="${item.id}" value="${escapeHtml(item.isoDate || '')}" /></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></div></div>`;
+    return `<div class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}"><div class="upload-preview-thumb">${previewThumb}${state.uploadXhr ? '' : `<button class="upload-preview-remove" type="button" data-upload-remove="${item.id}" aria-label="Remove ${escapeHtml(file.name)}">${renderPhIcon('x', { variant: 'bold' })}</button>`}</div><div class="upload-preview-meta"><div class="upload-preview-meta-row"><div class="upload-preview-meta-copy"><strong title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</strong><span>${escapeHtml(uploadDateSourceLabel(item))}</span><span>Size · ${escapeHtml(formatFileSize(file.size))}</span></div><button class="upload-preview-date" type="button" data-upload-date-trigger="${item.id}" aria-label="Change date for ${escapeHtml(displayName)}">${renderPhIcon('calendar-dots', { variant: 'duotone' })}<strong title="${escapeHtml(displayName)}">${escapeHtml(monthDayLabel(item.isoDate) || 'No date')}</strong></button><input class="upload-preview-date-input" type="date" data-upload-date-input="${item.id}" value="${escapeHtml(item.isoDate || '')}" /></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></div></div>`;
   }).join('');
   updateUploadPreviewProgress();
 }
@@ -1270,7 +1296,8 @@ function handleUploadSharedDateToggle() {
 
 async function openUploadModal(isoDate) {
   state.uploadContext = { isoDate };
-  dom.uploadTitle.textContent = `Add media for ${dateRailLabel(isoDate)}`;
+  // dom.uploadTitle.textContent = `Add media for ${dateRailLabel(isoDate)}`;
+  dom.uploadTitle.textContent = `Add media`;
   if (!state.uploadXhr) {
     state.uploadProgressRatio = 0;
     dom.uploadSetExifDate.checked = false;
@@ -1500,17 +1527,30 @@ function uploadMediaFiles() {
 }
 
 function buildMediaTile(media, className, { hero = false, label = '', badge = '' } = {}) {
-  const thumb = media.thumbUrl;
+  const previewSrc = media.type === 'video' ? (media.previewUrl || media.thumbUrl) : media.thumbUrl;
+  const previewNode = media.type === 'video'
+    ? `<video class="lazy-media" data-src="${previewSrc}" muted autoplay loop playsinline preload="none" poster="${escapeHtml(media.thumbUrl || '')}" aria-hidden="true"></video>`
+    : `<img class="lazy-media" data-src="${previewSrc}" alt="${escapeHtml(media.fileName || '')}" draggable="false" />`;
+  const likedIndicator = media.liked ? `<span class="media-liked-indicator" aria-hidden="true">${renderPhIcon('heart', { variant: 'fill' })}</span>` : '';
   return `
     <button class="${className} media-tile open-media ${hero ? 'hero-photo' : ''}" type="button" data-media-id="${media.id}">
       <div class="media-skeleton"></div>
-      <img class="lazy-media" data-src="${thumb}" alt="${escapeHtml(media.fileName || '')}" draggable="false" />
+      ${previewNode}
+      ${likedIndicator}
       ${hero ? '<div class="hero-gradient"></div>' : ''}
       ${label ? `<div class="hero-stamp">${escapeHtml(label)}</div>` : ''}
-      ${media.type === 'video' ? `<div class="media-badge ${hero ? 'hero-badge' : ''}"><span class="play-mark"><i class="fa-solid fa-play"></i></span>Video</div>` : ''}
+      ${media.type === 'video' ? `<div class="media-badge ${hero ? 'hero-badge' : ''}">${renderPhIcon('video-camera', { variant: 'fill' })}</div>` : ''}
       ${badge && media.type !== 'video' ? `<div class="media-badge ${hero ? 'hero-badge' : ''}">${badge}</div>` : ''}
     </button>
   `;
+}
+
+function buildStaticThumbMedia(media, { alt = '', eager = false } = {}) {
+  const previewSrc = media.type === 'video' ? (media.previewUrl || media.thumbUrl) : media.thumbUrl;
+  if (media.type === 'video') {
+    return `<video src="${previewSrc}" muted autoplay loop playsinline preload="metadata" poster="${escapeHtml(media.thumbUrl || '')}" aria-hidden="true"></video>`;
+  }
+  return `<img src="${previewSrc}" alt="${escapeHtml(alt)}" ${eager ? 'loading="lazy" fetchpriority="low" decoding="async"' : ''} />`;
 }
 
 function buildJournalHtml(day) {
@@ -1540,13 +1580,13 @@ function buildJournalHtml(day) {
 
 function buildEntryAction(day) {
   if (day.journal) {
-    return `<a class="journal-edit-button icon-button" href="/edit/${day.isoDate}" data-edit-date="${day.isoDate}" aria-label="Edit entry"><i class="fa-solid fa-pen-to-square"></i></a>`;
+    return `<a class="journal-edit-button icon-button" href="/edit/${day.isoDate}" data-edit-date="${day.isoDate}" aria-label="Edit entry">${renderPhIcon('pencil-simple-line', { variant: 'bold' })}</a>`;
   }
-  return `<a class="journal-edit-button icon-button" href="/edit/${day.isoDate}?create=1" data-create-entry-date="${day.isoDate}" aria-label="Add entry"><i class="fa-regular fa-note-sticky"></i></a>`;
+  return `<a class="journal-edit-button icon-button" href="/edit/${day.isoDate}?create=1" data-create-entry-date="${day.isoDate}" aria-label="Add entry">${renderPhIcon('note', { variant: 'duotone' })}</a>`;
 }
 
 function buildUploadAction(day) {
-  return `<button class="journal-edit-button icon-button" type="button" data-upload-date="${day.isoDate}" aria-label="Add media"><i class="fa-solid fa-plus"></i></button>`;
+  return `<button class="journal-edit-button icon-button" type="button" data-upload-date="${day.isoDate}" aria-label="Add media">${renderPhIcon('plus', { variant: 'bold' })}</button>`;
 }
 
 function buildGapCardHtml(newerDay, olderDay) {
@@ -1555,9 +1595,10 @@ function buildGapCardHtml(newerDay, olderDay) {
   const startIso = addDaysToIso(olderDay.isoDate, 1);
   const endIso = addDaysToIso(newerDay.isoDate, -1);
   if (!startIso || !endIso) return '';
-  const missingLabel = gapDays === 1 ? '1 missing day' : `${gapDays} missing days`;
+  const isSingleTodayGap = gapDays === 1 && startIso === endIso && startIso === state.bootstrap?.today?.isoDate;
+  const missingLabel = gapDays === 1 ? monthDayLabel(startIso) : `${gapDays} missing days`;
   const actionLabel = gapDays === 1
-    ? `Record what happened ${monthDayLabel(startIso)}`
+    ? (isSingleTodayGap ? 'What happened today?' : `Record what happened ${monthDayLabel(startIso)}`)
     : `Record what happened ${monthDayLabel(startIso)} - ${monthDayLabel(endIso)}`;
   return `
     <article class="gap-block">
@@ -1569,7 +1610,7 @@ function buildGapCardHtml(newerDay, olderDay) {
         data-gap-days="${gapDays}"
         aria-label="${escapeHtml(actionLabel)}"
       >
-        <span class="gap-card-icon" aria-hidden="true"><i class="fa-solid fa-plus"></i></span>
+        <span class="gap-card-icon" aria-hidden="true">${renderPhIcon('plus', { variant: 'bold' })}</span>
         <span class="gap-card-copy">
           <strong>${escapeHtml(actionLabel)}</strong>
           <span>${escapeHtml(missingLabel)}</span>
@@ -1584,10 +1625,24 @@ function buildSearchPhotoStack(media) {
   return `
     <div class="search-photo-stack-wrap">
       <div class="search-photo-stack">
-        ${stack.map((item, index) => `<button class="search-photo-stack-item open-media" type="button" data-media-id="${item.id}" style="--stack-index:${index}"><img class="lazy-media" data-src="${item.thumbUrl}" alt="${escapeHtml(item.fileName || '')}" draggable="false" /></button>`).join('')}
+        ${stack.map((item, index) => `<button class="search-photo-stack-item open-media" type="button" data-media-id="${item.id}" style="--stack-index:${index}">${item.type === 'video'
+          ? `<video class="lazy-media" data-src="${item.previewUrl || item.thumbUrl}" muted autoplay loop playsinline preload="none" poster="${escapeHtml(item.thumbUrl || '')}" aria-hidden="true"></video>`
+          : `<img class="lazy-media" data-src="${item.thumbUrl}" alt="${escapeHtml(item.fileName || '')}" draggable="false" />`}${item.liked ? `<span class="media-liked-indicator" aria-hidden="true">${renderPhIcon('heart', { variant: 'fill' })}</span>` : ''}</button>`).join('')}
       </div>
     </div>
   `;
+}
+
+function buildNewestGapCard() {
+  const todayIso = state.bootstrap?.today?.isoDate;
+  const newestDay = state.loadedDays[0];
+  if (!todayIso || !newestDay?.isoDate) return null;
+  if (diffDaysBetweenIso(todayIso, newestDay.isoDate) <= 0) return null;
+  return {
+    html: buildGapCardHtml({ isoDate: addDaysToIso(todayIso, 1) }, newestDay),
+    monthKey: todayIso.slice(0, 7),
+    monthLabel: monthLabelForIso(todayIso)
+  };
 }
 
 function buildDayHtml(day) {
@@ -1616,7 +1671,7 @@ function buildDayHtml(day) {
     <article class="day-block" data-day-date="${day.isoDate}" data-day-index="${state.dateIndexMap[day.isoDate] ?? ''}" data-month-label="${escapeHtml(day.monthLabel)}">
       <section class="entry-card">
         <div class="entry-card-head">
-          <span class="entry-card-icon" aria-hidden="true"><i class="fa-solid fa-calendar-day"></i></span>
+          <span class="entry-card-icon" aria-hidden="true">${renderPhIcon('calendar-dots', { variant: 'duotone' })}</span>
           <div class="entry-card-copy">
             <h3 class="day-title">${escapeHtml(day.dateLabel)}</h3>
             <div class="day-title-meta"><div class="day-title-muted">${escapeHtml(muted)}</div></div>
@@ -1665,6 +1720,19 @@ function processMediaQueue() {
       processMediaQueue();
     };
 
+    if (node instanceof HTMLVideoElement) {
+      node.onloadeddata = () => {
+        node.classList.add('is-ready');
+        const playPromise = node.play?.();
+        if (playPromise && typeof playPromise.catch === 'function') playPromise.catch(() => {});
+        done();
+      };
+      node.onerror = done;
+      node.src = src;
+      node.load();
+      continue;
+    }
+
     node.onload = () => {
       node.classList.add('is-ready');
       done();
@@ -1684,7 +1752,7 @@ function setupMediaObserver() {
     });
   }, { rootMargin: '120px 0px 120px 0px' });
 
-  document.querySelectorAll('#todayEntryCard .lazy-media, #timelineFeed .lazy-media').forEach((node) => state.mediaObserver.observe(node));
+  document.querySelectorAll('#timelineFeed .lazy-media').forEach((node) => state.mediaObserver.observe(node));
 }
 
 function captureScrollAnchor() {
@@ -1727,6 +1795,22 @@ function trimLoadedWindow(direction) {
 
 function renderTimeline() {
   if (!state.loadedDays.length) {
+    const todayIso = state.bootstrap?.today?.isoDate;
+    if (!state.searchMode && !state.totalDays && todayIso) {
+      const cardHtml = buildGapCardHtml({ isoDate: addDaysToIso(todayIso, 1) }, { isoDate: addDaysToIso(todayIso, -1) });
+      dom.timelineFeed.innerHTML = `
+        <div class="month-divider"><span class="month-divider-label">${escapeHtml(monthLabelForIso(todayIso))}</span></div>
+        ${cardHtml}
+      `;
+      dom.timelineTopSpacer.style.height = '0px';
+      dom.timelineBottomSpacer.style.height = '0px';
+      rebuildViewerSequence();
+      setupMediaObserver();
+      setupSentinelObserver();
+      updateActiveFromScroll();
+      syncScrollThumb();
+      return;
+    }
     dom.timelineFeed.innerHTML = `
       <div class="empty-state">
         <h2>${state.searchMode ? 'No matching journal entries' : 'No timeline data yet'}</h2>
@@ -1750,6 +1834,14 @@ function renderTimeline() {
   if (!state.searchMode && state.loadedEnd < state.totalDays - 1) html += '<div id="topSentinel" class="timeline-sentinel"></div>';
 
   let previousMonth = null;
+  const newestGap = !state.searchMode && state.loadedEnd === state.totalDays - 1 ? buildNewestGapCard() : null;
+  if (newestGap?.html) {
+    if (newestGap.monthKey !== previousMonth) {
+      html += `<div class="month-divider"><span class="month-divider-label">${escapeHtml(newestGap.monthLabel)}</span></div>`;
+      previousMonth = newestGap.monthKey;
+    }
+    html += newestGap.html;
+  }
   for (let index = 0; index < state.loadedDays.length; index += 1) {
     const day = state.loadedDays[index];
     if (day.monthKey !== previousMonth) {
@@ -2184,6 +2276,20 @@ function syncViewerMediaMutation(photoId, mutator) {
   });
 }
 
+function syncMediaTileLikedState(photoId, liked) {
+  document.querySelectorAll('.open-media[data-media-id]').forEach((node) => {
+    if (node.dataset.mediaId !== photoId) return;
+    const existing = node.querySelector('.media-liked-indicator');
+    if (liked) {
+      if (!existing) {
+        node.insertAdjacentHTML('beforeend', `<span class="media-liked-indicator" aria-hidden="true">${renderPhIcon('heart', { variant: 'fill' })}</span>`);
+      }
+      return;
+    }
+    existing?.remove();
+  });
+}
+
 async function saveViewerTags() {
   const item = currentViewerItem();
   if (!item) return;
@@ -2407,7 +2513,7 @@ async function runSearch(query) {
     state.searchMode = false;
     dom.yearCarouselShell?.classList.remove('hidden');
     if (dom.yearSectionTitle) dom.yearSectionTitle.textContent = 'Browse your years';
-    if (dom.yearSectionSubtitle) dom.yearSectionSubtitle.textContent = 'Start broad, then drop into a month, a day, or straight into the timeline.';
+    renderDefaultYearSubtitle();
     await goHome({ push: false, restoreScroll: false });
     await ensureTimelineLoaded(state.bootstrap?.lastDate);
     renderTimeline();
@@ -2469,11 +2575,11 @@ function dayCardHtml(day, monthKey, year) {
   const journalOnly = !day.photoCount && day.hasJournal;
   const cover = thumbs.length
     ? (thumbs.length === 1
-      ? `<div class="cover-single"><img src="${thumbs[0].thumbUrl}" alt="" loading="lazy" fetchpriority="low" decoding="async" /></div>`
-      : `<div class="cover-collage count-${thumbs.length}">${thumbs.map((thumb) => `<div class="${thumb.type === 'video' ? 'is-video' : ''}"><img src="${thumb.thumbUrl}" alt="" loading="lazy" fetchpriority="low" decoding="async" /></div>`).join('')}</div>`)
+      ? `<div class="cover-single">${buildStaticThumbMedia(thumbs[0], { eager: true })}</div>`
+      : `<div class="cover-collage count-${thumbs.length}">${thumbs.map((thumb) => `<div class="${thumb.type === 'video' ? 'is-video' : ''}">${buildStaticThumbMedia(thumb, { eager: true })}</div>`).join('')}</div>`)
     : createCoverHtml([], { journalOnly: true });
   const addButton = !day.hasJournal && day.photoCount
-    ? `<button class="day-card-add icon-button" type="button" data-create-entry-date="${day.isoDate}" aria-label="Add entry"><i class="fa-solid fa-pen"></i></button>`
+    ? `<button class="day-card-add icon-button" type="button" data-create-entry-date="${day.isoDate}" aria-label="Add entry">${renderPhIcon('pencil-simple', { variant: 'bold' })}</button>`
     : '';
 
   return `
@@ -2483,7 +2589,7 @@ function dayCardHtml(day, monthKey, year) {
       <div class="card-content day-card-content ${journalOnly ? 'card-content-solid' : ''}">
         <div class="card-title">${escapeHtml(day.dateLabel || dateRailLabel(day.isoDate) || day.isoDate)}</div>
         <div class="day-card-meta">
-          ${day.hasJournal ? '<span class="text-pill" aria-label="Has journal entry"><i class="fa-regular fa-note-sticky"></i></span>' : ''}
+          ${day.hasJournal ? `<span class="text-pill" aria-label="Has journal entry">${renderPhIcon('note', { variant: 'duotone' })}</span>` : ''}
           <span>${day.photoCount ? `${day.photoCount} media` : `${day.hasJournal ? '1 Entry' : 'Open day'}`}</span>
         </div>
       </div>
@@ -2610,17 +2716,6 @@ function attachEvents() {
     goToNewestTop().catch(console.error);
   });
 
-  const openTodayEditor = () => { window.location.href = getTodayEntryHref(); };
-  dom.todayEntryCard?.addEventListener('click', (event) => {
-    if (event.target.closest('.open-media')) return;
-    openTodayEditor();
-  });
-  dom.todayEntryCard?.addEventListener('keydown', (event) => {
-    if (event.key !== 'Enter' && event.key !== ' ') return;
-    if (event.target.closest('.open-media')) return;
-    event.preventDefault();
-    openTodayEditor();
-  });
   dom.uploadTopbarButton?.addEventListener('click', triggerTopbarUpload);
   dom.searchToggleButton?.addEventListener('click', openSearchBar);
   dom.searchCloseButton?.addEventListener('click', () => {
@@ -2991,10 +3086,10 @@ async function bootstrapApp() {
   applyGridColumns(state.gridColumns || gridColumnBounds().base);
   state.bootstrap = await fetchJson('/api/bootstrap');
   state.totalDays = state.bootstrap.totalDays;
+  renderDefaultYearSubtitle();
   state.mobileTopbarAnchorY = 0;
   syncTopbarSearchState();
   updateTopbarDateLabel();
-  renderTodayEntryCard();
   renderYearCarousel();
   renderRail();
   renderScrollYearMarks();

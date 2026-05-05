@@ -68,7 +68,7 @@ function countMediaInDirectory(currentPath) {
   }
 
   for (const entry of entries) {
-    if (entry.name === '.trash' || entry.name === '.LifeServerTrash') continue;
+    if (entry.name === '.trash' || entry.name === '.LifeServerTrash' || entry.name === '.LifeServer') continue;
     const absoluteChild = path.join(currentPath, entry.name);
     if (entry.isDirectory()) {
       const nested = countMediaInDirectory(absoluteChild);
@@ -100,7 +100,7 @@ function folderNodeFromAbsolute(rootPath, currentPath, relativePath = '') {
   } catch (error) {}
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    if (entry.name === '.trash' || entry.name === '.LifeServerTrash') continue;
+    if (entry.name === '.trash' || entry.name === '.LifeServerTrash' || entry.name === '.LifeServer') continue;
     const absoluteChild = path.join(currentPath, entry.name);
     const childRelative = relativePath ? path.posix.join(relativePath, entry.name) : entry.name;
     children.push(folderNodeFromAbsolute(rootPath, absoluteChild, childRelative));
@@ -114,7 +114,7 @@ function folderNodeFromAbsolute(rootPath, currentPath, relativePath = '') {
     children,
     mediaCount: counts.mediaCount,
     latestModifiedMs: counts.latestModifiedMs,
-    icon: relativePath ? 'folder-open' : 'hard-drive'
+    icon: relativePath ? 'folder-open' : 'hard-drives'
   };
 }
 
@@ -159,6 +159,13 @@ async function runMulter(req, res, middleware) {
   });
 }
 
+async function copyUploadedFilePreservingOriginal(file, destination) {
+  await fs.promises.copyFile(file.path, destination);
+  return {
+    preservedOriginal: true
+  };
+}
+
 async function copyUploadedFileWithOptionalDate({
   file,
   destination,
@@ -166,7 +173,7 @@ async function copyUploadedFileWithOptionalDate({
   targetIsoDate
 }) {
   if (!setExifDate) {
-    await fs.promises.copyFile(file.path, destination);
+    await copyUploadedFilePreservingOriginal(file, destination);
     return false;
   }
 
@@ -186,7 +193,7 @@ async function copyUploadedFileWithOptionalDate({
     }
   }
 
-  await fs.promises.copyFile(file.path, destination);
+  await copyUploadedFilePreservingOriginal(file, destination);
   return false;
 }
 
@@ -205,9 +212,21 @@ async function main() {
   app.use(express.urlencoded({ extended: false, limit: '8mb' }));
 
   await indexer.init();
-  setInterval(() => indexer.scheduleRebuild('interval'), config.indexing.rebuildIntervalMs).unref();
+  setInterval(() => indexer.scheduleRefresh('interval'), config.indexing.rebuildIntervalMs).unref();
 
-  app.use('/vendor/fontawesome', express.static(path.join(projectRoot, 'node_modules', '@fortawesome', 'fontawesome-free'), {
+  app.use('/vendor/phosphor/regular', express.static(path.join(projectRoot, 'node_modules', '@phosphor-icons', 'web', 'src', 'regular'), {
+    etag: true,
+    maxAge: '1d'
+  }));
+  app.use('/vendor/phosphor/fill', express.static(path.join(projectRoot, 'node_modules', '@phosphor-icons', 'web', 'src', 'fill'), {
+    etag: true,
+    maxAge: '1d'
+  }));
+  app.use('/vendor/phosphor/duotone', express.static(path.join(projectRoot, 'node_modules', '@phosphor-icons', 'web', 'src', 'duotone'), {
+    etag: true,
+    maxAge: '1d'
+  }));
+  app.use('/vendor/phosphor/bold', express.static(path.join(projectRoot, 'node_modules', '@phosphor-icons', 'web', 'src', 'bold'), {
     etag: true,
     maxAge: '1d'
   }));
@@ -238,6 +257,7 @@ async function main() {
   app.get('/media-viewer.css', (req, res) => sendNoStoreFile(res, path.join(publicDir, 'media-viewer.css')));
   app.get('/editor.js', (req, res) => sendNoStoreFile(res, path.join(publicDir, 'editor.js')));
   app.get('/media-viewer.js', (req, res) => sendNoStoreFile(res, path.join(publicDir, 'media-viewer.js')));
+  app.get('/service-worker.js', (req, res) => sendNoStoreFile(res, path.join(publicDir, 'service-worker.js')));
 
   app.post('/auth/login', (req, res) => {
     if (!auth.enabled) {
@@ -423,6 +443,7 @@ async function main() {
       await fs.promises.mkdir(destinationDir, { recursive: true });
 
       const copied = [];
+      const dateOverrides = {};
       for (const [index, file] of files.entries()) {
         const original = sanitizeFileName(file.originalname || path.basename(file.path));
         const destination = uniqueDestinationPath(destinationDir, original);
@@ -431,10 +452,16 @@ async function main() {
           const createdDateApplied = await copyUploadedFileWithOptionalDate({
             file,
             destination,
-            setExifDate: isValidIsoDate(perFileIsoDate),
+            setExifDate: req.body?.setExifDate === '1' && isValidIsoDate(perFileIsoDate),
             targetIsoDate: perFileIsoDate
           });
           uploadedPaths.push(destination);
+          if (isValidIsoDate(perFileIsoDate)) {
+            dateOverrides[destination] = {
+              isoDate: perFileIsoDate,
+              source: 'upload'
+            };
+          }
           copied.push({
             fileName: path.basename(destination),
             folder: relativePath || '.',
@@ -450,7 +477,10 @@ async function main() {
         }
       }
 
-      await indexer.rebuild('upload');
+      if (Object.keys(dateOverrides).length) {
+        await indexer.setMediaDateOverridesByPath(dateOverrides);
+      }
+      await indexer.addMediaFiles(uploadedPaths);
       const distinctDates = new Set(copied.map((item) => item.isoDate).filter(Boolean));
       res.json({
         ok: true,
@@ -495,6 +525,68 @@ async function main() {
     }
   });
 
+  app.post('/api/media/:photoId/rename', async (req, res) => {
+    try {
+      const baseName = sanitizeFileName(req.body?.baseName || '');
+      if (!baseName) {
+        res.status(400).json({ error: 'Filename cannot be empty.' });
+        return;
+      }
+      const photo = await indexer.renamePhoto(req.params.photoId, baseName);
+      if (!photo) {
+        res.status(404).json({ error: 'Media not found.' });
+        return;
+      }
+      res.json({ ok: true, photo });
+    } catch (error) {
+      res.status(500).json({ error: error.message || 'Failed to rename media.' });
+    }
+  });
+
+  app.post('/api/media/:photoId/validate-name', async (req, res) => {
+    try {
+      const photo = indexer.getPhoto(req.params.photoId);
+      if (!photo) {
+        res.status(404).json({ error: 'Media not found.' });
+        return;
+      }
+      const rawBaseName = String(req.body?.baseName || '').trim();
+      const baseName = sanitizeFileName(rawBaseName);
+      if (!rawBaseName || !baseName) {
+        res.json({ ok: true, valid: false, reason: 'empty' });
+        return;
+      }
+      if (baseName === photo.baseName) {
+        res.json({ ok: true, valid: true, exists: false });
+        return;
+      }
+      const candidatePath = path.join(path.dirname(photo.filePath), `${baseName}${photo.ext}`);
+      try {
+        await fs.promises.access(candidatePath);
+        res.json({ ok: true, valid: false, exists: true, reason: 'exists' });
+      } catch (error) {
+        res.json({ ok: true, valid: true, exists: false });
+      }
+    } catch (error) {
+      res.status(500).json({ error: error.message || 'Failed to validate filename.' });
+    }
+  });
+
+  app.post('/api/media/:photoId/move', async (req, res) => {
+    try {
+      const rootId = String(req.body?.rootId || '');
+      const relativePath = String(req.body?.relativePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+      const photo = await indexer.movePhoto(req.params.photoId, rootId, relativePath);
+      if (!photo) {
+        res.status(404).json({ error: 'Media not found.' });
+        return;
+      }
+      res.json({ ok: true, photo });
+    } catch (error) {
+      res.status(500).json({ error: error.message || 'Failed to move media.' });
+    }
+  });
+
   app.post('/api/media/:photoId/like', async (req, res) => {
     try {
       const photo = await indexer.setPhotoLiked(req.params.photoId, Boolean(req.body?.liked));
@@ -515,7 +607,7 @@ async function main() {
         res.status(400).json({ error: 'Invalid date.' });
         return;
       }
-      const photo = await indexer.setPhotoDateOverride(req.params.photoId, isoDate || null);
+      const photo = await indexer.setPhotoDateTime(req.params.photoId, { isoDate: isoDate || null });
       if (!photo) {
         res.status(404).json({ error: 'Media not found.' });
         return;
@@ -529,6 +621,29 @@ async function main() {
       });
     } catch (error) {
       res.status(500).json({ error: error.message || 'Failed to save date override.' });
+    }
+  });
+
+  app.post('/api/media/:photoId/date-time', async (req, res) => {
+    try {
+      const isoDate = typeof req.body?.isoDate === 'string' ? req.body.isoDate.trim() : '';
+      const time = typeof req.body?.time === 'string' ? req.body.time.trim() : '';
+      if (isoDate && !/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) {
+        res.status(400).json({ error: 'Invalid date.' });
+        return;
+      }
+      if (time && !/^\d{2}:\d{2}$/.test(time)) {
+        res.status(400).json({ error: 'Invalid time.' });
+        return;
+      }
+      const photo = await indexer.setPhotoDateTime(req.params.photoId, { isoDate: isoDate || null, time: time || null });
+      if (!photo) {
+        res.status(404).json({ error: 'Media not found.' });
+        return;
+      }
+      res.json({ ok: true, photo });
+    } catch (error) {
+      res.status(500).json({ error: error.message || 'Failed to save media date/time.' });
     }
   });
 
@@ -547,7 +662,7 @@ async function main() {
       const trashPath = moveToTrash(root, photo.filePath);
       await fs.promises.mkdir(path.dirname(trashPath), { recursive: true });
       await fs.promises.rename(photo.filePath, trashPath);
-      await indexer.rebuild('delete-media');
+      await indexer.removeMediaFile(req.params.photoId);
       res.json({ ok: true, photoId: req.params.photoId, isoDate: photo.isoDate, trashedTo: trashPath });
     } catch (error) {
       res.status(500).json({ error: error.message || 'Delete failed.' });
@@ -570,6 +685,10 @@ async function main() {
 
   app.get('/media/thumb/:photoId', async (req, res) => {
     await imageService.sendThumb(res, req.params.photoId);
+  });
+
+  app.get('/media/preview/:photoId', async (req, res) => {
+    await imageService.sendPreview(res, req.params.photoId);
   });
 
   app.get('/media/full/:photoId', async (req, res) => {

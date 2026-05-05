@@ -2,7 +2,15 @@ const fs = require('fs');
 const path = require('path');
 const MarkdownIt = require('markdown-it');
 const exifr = require('exifr');
-const { readVideoCreatedDate } = require('./media-metadata');
+const {
+  readVideoCreatedDate,
+  readMediaDimensions,
+  isExifWritableImage,
+  isVideoMetadataWritable,
+  writeImageExifCreatedDate,
+  writeVideoCreatedDateInPlace
+} = require('./media-metadata');
+const { PortableMediaStore } = require('./portable-media-store');
 const {
   walkFiles,
   isImageFile,
@@ -31,12 +39,15 @@ class TimelineIndexer {
   constructor(config) {
     this.config = config;
     this.cacheDir = config.paths.cacheDir;
+    this.photoRoots = config.paths.photoFolders || [];
+    this.portableMediaStore = new PortableMediaStore(this.photoRoots);
     this.indexCachePath = path.join(this.cacheDir, 'index.json');
     this.mediaMetaCachePath = path.join(this.cacheDir, 'photo-meta.json');
     this.mediaTagsCachePath = path.join(this.cacheDir, 'media-tags.json');
     this.mediaDescriptionsCachePath = path.join(this.cacheDir, 'media-descriptions.json');
     this.mediaLikesCachePath = path.join(this.cacheDir, 'media-likes.json');
     this.mediaDateOverridesCachePath = path.join(this.cacheDir, 'media-date-overrides.json');
+    this.mediaInventoryCachePath = path.join(this.cacheDir, 'media-inventory.json');
 
     this.state = {
       generatedAt: null,
@@ -56,11 +67,18 @@ class TimelineIndexer {
 
     this.isBuilding = false;
     this.rebuildQueued = false;
+    this.mediaInventory = {};
+    this.mediaInventorySignature = '';
   }
 
   async init() {
     const cachedIndex = await readJson(this.indexCachePath, null);
     if (cachedIndex) this.state = this.inflateState(cachedIndex);
+    const cachedInventory = await readJson(this.mediaInventoryCachePath, null);
+    if (cachedInventory?.entries && typeof cachedInventory.entries === 'object') {
+      this.mediaInventory = cachedInventory.entries;
+      this.mediaInventorySignature = String(cachedInventory.signature || '');
+    }
     await this.rebuild('startup');
   }
 
@@ -74,6 +92,13 @@ class TimelineIndexer {
     });
   }
 
+  scheduleRefresh(reason = 'scheduled-refresh') {
+    if (this.isBuilding) return;
+    this.refreshFromFilesystem(reason).catch((error) => {
+      console.error(`Index refresh failed (${reason})`, error);
+    });
+  }
+
   async rebuild(reason = 'manual') {
     if (this.isBuilding) {
       this.rebuildQueued = true;
@@ -82,9 +107,11 @@ class TimelineIndexer {
 
     this.isBuilding = true;
     try {
-      const nextState = await this.buildState();
+      const inventory = await this.scanMediaInventory();
+      const nextState = await this.buildState({ inventory });
       this.state = nextState;
       await writeJson(this.indexCachePath, this.serializeState(nextState));
+      await this.persistMediaInventory(inventory);
       console.log(`LifeServer index rebuilt (${reason}) with ${nextState.dayKeys.length} days.`);
     } finally {
       this.isBuilding = false;
@@ -97,8 +124,14 @@ class TimelineIndexer {
 
   thumbUrlForPhoto(photo) {
     if (!photo?.id) return '';
-    const version = hash(`${photo.id}|${photo.mtimeMs || 0}|${photo.size || 0}|thumb-v5`);
+    const version = hash(`${photo.id}|${photo.mtimeMs || 0}|${photo.size || 0}|thumb-v6`);
     return `/media/thumb/${photo.id}?v=${version}`;
+  }
+
+  previewUrlForPhoto(photo) {
+    if (!photo?.id || photo.type !== 'video') return '';
+    const version = hash(`${photo.id}|${photo.mtimeMs || 0}|${photo.size || 0}|preview-v1`);
+    return `/media/preview/${photo.id}?v=${version}`;
   }
 
   thumbUrlForPhotoId(photoId) {
@@ -106,7 +139,7 @@ class TimelineIndexer {
     return photo ? this.thumbUrlForPhoto(photo) : `/media/thumb/${photoId}`;
   }
 
-  async buildState() {
+  async buildState({ inventory = null } = {}) {
     const dayMap = new Map();
     const photosById = new Map();
     const journalImages = await this.indexJournalImages();
@@ -115,12 +148,47 @@ class TimelineIndexer {
     const mediaDescriptions = await readJson(this.mediaDescriptionsCachePath, {});
     const mediaLikes = await readJson(this.mediaLikesCachePath, {});
     const mediaDateOverrides = await readJson(this.mediaDateOverridesCachePath, {});
+    const portableMetadata = await this.portableMediaStore.loadAll();
+    await this.migrateLegacyPortableMetadata({
+      mediaTags,
+      mediaDescriptions,
+      mediaLikes,
+      mediaDateOverrides,
+      portableMetadata
+    });
     const nextMediaMetaCache = {};
 
     await this.indexJournals(dayMap, journalImages);
-    await this.indexMedia(dayMap, photosById, mediaMetaCache, nextMediaMetaCache, mediaTags, mediaDescriptions, mediaLikes, mediaDateOverrides);
+    await this.indexMedia(
+      dayMap,
+      photosById,
+      mediaMetaCache,
+      nextMediaMetaCache,
+      mediaTags,
+      mediaDescriptions,
+      mediaLikes,
+      mediaDateOverrides,
+      portableMetadata,
+      inventory?.records || null
+    );
+
+    const derivedTags = {};
+    const derivedDescriptions = {};
+    const derivedLikes = {};
+    const derivedDateOverrides = {};
+    for (const photo of photosById.values()) {
+      if (Array.isArray(photo.tags) && photo.tags.length) derivedTags[photo.filePath] = photo.tags;
+      if (photo.description) derivedDescriptions[photo.filePath] = photo.description;
+      if (photo.liked) derivedLikes[photo.filePath] = true;
+      const portableEntry = this.portableMediaStore.getEntry(portableMetadata, photo.filePath);
+      if (portableEntry?.dateOverride) derivedDateOverrides[photo.filePath] = portableEntry.dateOverride;
+    }
 
     await writeJson(this.mediaMetaCachePath, nextMediaMetaCache);
+    await writeJson(this.mediaTagsCachePath, derivedTags);
+    await writeJson(this.mediaDescriptionsCachePath, derivedDescriptions);
+    await writeJson(this.mediaLikesCachePath, derivedLikes);
+    await writeJson(this.mediaDateOverridesCachePath, derivedDateOverrides);
 
     const nextState = {
       generatedAt: new Date().toISOString(),
@@ -132,10 +200,10 @@ class TimelineIndexer {
       monthsByYear: [],
       photosById,
       dayIndexByDate: {},
-      mediaTags,
-      mediaDescriptions,
-      mediaLikes,
-      mediaDateOverrides
+      mediaTags: derivedTags,
+      mediaDescriptions: derivedDescriptions,
+      mediaLikes: derivedLikes,
+      mediaDateOverrides: derivedDateOverrides
     };
     const previousState = this.state;
     this.state = nextState;
@@ -143,6 +211,50 @@ class TimelineIndexer {
     const built = this.state;
     this.state = previousState;
     return built;
+  }
+
+  async scanMediaInventory() {
+    const records = [];
+    const entries = {};
+
+    for (const folder of this.photoRoots) {
+      const files = await walkFiles(folder);
+      for (const filePath of files) {
+        if (!isMediaFile(filePath)) continue;
+        try {
+          const stat = await fs.promises.stat(filePath);
+          const entrySignature = `${stat.size}:${Math.trunc(stat.mtimeMs)}`;
+          records.push({ filePath, stat, signature: hash(`${filePath}|${stat.size}|${stat.mtimeMs}`) });
+          entries[filePath] = entrySignature;
+        } catch (error) {
+          // Ignore files that disappear during scan.
+        }
+      }
+    }
+
+    return {
+      records,
+      entries,
+      signature: this.computeInventorySignature(entries)
+    };
+  }
+
+  computeInventorySignature(entries = {}) {
+    return hash(
+      Object.keys(entries)
+        .sort((a, b) => a.localeCompare(b))
+        .map((filePath) => `${filePath}|${entries[filePath]}`)
+        .join('\n')
+    );
+  }
+
+  async persistMediaInventory(inventory) {
+    this.mediaInventory = inventory?.entries || {};
+    this.mediaInventorySignature = String(inventory?.signature || '');
+    await writeJson(this.mediaInventoryCachePath, {
+      signature: this.mediaInventorySignature,
+      entries: this.mediaInventory
+    });
   }
 
   async indexJournalImages() {
@@ -172,37 +284,66 @@ class TimelineIndexer {
     }
   }
 
-  async indexMedia(dayMap, photosById, mediaMetaCache, nextMediaMetaCache, mediaTags = {}, mediaDescriptions = {}, mediaLikes = {}, mediaDateOverrides = {}) {
-    const roots = this.config.paths.photoFolders || [];
-    const mediaFiles = [];
-    for (const folder of roots) {
-      const files = await walkFiles(folder);
-      for (const filePath of files) {
-        if (isMediaFile(filePath)) mediaFiles.push(filePath);
-      }
-    }
-
-    const stats = await mapLimit(mediaFiles, 8, async (filePath) => {
-      try {
-        const stat = await fs.promises.stat(filePath);
-        return { filePath, stat };
-      } catch (error) {
-        return null;
-      }
+  async indexMedia(dayMap, photosById, mediaMetaCache, nextMediaMetaCache, mediaTags = {}, mediaDescriptions = {}, mediaLikes = {}, mediaDateOverrides = {}, portableMetadata = {}, inventoryRecords = null) {
+    const validStats = Array.isArray(inventoryRecords)
+      ? inventoryRecords
+      : (await this.scanMediaInventory()).records;
+    const mediaRecords = await mapLimit(validStats, 6, async ({ filePath, stat, signature }) => {
+      const record = await this.buildPhotoRecord({
+        filePath,
+        stat,
+        signature: signature || hash(`${filePath}|${stat.size}|${stat.mtimeMs}`),
+        mediaMetaCache,
+        nextMediaMetaCache,
+        mediaTags,
+        mediaDescriptions,
+        mediaLikes,
+        mediaDateOverrides,
+        portableMetadata
+      });
+      if (!record) return null;
+      photosById.set(record.id, record);
+      const day = this.getOrCreateDay(dayMap, record.isoDate);
+      day.photos.push(record);
+      return record;
     });
 
-    const validStats = stats.filter(Boolean);
-    const mediaRecords = await mapLimit(validStats, 6, async ({ filePath, stat }) => {
-      const signature = hash(`${filePath}|${stat.size}|${stat.mtimeMs}`);
-      const manualDateOverride = this.normalizeMediaDateOverride(mediaDateOverrides[filePath]);
-      const cachedDateInfo = mediaMetaCache[signature] || null;
+    return mediaRecords.filter(Boolean);
+  }
+
+  async buildPhotoRecord({
+    filePath,
+    stat,
+    signature,
+    mediaMetaCache,
+    nextMediaMetaCache,
+    mediaTags = {},
+    mediaDescriptions = {},
+    mediaLikes = {},
+    mediaDateOverrides = {},
+    portableMetadata = {}
+  }) {
+      const effectiveSignature = signature || hash(`${filePath}|${stat.size}|${stat.mtimeMs}`);
+      const portableEntry = this.portableMediaStore.getEntry(portableMetadata, filePath) || {};
+      const manualDateOverride = this.normalizeMediaDateOverride(portableEntry.dateOverride || mediaDateOverrides[filePath]);
+      const cachedMeta = mediaMetaCache[effectiveSignature] || null;
+      const cachedDateInfo = cachedMeta?.dateInfo || (cachedMeta?.isoDate ? cachedMeta : null);
       let dateInfo = manualDateOverride || null;
       if (!dateInfo && cachedDateInfo && !this.shouldRefreshCachedDateInfo(cachedDateInfo, filePath)) {
         dateInfo = cachedDateInfo;
       }
       if (!dateInfo) dateInfo = await this.extractMediaDateInfo(filePath, stat);
       if (!dateInfo) return null;
-      if (!manualDateOverride) nextMediaMetaCache[signature] = dateInfo;
+      const dimensions = cachedMeta?.width && cachedMeta?.height
+        ? { width: Number(cachedMeta.width || 0), height: Number(cachedMeta.height || 0) }
+        : await readMediaDimensions(filePath);
+      if (!manualDateOverride) {
+        nextMediaMetaCache[effectiveSignature] = {
+          dateInfo,
+          width: dimensions.width || 0,
+          height: dimensions.height || 0
+        };
+      }
 
       const id = hash(filePath);
       const ext = path.extname(filePath).toLowerCase();
@@ -212,6 +353,7 @@ class TimelineIndexer {
         id,
         filePath,
         fileName: path.basename(filePath),
+        baseName: path.basename(filePath, ext),
         ext,
         type,
         isoDate: dateInfo.isoDate,
@@ -220,20 +362,18 @@ class TimelineIndexer {
         size: stat.size,
         mtimeMs: stat.mtimeMs,
         birthtimeMs: stat.birthtimeMs || stat.ctimeMs || stat.mtimeMs,
+        width: dimensions.width || 0,
+        height: dimensions.height || 0,
         folder: rootInfo.relativeFolder,
         folderRootLabel: rootInfo.rootLabel,
-        tags: Array.isArray(mediaTags[filePath]) ? mediaTags[filePath] : [],
-        description: typeof mediaDescriptions[filePath] === 'string' ? mediaDescriptions[filePath] : '',
-        liked: Boolean(mediaLikes[filePath])
+        folderRootId: rootInfo.rootId,
+        rootPath: rootInfo.rootPath,
+        relativePath: rootInfo.relativePath,
+        tags: Array.isArray(portableEntry.tags) ? portableEntry.tags : (Array.isArray(mediaTags[filePath]) ? mediaTags[filePath] : []),
+        description: typeof portableEntry.description === 'string' ? portableEntry.description : (typeof mediaDescriptions[filePath] === 'string' ? mediaDescriptions[filePath] : ''),
+        liked: Object.prototype.hasOwnProperty.call(portableEntry, 'liked') ? Boolean(portableEntry.liked) : Boolean(mediaLikes[filePath])
       };
-
-      photosById.set(id, record);
-      const day = this.getOrCreateDay(dayMap, record.isoDate);
-      day.photos.push(record);
       return record;
-    });
-
-    return mediaRecords.filter(Boolean);
   }
 
   shouldRefreshCachedDateInfo(cachedDateInfo) {
@@ -285,13 +425,15 @@ class TimelineIndexer {
 
 
   getPhotoRootInfo(filePath) {
-    const roots = this.config.paths.photoFolders || [];
-    for (const root of roots) {
+    const roots = this.photoRoots;
+    for (let index = 0; index < roots.length; index += 1) {
+      const root = roots[index];
       const relative = path.relative(root, filePath);
       if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
         const normalized = relative.replace(/\\/g, '/');
         const folder = path.dirname(normalized).replace(/\\/g, '/');
         return {
+          rootId: String(index),
           rootPath: root,
           rootLabel: path.basename(root) || root,
           relativeFolder: folder && folder !== '.' ? folder : '.',
@@ -300,6 +442,7 @@ class TimelineIndexer {
       }
       if (!relative) {
         return {
+          rootId: String(index),
           rootPath: root,
           rootLabel: path.basename(root) || root,
           relativeFolder: '.',
@@ -307,7 +450,7 @@ class TimelineIndexer {
         };
       }
     }
-    return { rootPath: '', rootLabel: '', relativeFolder: '.', relativePath: path.basename(filePath) };
+    return { rootId: '', rootPath: '', rootLabel: '', relativeFolder: '.', relativePath: path.basename(filePath) };
   }
 
   getOrCreateDay(dayMap, isoDate) {
@@ -386,9 +529,18 @@ class TimelineIndexer {
 
   getBootstrap() {
     const todayIsoDate = dateToIsoLocal(new Date());
+    const totalEntries = this.state.years.reduce((sum, year) => sum + (year.journalCount || 0), 0);
+    const totalMedia = this.state.years.reduce((sum, year) => sum + (year.photoCount || 0), 0);
+    const totalWords = this.state.dayKeys.reduce((sum, isoDate) => {
+      const day = this.state.days.get(isoDate);
+      return sum + (day?.journal?.wordCount || 0);
+    }, 0);
     return {
       generatedAt: this.state.generatedAt,
       totalDays: this.state.dayKeys.length,
+      totalEntries,
+      totalWords,
+      totalMedia,
       firstDate: this.state.dayKeys[0] || null,
       lastDate: this.state.dayKeys[this.state.dayKeys.length - 1] || null,
       today: this.serializeHomeDay(todayIsoDate),
@@ -470,7 +622,8 @@ class TimelineIndexer {
             .map((photo) => ({
               id: photo.id,
               type: photo.type,
-              thumbUrl: this.thumbUrlForPhoto(photo)
+              thumbUrl: this.thumbUrlForPhoto(photo),
+              previewUrl: this.previewUrlForPhoto(photo)
             }))
         };
       });
@@ -557,7 +710,9 @@ class TimelineIndexer {
           id: photo.id,
           type: photo.type,
           fileName: photo.fileName,
+          baseName: photo.baseName,
           thumbUrl: this.thumbUrlForPhoto(photo),
+          previewUrl: this.previewUrlForPhoto(photo),
           fullUrl: `/media/full/${photo.id}`,
           isoDate: photo.isoDate,
           dateLabel: longDateLabel(photo.isoDate),
@@ -565,8 +720,12 @@ class TimelineIndexer {
           dateSource: photo.dateSource,
           size: photo.size,
           ext: photo.ext,
+          width: photo.width || 0,
+          height: photo.height || 0,
           folder: photo.folder || '.',
           folderRootLabel: photo.folderRootLabel || '',
+          folderRootId: photo.folderRootId || '',
+          relativePath: photo.relativePath || photo.fileName,
           tags: Array.isArray(photo.tags) ? photo.tags : [],
           description: typeof photo.description === 'string' ? photo.description : '',
           liked: Boolean(photo.liked)
@@ -759,6 +918,116 @@ class TimelineIndexer {
   }
 
 
+  async migrateLegacyPortableMetadata({ mediaTags = {}, mediaDescriptions = {}, mediaLikes = {}, mediaDateOverrides = {}, portableMetadata = {} }) {
+    const pendingByRoot = new Map();
+
+    const addPending = (filePath, patch) => {
+      const rootInfo = this.portableMediaStore.getRootInfo(filePath);
+      if (!rootInfo) return;
+      if (!pendingByRoot.has(rootInfo.rootPath)) pendingByRoot.set(rootInfo.rootPath, {});
+      const bucket = pendingByRoot.get(rootInfo.rootPath);
+      bucket[rootInfo.relativePath] = {
+        ...(bucket[rootInfo.relativePath] || portableMetadata[rootInfo.rootPath]?.entries?.[rootInfo.relativePath] || {}),
+        ...patch
+      };
+    };
+
+    Object.entries(mediaTags || {}).forEach(([filePath, tags]) => {
+      const current = this.portableMediaStore.getEntry(portableMetadata, filePath);
+      if (!current?.tags?.length && Array.isArray(tags) && tags.length) addPending(filePath, { tags });
+    });
+    Object.entries(mediaDescriptions || {}).forEach(([filePath, description]) => {
+      const current = this.portableMediaStore.getEntry(portableMetadata, filePath);
+      if (!current?.description && typeof description === 'string' && description.trim()) addPending(filePath, { description });
+    });
+    Object.entries(mediaLikes || {}).forEach(([filePath, liked]) => {
+      const current = this.portableMediaStore.getEntry(portableMetadata, filePath);
+      if (!current?.liked && liked) addPending(filePath, { liked: true });
+    });
+    Object.entries(mediaDateOverrides || {}).forEach(([filePath, value]) => {
+      const current = this.portableMediaStore.getEntry(portableMetadata, filePath);
+      const normalized = this.normalizeMediaDateOverride(value);
+      if (!current?.dateOverride && normalized) addPending(filePath, { dateOverride: normalized });
+    });
+
+    for (const [rootPath, entries] of pendingByRoot.entries()) {
+      const store = portableMetadata[rootPath] || await this.portableMediaStore.loadRoot(rootPath);
+      for (const [relativePath, patch] of Object.entries(entries)) {
+        store.entries[relativePath] = {
+          ...(store.entries[relativePath] || {}),
+          ...patch
+        };
+      }
+      portableMetadata[rootPath] = store;
+      await this.portableMediaStore.saveRoot(rootPath, store);
+    }
+  }
+
+  async persistDerivedCaches() {
+    await Promise.all([
+      writeJson(this.mediaTagsCachePath, this.state.mediaTags || {}),
+      writeJson(this.mediaDescriptionsCachePath, this.state.mediaDescriptions || {}),
+      writeJson(this.mediaLikesCachePath, this.state.mediaLikes || {}),
+      writeJson(this.mediaDateOverridesCachePath, this.state.mediaDateOverrides || {})
+    ]);
+  }
+
+  async updatePortableMetadata(filePath, patch) {
+    await this.portableMediaStore.updateEntry(filePath, (current) => ({ ...current, ...patch }));
+  }
+
+  updateInMemoryPhoto(photoId, patch) {
+    const photo = this.getPhoto(photoId);
+    if (!photo) return null;
+    Object.assign(photo, patch);
+    const day = this.state.days.get(photo.isoDate);
+    if (day) {
+      for (const item of day.photos || []) {
+        if (item.id === photoId) Object.assign(item, patch);
+      }
+    }
+    return photo;
+  }
+
+  replaceInMemoryPhoto(photoId, nextPhoto) {
+    const current = this.getPhoto(photoId);
+    if (!current || !nextPhoto) return null;
+    const currentDay = this.state.days.get(current.isoDate);
+    if (currentDay?.photos?.length) {
+      const index = currentDay.photos.findIndex((item) => item.id === photoId);
+      if (index >= 0) currentDay.photos[index] = nextPhoto;
+    }
+    this.state.photosById.delete(photoId);
+    this.state.photosById.set(nextPhoto.id, nextPhoto);
+    return nextPhoto;
+  }
+
+  async remapDerivedFilePath(oldFilePath, newFilePath) {
+    const remap = (collection, removeWhenFalsy = false) => {
+      if (!collection || !Object.prototype.hasOwnProperty.call(collection, oldFilePath)) return;
+      const value = collection[oldFilePath];
+      delete collection[oldFilePath];
+      if (removeWhenFalsy && !value) return;
+      collection[newFilePath] = value;
+    };
+
+    remap(this.state.mediaTags);
+    remap(this.state.mediaDescriptions);
+    remap(this.state.mediaLikes, true);
+    remap(this.state.mediaDateOverrides);
+    await this.persistDerivedCaches();
+  }
+
+  async moveFileOnDisk(sourcePath, destinationPath) {
+    try {
+      await fs.promises.rename(sourcePath, destinationPath);
+    } catch (error) {
+      if (error?.code !== 'EXDEV') throw error;
+      await fs.promises.copyFile(sourcePath, destinationPath);
+      await fs.promises.rm(sourcePath, { force: true });
+    }
+  }
+
   async setPhotoTags(photoId, tags) {
     const photo = this.getPhoto(photoId);
     if (!photo) return null;
@@ -767,13 +1036,8 @@ class TimelineIndexer {
       .filter(Boolean))).slice(0, 40);
     this.state.mediaTags = this.state.mediaTags || {};
     this.state.mediaTags[photo.filePath] = nextTags;
-    photo.tags = nextTags;
-    const day = this.state.days.get(photo.isoDate);
-    if (day) {
-      for (const item of day.photos || []) {
-        if (item.id === photoId) item.tags = nextTags;
-      }
-    }
+    this.updateInMemoryPhoto(photoId, { tags: nextTags });
+    await this.updatePortableMetadata(photo.filePath, { tags: nextTags });
     await writeJson(this.mediaTagsCachePath, this.state.mediaTags);
     await this.persistState();
     return { ...photo, tags: nextTags };
@@ -786,13 +1050,8 @@ class TimelineIndexer {
 
     this.state.mediaDescriptions = this.state.mediaDescriptions || {};
     this.state.mediaDescriptions[photo.filePath] = nextDescription;
-    photo.description = nextDescription;
-    const day = this.state.days.get(photo.isoDate);
-    if (day) {
-      for (const item of day.photos || []) {
-        if (item.id === photoId) item.description = nextDescription;
-      }
-    }
+    this.updateInMemoryPhoto(photoId, { description: nextDescription });
+    await this.updatePortableMetadata(photo.filePath, { description: nextDescription });
     await writeJson(this.mediaDescriptionsCachePath, this.state.mediaDescriptions);
     await this.persistState();
     return { ...photo, description: nextDescription };
@@ -807,14 +1066,8 @@ class TimelineIndexer {
     if (nextLiked) this.state.mediaLikes[photo.filePath] = true;
     else delete this.state.mediaLikes[photo.filePath];
 
-    photo.liked = nextLiked;
-    const day = this.state.days.get(photo.isoDate);
-    if (day) {
-      for (const item of day.photos || []) {
-        if (item.id === photoId) item.liked = nextLiked;
-      }
-    }
-
+    this.updateInMemoryPhoto(photoId, { liked: nextLiked });
+    await this.updatePortableMetadata(photo.filePath, { liked: nextLiked });
     await writeJson(this.mediaLikesCachePath, this.state.mediaLikes);
     await this.persistState();
     return { ...photo, liked: nextLiked };
@@ -839,31 +1092,295 @@ class TimelineIndexer {
     };
   }
 
-  async setPhotoDateOverride(photoId, isoDate) {
+  buildCapturedAt(isoDate, timeValue, fallbackCapturedAt = '') {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(isoDate || ''))) throw new Error('Invalid date.');
+    const normalizedTime = /^\d{2}:\d{2}$/.test(String(timeValue || ''))
+      ? `${timeValue}:00`
+      : (typeof fallbackCapturedAt === 'string' && /T\d{2}:\d{2}:\d{2}/.test(fallbackCapturedAt)
+          ? fallbackCapturedAt.slice(11, 19)
+          : '12:00:00');
+    return `${isoDate}T${normalizedTime}.000Z`;
+  }
+
+  prunePhotoMetaCache(metaCache, filePath, { size, mtimeMs } = {}) {
+    if (!metaCache || typeof metaCache !== 'object') return;
+    if (filePath && Number.isFinite(size) && Number.isFinite(mtimeMs)) {
+      delete metaCache[hash(`${filePath}|${size}|${mtimeMs}`)];
+    }
+  }
+
+  removePhotoFromState(photoId, { removeMetadata = false } = {}) {
     const photo = this.getPhoto(photoId);
     if (!photo) return null;
 
-    const nextIsoDate = String(isoDate || '').trim();
-    this.state.mediaDateOverrides = this.state.mediaDateOverrides || {};
+    const day = this.state.days.get(photo.isoDate);
+    if (day) {
+      day.photos = (day.photos || []).filter((item) => item.id !== photoId);
+      if (!day.photos.length && !day.journal) this.state.days.delete(photo.isoDate);
+    }
+    this.state.photosById.delete(photoId);
 
-    if (!nextIsoDate) {
+    if (removeMetadata) {
+      delete this.state.mediaTags?.[photo.filePath];
+      delete this.state.mediaDescriptions?.[photo.filePath];
+      delete this.state.mediaLikes?.[photo.filePath];
+      delete this.state.mediaDateOverrides?.[photo.filePath];
+    }
+
+    return photo;
+  }
+
+  insertPhotoIntoState(photo) {
+    if (!photo) return null;
+    const existing = this.state.photosById.get(photo.id);
+    if (existing) this.removePhotoFromState(existing.id, { removeMetadata: false });
+    this.state.photosById.set(photo.id, photo);
+    this.getOrCreateDay(this.state.days, photo.isoDate).photos.push(photo);
+    return photo;
+  }
+
+  async addMediaFiles(filePaths, { persist = true } = {}) {
+    const uniquePaths = Array.from(new Set((Array.isArray(filePaths) ? filePaths : []).filter(Boolean)));
+    if (!uniquePaths.length) return [];
+
+    const mediaMetaCache = await readJson(this.mediaMetaCachePath, {});
+    const nextMediaMetaCache = { ...mediaMetaCache };
+    const portableMetadata = await this.portableMediaStore.loadAll();
+    const added = [];
+    const inventoryEntries = { ...(this.mediaInventory || {}) };
+
+    for (const filePath of uniquePaths) {
+      try {
+        const stat = await fs.promises.stat(filePath);
+        inventoryEntries[filePath] = `${stat.size}:${Math.trunc(stat.mtimeMs)}`;
+        const record = await this.buildPhotoRecord({
+          filePath,
+          stat,
+          signature: hash(`${filePath}|${stat.size}|${stat.mtimeMs}`),
+          mediaMetaCache,
+          nextMediaMetaCache,
+          mediaTags: this.state.mediaTags || {},
+          mediaDescriptions: this.state.mediaDescriptions || {},
+          mediaLikes: this.state.mediaLikes || {},
+          mediaDateOverrides: this.state.mediaDateOverrides || {},
+          portableMetadata
+        });
+        if (!record) continue;
+        this.insertPhotoIntoState(record);
+        added.push(record);
+      } catch (error) {
+        // Ignore files that cannot be read during incremental refresh.
+      }
+    }
+
+    await writeJson(this.mediaMetaCachePath, nextMediaMetaCache);
+    if (persist) {
+      this.recomputeDerivedState();
+      await this.persistState();
+      await this.persistMediaInventory({
+        entries: inventoryEntries,
+        signature: this.computeInventorySignature(inventoryEntries)
+      });
+    }
+    return added.map((photo) => ({ ...photo }));
+  }
+
+  async removeMediaFile(photoId, { persist = true, removeMetadata = true } = {}) {
+    const removed = this.removePhotoFromState(photoId, { removeMetadata });
+    if (!removed) return null;
+
+    const metaCache = await readJson(this.mediaMetaCachePath, {});
+    this.prunePhotoMetaCache(metaCache, removed.filePath, removed);
+    await writeJson(this.mediaMetaCachePath, metaCache);
+
+    if (removeMetadata) {
+      await this.persistDerivedCaches();
+      await this.portableMediaStore.updateEntry(removed.filePath, () => ({}));
+    }
+
+    if (persist) {
+      this.recomputeDerivedState();
+      await this.persistState();
+      const inventoryEntries = { ...(this.mediaInventory || {}) };
+      delete inventoryEntries[removed.filePath];
+      await this.persistMediaInventory({
+        entries: inventoryEntries,
+        signature: this.computeInventorySignature(inventoryEntries)
+      });
+    }
+
+    return { ...removed };
+  }
+
+  async refreshFromFilesystem(reason = 'refresh') {
+    if (this.isBuilding) return { changed: false, skipped: true };
+
+    const inventory = await this.scanMediaInventory();
+    if (inventory.signature === this.mediaInventorySignature) {
+      return { changed: false, reason };
+    }
+
+    const previousEntries = this.mediaInventory || {};
+    const nextEntries = inventory.entries || {};
+    const removedPaths = Object.keys(previousEntries).filter((filePath) => !Object.prototype.hasOwnProperty.call(nextEntries, filePath));
+    const changedPaths = Object.keys(nextEntries).filter((filePath) => previousEntries[filePath] !== nextEntries[filePath]);
+    const stalePhotos = new Map();
+
+    for (const filePath of [...removedPaths, ...changedPaths]) {
+      const photo = this.getPhoto(hash(filePath));
+      if (photo) stalePhotos.set(filePath, photo);
+    }
+
+    for (const filePath of removedPaths) {
+      const photo = this.getPhoto(hash(filePath));
+      if (photo) this.removePhotoFromState(photo.id, { removeMetadata: false });
+    }
+
+    for (const filePath of changedPaths) {
+      const photo = this.getPhoto(hash(filePath));
+      if (photo) this.removePhotoFromState(photo.id, { removeMetadata: false });
+    }
+
+    const metaCache = await readJson(this.mediaMetaCachePath, {});
+    [...removedPaths, ...changedPaths].forEach((filePath) => {
+      const previous = stalePhotos.get(filePath);
+      this.prunePhotoMetaCache(metaCache, filePath, previous || {});
+    });
+    await writeJson(this.mediaMetaCachePath, metaCache);
+
+    if (changedPaths.length) {
+      await this.addMediaFiles(changedPaths, { persist: false });
+    }
+
+    this.recomputeDerivedState();
+    await this.persistState();
+    await this.persistMediaInventory(inventory);
+    console.log(`LifeServer index refreshed (${reason}) with ${changedPaths.length} changed and ${removedPaths.length} removed files.`);
+    return {
+      changed: true,
+      changedPaths: changedPaths.length,
+      removedPaths: removedPaths.length
+    };
+  }
+
+  async setPhotoDateTime(photoId, { isoDate, time } = {}) {
+    const photo = this.getPhoto(photoId);
+    if (!photo) return null;
+    const nextIsoDate = String(isoDate || photo.isoDate || '').trim();
+    const nextTime = String(time || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(nextIsoDate)) throw new Error('Invalid date.');
+    if (nextTime && !/^\d{2}:\d{2}$/.test(nextTime)) throw new Error('Invalid time.');
+
+    const nextCapturedAt = this.buildCapturedAt(nextIsoDate, nextTime, photo.capturedAt);
+    this.state.mediaDateOverrides = this.state.mediaDateOverrides || {};
+    let wroteToFile = false;
+
+    try {
+      if (isExifWritableImage(photo.filePath)) {
+        await writeImageExifCreatedDate(photo.filePath, nextIsoDate, { capturedAt: nextCapturedAt });
+        wroteToFile = true;
+      } else if (isVideoMetadataWritable(photo.filePath)) {
+        await writeVideoCreatedDateInPlace(photo.filePath, nextIsoDate, { capturedAt: nextCapturedAt });
+        wroteToFile = true;
+      }
+    } catch (error) {
+      wroteToFile = false;
+    }
+
+    if (wroteToFile) {
       delete this.state.mediaDateOverrides[photo.filePath];
+      await this.updatePortableMetadata(photo.filePath, { dateOverride: null });
     } else {
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(nextIsoDate)) throw new Error('Invalid date override.');
-      const timeFragment = typeof photo.capturedAt === 'string' && photo.capturedAt.includes('T')
-        ? photo.capturedAt.slice(10)
-        : 'T12:00:00.000Z';
-      this.state.mediaDateOverrides[photo.filePath] = {
+      const override = {
         isoDate: nextIsoDate,
-        capturedAt: `${nextIsoDate}${timeFragment.startsWith('T') ? timeFragment : 'T12:00:00.000Z'}`,
+        capturedAt: nextCapturedAt,
         source: 'manual'
       };
+      this.state.mediaDateOverrides[photo.filePath] = override;
+      await this.updatePortableMetadata(photo.filePath, { dateOverride: override });
     }
 
     await writeJson(this.mediaDateOverridesCachePath, this.state.mediaDateOverrides);
-    await this.rebuild('manual-date-override');
-    const nextPhoto = this.getPhoto(photoId);
+    await this.rebuild(wroteToFile ? 'media-date-time-write' : 'media-date-time-sidecar');
+    const nextPhoto = this.getPhoto(hash(photo.filePath)) || this.getPhoto(photoId);
     return nextPhoto ? { ...nextPhoto } : null;
+  }
+
+  async setMediaDateOverridesByPath(overrides) {
+    if (!overrides || typeof overrides !== 'object') return;
+
+    this.state.mediaDateOverrides = this.state.mediaDateOverrides || {};
+    let changed = false;
+
+    for (const [filePath, value] of Object.entries(overrides)) {
+      const normalized = this.normalizeMediaDateOverride(value);
+      if (!normalized) continue;
+      const previous = this.state.mediaDateOverrides[filePath];
+      if (
+        previous?.isoDate === normalized.isoDate
+        && previous?.capturedAt === normalized.capturedAt
+        && previous?.source === normalized.source
+      ) {
+        continue;
+      }
+      this.state.mediaDateOverrides[filePath] = normalized;
+      await this.updatePortableMetadata(filePath, { dateOverride: normalized });
+      changed = true;
+    }
+
+    if (changed) {
+      await writeJson(this.mediaDateOverridesCachePath, this.state.mediaDateOverrides);
+    }
+  }
+
+  async renamePhoto(photoId, baseName) {
+    const photo = this.getPhoto(photoId);
+    if (!photo) return null;
+    const nextBaseName = path.basename(String(baseName || '').trim(), photo.ext);
+    if (!nextBaseName) throw new Error('Filename cannot be empty.');
+    const nextFileName = `${nextBaseName}${photo.ext}`;
+    const nextFilePath = path.join(path.dirname(photo.filePath), nextFileName);
+    if (nextFilePath === photo.filePath) return { ...photo };
+    try {
+      await fs.promises.access(nextFilePath);
+      throw new Error('A file with that name already exists.');
+    } catch (error) {
+      if (error?.message === 'A file with that name already exists.') throw error;
+    }
+
+    await this.moveFileOnDisk(photo.filePath, nextFilePath);
+    await this.portableMediaStore.moveEntry(photo.filePath, nextFilePath);
+    await this.remapDerivedFilePath(photo.filePath, nextFilePath);
+    this.removePhotoFromState(photoId, { removeMetadata: false });
+    const [nextPhoto] = await this.addMediaFiles([nextFilePath]);
+    return nextPhoto || null;
+  }
+
+  async movePhoto(photoId, rootId, relativePath) {
+    const photo = this.getPhoto(photoId);
+    if (!photo) return null;
+    const targetRoot = this.photoRoots[Number(rootId)];
+    if (!targetRoot) throw new Error('Invalid target root.');
+    const safeRelative = String(relativePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    const destinationDir = path.resolve(targetRoot, safeRelative || '.');
+    const relativeToRoot = path.relative(targetRoot, destinationDir);
+    if (relativeToRoot.startsWith('..') || path.isAbsolute(relativeToRoot)) throw new Error('Invalid target folder.');
+    await fs.promises.mkdir(destinationDir, { recursive: true });
+    const nextFilePath = path.join(destinationDir, photo.fileName);
+    if (nextFilePath === photo.filePath) return { ...photo };
+    try {
+      await fs.promises.access(nextFilePath);
+      throw new Error('A file with that name already exists in the target folder.');
+    } catch (error) {
+      if (error?.message === 'A file with that name already exists in the target folder.') throw error;
+    }
+
+    await this.moveFileOnDisk(photo.filePath, nextFilePath);
+    await this.portableMediaStore.moveEntry(photo.filePath, nextFilePath);
+    await this.remapDerivedFilePath(photo.filePath, nextFilePath);
+    this.removePhotoFromState(photoId, { removeMetadata: false });
+    const [nextPhoto] = await this.addMediaFiles([nextFilePath]);
+    return nextPhoto || null;
   }
 
   getPhoto(photoId) {

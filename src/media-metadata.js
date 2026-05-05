@@ -177,6 +177,47 @@ async function readVideoCreatedDate(filePath) {
   return null;
 }
 
+async function readMediaDimensions(filePath) {
+  if (!filePath) return { width: 0, height: 0 };
+
+  if (isExifWritableImage(filePath) || ['.gif', '.bmp', '.tif', '.tiff', '.heic', '.heif'].includes(path.extname(filePath).toLowerCase())) {
+    try {
+      const metadata = await sharp(filePath, { animated: true }).metadata();
+      return {
+        width: Number(metadata?.width || 0),
+        height: Number(metadata?.height || 0)
+      };
+    } catch (error) {
+      return { width: 0, height: 0 };
+    }
+  }
+
+  if (isVideoMetadataWritable(filePath)) {
+    try {
+      const { stdout } = await execFileAsync('ffprobe', [
+        '-v',
+        'error',
+        '-print_format',
+        'json',
+        '-show_streams',
+        filePath
+      ]);
+      const payload = JSON.parse(stdout || '{}');
+      const stream = Array.isArray(payload?.streams)
+        ? payload.streams.find((item) => Number(item?.width) > 0 && Number(item?.height) > 0)
+        : null;
+      return {
+        width: Number(stream?.width || 0),
+        height: Number(stream?.height || 0)
+      };
+    } catch (error) {
+      return { width: 0, height: 0 };
+    }
+  }
+
+  return { width: 0, height: 0 };
+}
+
 async function writeImageExifCreatedDate(filePath, isoDate, options = {}) {
   if (!isValidIsoDate(isoDate)) throw new Error('Invalid EXIF date.');
   if (!isExifWritableImage(filePath)) throw new Error('EXIF date updates are not supported for this file type.');
@@ -202,11 +243,37 @@ async function writeImageExifCreatedDate(filePath, isoDate, options = {}) {
   }
 }
 
+async function writeVideoCreatedDateInPlace(filePath, isoDate, options = {}) {
+  if (!isValidIsoDate(isoDate)) throw new Error('Invalid video metadata date.');
+  if (!isVideoMetadataWritable(filePath)) throw new Error('Created date updates are not supported for this video type.');
+
+  const tempPath = tempSiblingPath(filePath, 'video-meta');
+  try {
+    await writeVideoCreatedDate(filePath, tempPath, isoDate, options);
+    try {
+      await fs.promises.rename(tempPath, filePath);
+    } catch (error) {
+      if (!['EPERM', 'EEXIST', 'ENOTEMPTY'].includes(error?.code)) throw error;
+      await fs.promises.rm(filePath, { force: true });
+      await fs.promises.rename(tempPath, filePath);
+    }
+    return {
+      isoDate,
+      metadataTimestamp: isoDateToMetadataTimestamp(isoDate, options.capturedAt)
+    };
+  } catch (error) {
+    await fs.promises.rm(tempPath, { force: true }).catch(() => {});
+    throw error;
+  }
+}
+
 module.exports = {
   isExifWritableImage,
   isVideoMetadataWritable,
+  readMediaDimensions,
   readVideoCreatedDate,
   writeExifDatedImage,
   writeVideoCreatedDate,
-  writeImageExifCreatedDate
+  writeImageExifCreatedDate,
+  writeVideoCreatedDateInPlace
 };

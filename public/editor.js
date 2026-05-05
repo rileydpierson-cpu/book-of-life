@@ -7,9 +7,7 @@ const dom = {
   undoButton: document.getElementById('undoButton'),
   redoButton: document.getElementById('redoButton'),
   saveButton: document.getElementById('saveButton'),
-  saveStatus: document.getElementById('saveStatus'),
   modeButtons: Array.from(document.querySelectorAll('[data-editor-mode]')),
-  photoCount: document.getElementById('editorPhotoCount'),
   photoStripWrap: document.getElementById('editorPhotoStripWrap'),
   photoStrip: document.getElementById('editorPhotoStrip'),
   uploadButton: document.getElementById('editorUploadButton'),
@@ -64,10 +62,13 @@ const AUTOSAVE_INTERVAL_MS = 3000;
 const state = {
   isoDate: null,
   title: '',
+  dateLabel: '',
   loadedValue: '',
   editorMode: 'raw',
   dirty: false,
   saving: false,
+  navigateAfterSave: false,
+  saveError: '',
   saveTimer: 0,
   autoSaveQueued: false,
   history: [],
@@ -132,11 +133,48 @@ const mediaViewer = window.createMediaViewer({
     item.description = payload.description || '';
     return { description: item.description };
   },
-  onSaveDate: async (item, isoDate) => {
-    const payload = await fetchJson(`/api/media/${item.id}/date`, {
+  onValidateFileName: async (item, baseName, viewer) => {
+    try {
+      return await fetchJson(`/api/media/${item.id}/validate-name`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ baseName })
+      });
+    } catch (error) {
+      const current = state.photos.find((photo) => photo.id === item.id) || item;
+      const siblingConflict = (viewer?.getItems?.() || state.photos).some((photo) => (
+        photo.id !== item.id
+        && (photo.folderRootId || '') === (current.folderRootId || '')
+        && (photo.folder || '') === (current.folder || '')
+        && `${baseName}${current.ext || ''}`.toLowerCase() === String(photo.fileName || '').toLowerCase()
+      ));
+      return { valid: Boolean(baseName) && !siblingConflict, exists: siblingConflict, fallback: true };
+    }
+  },
+  onRename: async (item, baseName) => {
+    const payload = await fetchJson(`/api/media/${item.id}/rename`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ isoDate: isoDate || '' })
+      body: JSON.stringify({ baseName })
+    });
+    await refreshEntryPhotos();
+    return payload;
+  },
+  onMove: async (item, target) => {
+    const payload = await fetchJson(`/api/media/${item.id}/move`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(target)
+    });
+    await refreshEntryPhotos();
+    return payload;
+  },
+  onLoadFolders: async () => fetchJson('/api/upload/folders'),
+  onSaveDateTime: async (item, value) => {
+    const payload = await fetchJson(`/api/media/${item.id}/date-time`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(value)
     });
     await refreshEntryPhotos();
     return payload;
@@ -182,6 +220,20 @@ const markdown = window.markdownit ? window.markdownit({
   breaks: true
 }) : null;
 
+const renderPhIcon = window.renderPhIcon || function renderFallbackIcon(name, { variant = 'regular', className = '', spin = false } = {}) {
+  const family = variant === 'fill'
+    ? 'ph-fill'
+    : variant === 'duotone'
+      ? 'ph-duotone'
+      : variant === 'bold'
+        ? 'ph-bold'
+        : 'ph';
+  const classes = [family, `ph-${name}`];
+  if (className) classes.push(className);
+  if (spin) classes.push('is-spinning');
+  return `<i class="${classes.join(' ')}" aria-hidden="true"></i>`;
+};
+
 function redirectToLogin() {
   if (window.location.pathname !== '/login') window.location.href = '/login';
 }
@@ -216,10 +268,66 @@ function applyTheme() {
   document.body.dataset.theme = theme;
 }
 
+function countWords(raw) {
+  return String(raw || '')
+    .replace(/!\[\[[^\]]+\]\]/g, ' ')
+    .replace(/[`*_>#-]/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .length;
+}
+
+function formatEditorStats() {
+  const wordCount = countWords(dom.textarea?.value || '');
+  return `${wordCount} ${wordCount === 1 ? 'Word' : 'Words'} • ${state.photos.length} Media`;
+}
+
+function setSubtitleText(value, className = '') {
+  dom.subtitle.textContent = value;
+  dom.subtitle.classList.toggle('is-saving', className === 'is-saving');
+  dom.subtitle.classList.toggle('is-error', className === 'is-error');
+}
+
+function setSubtitleHtml(html, className = '') {
+  dom.subtitle.innerHTML = html;
+  dom.subtitle.classList.toggle('is-saving', className === 'is-saving');
+  dom.subtitle.classList.toggle('is-error', className === 'is-error');
+}
+
+function renderSubtitle() {
+  if (state.saveError) {
+    setSubtitleText(state.saveError, 'is-error');
+    return;
+  }
+  if (state.dirty || state.saving) {
+    setSubtitleHtml(`${renderPhIcon('spinner-gap', { spin: true })}<span>Saving...</span>`, 'is-saving');
+    return;
+  }
+  setSubtitleText(formatEditorStats());
+}
+
 function setStatus(message, kind = '') {
-  dom.saveStatus.textContent = message;
-  dom.saveStatus.classList.remove('is-dirty', 'is-saved', 'is-error');
-  if (kind) dom.saveStatus.classList.add(kind);
+  state.saveError = kind === 'is-error' ? message : '';
+  renderSubtitle();
+}
+
+function exitEditor() {
+  const hasEntryContent = Boolean((dom.textarea?.value || state.loadedValue || '').trim() || state.photos.length);
+  sessionStorage.setItem('lifeserver-focus-date', state.isoDate);
+  window.location.href = hasEntryContent ? `/?focus=${state.isoDate}#day-${state.isoDate}` : '/';
+}
+
+function handleSaveButtonClick() {
+  if (state.saving) {
+    state.navigateAfterSave = true;
+    return;
+  }
+  if (!state.dirty) {
+    exitEditor();
+    return;
+  }
+  saveEntry({ navigateOnSuccess: true, source: 'manual' });
 }
 
 function escapeHtml(value) {
@@ -295,9 +403,8 @@ function setEditorMode(mode, { focus = true } = {}) {
 
 function updateDirtyState() {
   state.dirty = dom.textarea.value !== state.loadedValue;
-  if (state.saving) return;
-  if (state.dirty) setStatus('Unsaved changes', 'is-dirty');
-  else setStatus('Saved', 'is-saved');
+  if (!state.dirty) state.saveError = '';
+  renderSubtitle();
 }
 
 function clearAutoSaveTimer() {
@@ -420,10 +527,10 @@ function isValidIsoDate(value) {
 }
 
 function uploadDateSourceLabel(item) {
-  if (item?.dateSource === 'exif') return 'Image metadata date';
+  if (item?.dateSource === 'exif') return 'Date taken metadata';
   if (item?.dateSource === 'last-modified') return 'File modified date';
-  if (item?.dateSource === 'shared') return 'Shared datestamp';
-  if (item?.dateSource === 'manual') return 'Custom date';
+  if (item?.dateSource === 'shared') return 'Shared LifeServer datestamp';
+  if (item?.dateSource === 'manual') return 'Custom LifeServer date';
   return 'Entry date';
 }
 
@@ -477,7 +584,7 @@ function updateUploadButtonLabel() {
 }
 
 function updateUploadDateToggleLabel() {
-  if (dom.exifDateLabel) dom.exifDateLabel.textContent = 'Specify Datestamp';
+  if (dom.exifDateLabel) dom.exifDateLabel.textContent = 'Override LifeServer datestamp';
 }
 
 function updateUploadSharedDateUi() {
@@ -570,9 +677,9 @@ function renderUploadPreviews() {
     const isVideo = /^video\//.test(file.type) || /\.(mp4|mov|m4v|webm|avi|mkv|3gp)$/i.test(file.name);
     const displayName = uploadDisplayName(file.name);
     const previewMedia = isVideo
-      ? `<video src="${item.objectUrl}" muted playsinline preload="none"></video><span class="upload-preview-video"><i class="fa-solid fa-play"></i></span>`
+      ? `<video src="${item.objectUrl}" muted playsinline preload="none"></video><span class="upload-preview-video">${renderPhIcon('play-fill', { variant: 'fill' })}</span>`
       : `<img src="${item.objectUrl}" alt="${file.name}" loading="lazy" decoding="async" />`;
-    return `<div class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}"><div class="upload-preview-thumb">${previewMedia}${state.uploadXhr ? '' : `<button class="upload-preview-remove" type="button" data-upload-remove="${item.id}" aria-label="Remove ${displayName}"><i class="fa-solid fa-xmark"></i></button>`}</div><div class="upload-preview-meta"><div class="upload-preview-meta-row"><div class="upload-preview-meta-copy"><strong title="${displayName}">${displayName}</strong><span>${uploadDateSourceLabel(item)}</span><span>Size · ${formatFileSize(file.size)}</span></div><button class="upload-preview-date" type="button" data-upload-date-trigger="${item.id}" aria-label="Change date for ${displayName}"><i class="fa-solid fa-calendar-day"></i><strong title="${displayName}">${monthDayLabel(item.isoDate) || 'No date'}</strong></button><input class="upload-preview-date-input" type="date" data-upload-date-input="${item.id}" value="${item.isoDate || ''}" /></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></div></div>`;
+    return `<div class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}"><div class="upload-preview-thumb">${previewMedia}${state.uploadXhr ? '' : `<button class="upload-preview-remove" type="button" data-upload-remove="${item.id}" aria-label="Remove ${displayName}">${renderPhIcon('x', { variant: 'bold' })}</button>`}</div><div class="upload-preview-meta"><div class="upload-preview-meta-row"><div class="upload-preview-meta-copy"><strong title="${displayName}">${displayName}</strong><span>${uploadDateSourceLabel(item)}</span><span>Size · ${formatFileSize(file.size)}</span></div><button class="upload-preview-date" type="button" data-upload-date-trigger="${item.id}" aria-label="Change date for ${displayName}">${renderPhIcon('calendar-dots', { variant: 'duotone' })}<strong title="${displayName}">${monthDayLabel(item.isoDate) || 'No date'}</strong></button><input class="upload-preview-date-input" type="date" data-upload-date-input="${item.id}" value="${item.isoDate || ''}" /></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></div></div>`;
   }).join('');
   updateUploadPreviewProgress();
 }
@@ -709,16 +816,20 @@ function focusPendingFolderInput() {
 }
 
 function renderPhotos() {
-  const count = state.photos.length;
-  dom.photoCount.textContent = `${count} photo${count === 1 ? '' : 's'}`;
-  dom.photoStripWrap.classList.toggle('hidden', count === 0);
-  dom.photoStrip.innerHTML = state.photos.map((photo, index) => `
+  dom.photoStrip.innerHTML = `
+    <button id="editorUploadButton" class="editor-photo-thumb editor-upload-tile" type="button" aria-label="Upload media">
+      ${renderPhIcon('upload-simple', { variant: 'bold' })}
+      <span>Upload Media</span>
+    </button>
+  ` + state.photos.map((photo, index) => `
     <button class="editor-photo-thumb" type="button" data-photo-index="${index}">
       ${photo.type === 'video'
-        ? `<img src="${photo.thumbUrl}" alt="${photo.fileName || ''}" /><span class="editor-video-mark"><i class="fa-solid fa-play"></i></span>`
+        ? `<video src="${photo.previewUrl || photo.thumbUrl}" muted autoplay loop playsinline preload="metadata" poster="${photo.thumbUrl || ''}" aria-hidden="true"></video><span class="editor-video-mark">${renderPhIcon('play-fill', { variant: 'fill' })}</span>`
         : `<img src="${photo.thumbUrl}" alt="${photo.fileName || ''}" />`}
     </button>
   `).join('');
+  dom.uploadButton = document.getElementById('editorUploadButton');
+  renderSubtitle();
 }
 
 function activeViewerNode() {
@@ -893,16 +1004,21 @@ async function deleteCurrentPhoto() {
 }
 
 async function saveEntry({ navigateOnSuccess = true, source = 'manual' } = {}) {
-  if (state.saving) return;
+  if (state.saving) {
+    if (navigateOnSuccess) state.navigateAfterSave = true;
+    return;
+  }
   clearAutoSaveTimer();
   state.autoSaveQueued = false;
   state.saving = true;
-  dom.saveButton.disabled = true;
+  if (navigateOnSuccess) state.navigateAfterSave = true;
+  state.saveError = '';
+  renderSubtitle();
   const raw = dom.textarea.value;
   let saveSucceeded = false;
-  setStatus(source === 'auto' ? 'Autosaving...' : 'Saving...');
+  let payload = null;
   try {
-    const payload = await fetchJson(`/api/entry/${state.isoDate}`, {
+    payload = await fetchJson(`/api/entry/${state.isoDate}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ raw })
@@ -910,21 +1026,22 @@ async function saveEntry({ navigateOnSuccess = true, source = 'manual' } = {}) {
     saveSucceeded = true;
     state.loadedValue = raw;
     pushHistorySnapshot(true);
-    updateDirtyState();
-    setStatus('Saved', 'is-saved');
-    if (!navigateOnSuccess) return payload;
-    if (payload.day || state.photos.length) {
-      sessionStorage.setItem('lifeserver-focus-date', state.isoDate);
-      window.location.href = `/?focus=${state.isoDate}#day-${state.isoDate}`;
-    } else {
-      window.location.href = '/';
-    }
     return payload;
   } catch (error) {
     setStatus(error.message || 'Save failed', 'is-error');
   } finally {
     state.saving = false;
-    dom.saveButton.disabled = false;
+    if (saveSucceeded) {
+      updateDirtyState();
+      if (state.navigateAfterSave) {
+        state.navigateAfterSave = false;
+        if (payload?.day || state.photos.length) exitEditor();
+        else window.location.href = '/';
+        return;
+      }
+    } else {
+      state.navigateAfterSave = false;
+    }
     if (!navigateOnSuccess && saveSucceeded && state.dirty && state.autoSaveQueued) {
       state.autoSaveQueued = false;
       scheduleAutoSave(0);
@@ -938,8 +1055,8 @@ async function loadEntry() {
   const createSuffix = shouldCreateIfMissing() ? '?create=1' : '';
   const entry = await fetchJson(`/api/entry/${state.isoDate}${createSuffix}`, { cache: 'no-store' });
   state.title = entry.title;
+  state.dateLabel = entry.dateLabel;
   dom.title.textContent = entry.title;
-  dom.subtitle.textContent = entry.dateLabel;
   dom.textarea.value = entry.raw || '';
   dom.textarea.placeholder = relativePlaceholder(state.isoDate, entry.dateLabel);
   setPreviewPlaceholder(dom.textarea.placeholder);
@@ -980,17 +1097,19 @@ function renderFolderNode(node, rootId, depth = 0) {
   const createRow = isCreatingHere ? `
     <div class="upload-folder-node depth-${depth + 1} is-creating">
       <div class="upload-folder-item upload-folder-item-creating" style="padding-left:${12 + ((depth + 1) * 14)}px">
-        <span class="upload-folder-item-main"><i class="fa-solid fa-folder-plus"></i><input id="uploadNewFolderInput" class="upload-folder-input" type="text" value="${state.uploadCreatingFolder.name || 'New Folder'}" /></span>
-        <label class="upload-folder-item-meta upload-folder-confirm" aria-label="Create folder"><input id="uploadNewFolderConfirm" type="checkbox" /><i class="fa-solid fa-check"></i></label>
+        <span class="upload-folder-item-main">${renderPhIcon('folder-plus', { variant: 'duotone' })}<input id="uploadNewFolderInput" class="upload-folder-input" type="text" value="${state.uploadCreatingFolder.name || 'New Folder'}" /></span>
+        <label class="upload-folder-item-meta upload-folder-confirm" aria-label="Create folder"><input id="uploadNewFolderConfirm" type="checkbox" />${renderPhIcon('check', { variant: 'bold' })}</label>
       </div>
     </div>
   ` : '';
-  const icon = node.pending ? 'spinner fa-spin' : (node.icon || 'folder');
+  const icon = node.pending
+    ? renderPhIcon('spinner-gap', { spin: true })
+    : renderPhIcon(node.icon || 'folder', { variant: 'duotone' });
   const meta = `${node.mediaCount || 0}${modified ? ` · ${modified}` : ''}`;
   return `
     <div class="upload-folder-node depth-${depth}">
       <button class="upload-folder-item ${isSelected ? 'is-selected' : ''} ${node.pending ? 'is-pending' : ''}" type="button" style="padding-left:${12 + indent}px" data-upload-root="${rootId}" data-upload-path="${node.relativePath}">
-        <span class="upload-folder-item-main"><i class="fa-solid fa-${icon}"></i><span>${node.displayPath === '.' ? '(root)' : node.label}</span></span>
+        <span class="upload-folder-item-main">${icon}<span>${node.displayPath === '.' ? '(root)' : node.label}</span></span>
         <span class="upload-folder-item-meta">${meta}</span>
       </button>
       ${(node.children || []).map((child) => renderFolderNode(child, rootId, depth + 1)).join('')}
@@ -1007,7 +1126,7 @@ function renderUploadPreviewsLegacy() {
     const file = item.file;
     const isVideo = /^video\//.test(file.type) || /\.(mp4|mov|m4v|webm|avi|mkv|3gp)$/i.test(file.name);
     const displayName = uploadDisplayName(file.name, state.isoDate, prefix);
-    return `<button class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}" type="button" ${state.uploadXhr ? 'disabled' : ''} data-upload-remove="${item.id}" aria-label="Remove ${file.name}"><div class="upload-preview-thumb">${isVideo ? `<video src="${item.objectUrl}" muted playsinline preload="metadata"></video><span class="upload-preview-video"><i class="fa-solid fa-play"></i></span>` : `<img src="${item.objectUrl}" alt="${file.name}" />`}${state.uploadXhr ? '' : '<span class="upload-preview-remove"><i class="fa-solid fa-xmark"></i></span>'}</div><div class="upload-preview-meta"><strong title="${displayName}">${displayName}</strong><span>EXIF date · ${formatUploadDateSummary(file, state.isoDate, prefix)}</span><span>Size · ${formatFileSize(file.size)}</span></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></button>`;
+    return `<button class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}" type="button" ${state.uploadXhr ? 'disabled' : ''} data-upload-remove="${item.id}" aria-label="Remove ${file.name}"><div class="upload-preview-thumb">${isVideo ? `<video src="${item.objectUrl}" muted playsinline preload="metadata"></video><span class="upload-preview-video">${renderPhIcon('play-fill', { variant: 'fill' })}</span>` : `<img src="${item.objectUrl}" alt="${file.name}" />`}${state.uploadXhr ? '' : `<span class="upload-preview-remove">${renderPhIcon('x', { variant: 'bold' })}</span>`}</div><div class="upload-preview-meta"><strong title="${displayName}">${displayName}</strong><span>EXIF date · ${formatUploadDateSummary(file, state.isoDate, prefix)}</span><span>Size · ${formatFileSize(file.size)}</span></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></button>`;
   }).join('');
   updateUploadPreviewProgress();
 }
@@ -1021,9 +1140,9 @@ function renderUploadPreviewsFilenameLegacy() {
     const isVideo = /^video\//.test(file.type) || /\.(mp4|mov|m4v|webm|avi|mkv|3gp)$/i.test(file.name);
     const displayName = uploadDisplayName(file.name, state.isoDate, prefix);
     const previewMedia = isVideo
-      ? `<video src="${item.objectUrl}" muted playsinline preload="none"></video><span class="upload-preview-video"><i class="fa-solid fa-play"></i></span>`
+      ? `<video src="${item.objectUrl}" muted playsinline preload="none"></video><span class="upload-preview-video">${renderPhIcon('play-fill', { variant: 'fill' })}</span>`
       : `<img src="${item.objectUrl}" alt="${file.name}" loading="lazy" decoding="async" />`;
-    return `<button class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}" type="button" ${state.uploadXhr ? 'disabled' : ''} data-upload-remove="${item.id}" aria-label="Remove ${file.name}"><div class="upload-preview-thumb">${previewMedia}${state.uploadXhr ? '' : '<span class="upload-preview-remove"><i class="fa-solid fa-xmark"></i></span>'}</div><div class="upload-preview-meta"><strong title="${displayName}">${displayName}</strong><span>EXIF date · ${formatUploadDateSummary(file, state.isoDate, prefix)}</span><span>Size · ${formatFileSize(file.size)}</span></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></button>`;
+    return `<button class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}" type="button" ${state.uploadXhr ? 'disabled' : ''} data-upload-remove="${item.id}" aria-label="Remove ${file.name}"><div class="upload-preview-thumb">${previewMedia}${state.uploadXhr ? '' : `<span class="upload-preview-remove">${renderPhIcon('x', { variant: 'bold' })}</span>`}</div><div class="upload-preview-meta"><strong title="${displayName}">${displayName}</strong><span>EXIF date · ${formatUploadDateSummary(file, state.isoDate, prefix)}</span><span>Size · ${formatFileSize(file.size)}</span></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></button>`;
   }).join('');
   updateUploadPreviewProgress();
 }
@@ -1037,9 +1156,9 @@ function renderUploadPreviewsExifLegacy() {
     const isVideo = /^video\//.test(file.type) || /\.(mp4|mov|m4v|webm|avi|mkv|3gp)$/i.test(file.name);
     const displayName = uploadDisplayName(file.name);
     const previewMedia = isVideo
-      ? `<video src="${item.objectUrl}" muted playsinline preload="none"></video><span class="upload-preview-video"><i class="fa-solid fa-play"></i></span>`
+      ? `<video src="${item.objectUrl}" muted playsinline preload="none"></video><span class="upload-preview-video">${renderPhIcon('play-fill', { variant: 'fill' })}</span>`
       : `<img src="${item.objectUrl}" alt="${file.name}" loading="lazy" decoding="async" />`;
-    return `<button class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}" type="button" ${state.uploadXhr ? 'disabled' : ''} data-upload-remove="${item.id}" aria-label="Remove ${file.name}"><div class="upload-preview-thumb">${previewMedia}${state.uploadXhr ? '' : '<span class="upload-preview-remove"><i class="fa-solid fa-xmark"></i></span>'}</div><div class="upload-preview-meta"><strong title="${displayName}">${displayName}</strong><span>${formatUploadDateSummary(file, state.isoDate, setExifDate)}</span><span>Size Â· ${formatFileSize(file.size)}</span></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></button>`;
+    return `<button class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}" type="button" ${state.uploadXhr ? 'disabled' : ''} data-upload-remove="${item.id}" aria-label="Remove ${file.name}"><div class="upload-preview-thumb">${previewMedia}${state.uploadXhr ? '' : `<span class="upload-preview-remove">${renderPhIcon('x', { variant: 'bold' })}</span>`}</div><div class="upload-preview-meta"><strong title="${displayName}">${displayName}</strong><span>${formatUploadDateSummary(file, state.isoDate, setExifDate)}</span><span>Size Â· ${formatFileSize(file.size)}</span></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></button>`;
   }).join('');
   updateUploadPreviewProgress();
 }
@@ -1053,9 +1172,9 @@ function renderUploadPreviews() {
     const isVideo = /^video\//.test(file.type) || /\.(mp4|mov|m4v|webm|avi|mkv|3gp)$/i.test(file.name);
     const displayName = uploadDisplayName(file.name);
     const previewMedia = isVideo
-      ? `<video src="${item.objectUrl}" muted playsinline preload="none"></video><span class="upload-preview-video"><i class="fa-solid fa-play"></i></span>`
+      ? `<video src="${item.objectUrl}" muted playsinline preload="none"></video><span class="upload-preview-video">${renderPhIcon('play-fill', { variant: 'fill' })}</span>`
       : `<img src="${item.objectUrl}" alt="${file.name}" loading="lazy" decoding="async" />`;
-    return `<button class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}" type="button" ${state.uploadXhr ? 'disabled' : ''} data-upload-remove="${item.id}" aria-label="Remove ${file.name}"><div class="upload-preview-thumb">${previewMedia}${state.uploadXhr ? '' : '<span class="upload-preview-remove"><i class="fa-solid fa-xmark"></i></span>'}</div><div class="upload-preview-meta"><strong title="${displayName}">${displayName}</strong><span>${formatUploadDateSummary(file, state.isoDate, setExifDate)}</span><span>Size - ${formatFileSize(file.size)}</span></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></button>`;
+    return `<button class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}" type="button" ${state.uploadXhr ? 'disabled' : ''} data-upload-remove="${item.id}" aria-label="Remove ${file.name}"><div class="upload-preview-thumb">${previewMedia}${state.uploadXhr ? '' : `<span class="upload-preview-remove">${renderPhIcon('x', { variant: 'bold' })}</span>`}</div><div class="upload-preview-meta"><strong title="${displayName}">${displayName}</strong><span>${formatUploadDateSummary(file, state.isoDate, setExifDate)}</span><span>Size - ${formatFileSize(file.size)}</span></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></button>`;
   }).join('');
   updateUploadPreviewProgress();
 }
@@ -1066,7 +1185,7 @@ function renderFolderTree() {
     : state.folderRoots;
   dom.folderTree.innerHTML = roots.map((root) => `
     <div class="upload-folder-root ${root.rootId === state.uploadTarget.rootId ? 'is-active-root' : ''}">
-      <div style="font-weight:700; margin: 6px 0;"><i class="fa-solid fa-hard-drive"></i> ${root.rootLabel} <span class="upload-folder-root-count">${root.tree.mediaCount || 0}</span></div>
+      <div style="font-weight:700; margin: 6px 0;">${renderPhIcon('hard-drives', { variant: 'duotone' })} ${root.rootLabel} <span class="upload-folder-root-count">${root.tree.mediaCount || 0}</span></div>
       ${renderFolderNode(root.tree, root.rootId)}
     </div>
   `).join('');
@@ -1077,7 +1196,7 @@ function renderFolderTree() {
 }
 
 async function openUploadModal() {
-  dom.uploadTitle.textContent = `Add media for ${dom.subtitle.textContent}`;
+  dom.uploadTitle.textContent = `Add media for ${state.dateLabel || state.isoDate}`;
   if (!state.uploadXhr) {
     state.uploadProgressRatio = 0;
     dom.setExifDate.checked = true;
@@ -1100,6 +1219,7 @@ function closeUploadModal() {
     dom.uploadModal.classList.add('hidden');
     dom.uploadResumeLabel.textContent = dom.uploadSubmitLabel?.textContent || 'Uploading…';
     dom.uploadResume?.classList.remove('hidden');
+    if (!mediaViewer.isOpen()) document.body.classList.remove('viewer-open');
     return;
   }
   dom.uploadModal.classList.add('hidden');
@@ -1107,6 +1227,7 @@ function closeUploadModal() {
   clearUploadSelection();
   renderUploadPreviews();
   updateUploadUiState();
+  if (!mediaViewer.isOpen()) document.body.classList.remove('viewer-open');
 }
 
 function promptNewFolder() {
@@ -1268,15 +1389,15 @@ function renderUploadPreviews() {
     const isVideo = /^video\//.test(file.type) || /\.(mp4|mov|m4v|webm|avi|mkv|3gp)$/i.test(file.name);
     const displayName = uploadDisplayName(file.name);
     const previewMedia = isVideo
-      ? `<video src="${item.objectUrl}" muted playsinline preload="none"></video><span class="upload-preview-video"><i class="fa-solid fa-play"></i></span>`
+      ? `<video src="${item.objectUrl}" muted playsinline preload="none"></video><span class="upload-preview-video">${renderPhIcon('play-fill', { variant: 'fill' })}</span>`
       : `<img src="${item.objectUrl}" alt="${file.name}" loading="lazy" decoding="async" />`;
-    return `<div class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}"><div class="upload-preview-thumb">${previewMedia}${state.uploadXhr ? '' : `<button class="upload-preview-remove" type="button" data-upload-remove="${item.id}" aria-label="Remove ${displayName}"><i class="fa-solid fa-xmark"></i></button>`}</div><div class="upload-preview-meta"><div class="upload-preview-meta-row"><div class="upload-preview-meta-copy"><strong title="${displayName}">${displayName}</strong><span>${uploadDateSourceLabel(item)}</span><span>Size · ${formatFileSize(file.size)}</span></div><button class="upload-preview-date" type="button" data-upload-date-trigger="${item.id}" aria-label="Change date for ${displayName}"><i class="fa-solid fa-calendar-day"></i><strong title="${displayName}">${monthDayLabel(item.isoDate) || 'No date'}</strong></button><input class="upload-preview-date-input" type="date" data-upload-date-input="${item.id}" value="${item.isoDate || ''}" /></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></div></div>`;
+    return `<div class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}"><div class="upload-preview-thumb">${previewMedia}${state.uploadXhr ? '' : `<button class="upload-preview-remove" type="button" data-upload-remove="${item.id}" aria-label="Remove ${displayName}">${renderPhIcon('x', { variant: 'bold' })}</button>`}</div><div class="upload-preview-meta"><div class="upload-preview-meta-row"><div class="upload-preview-meta-copy"><strong title="${displayName}">${displayName}</strong><span>${uploadDateSourceLabel(item)}</span><span>Size · ${formatFileSize(file.size)}</span></div><button class="upload-preview-date" type="button" data-upload-date-trigger="${item.id}" aria-label="Change date for ${displayName}">${renderPhIcon('calendar-dots', { variant: 'duotone' })}<strong title="${displayName}">${monthDayLabel(item.isoDate) || 'No date'}</strong></button><input class="upload-preview-date-input" type="date" data-upload-date-input="${item.id}" value="${item.isoDate || ''}" /></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></div></div>`;
   }).join('');
   updateUploadPreviewProgress();
 }
 
 async function openUploadModal() {
-  dom.uploadTitle.textContent = `Add media for ${dom.subtitle.textContent}`;
+  dom.uploadTitle.textContent = `Add media for ${state.dateLabel || state.isoDate}`;
   if (!state.uploadXhr) {
     state.uploadProgressRatio = 0;
     dom.setExifDate.checked = false;
@@ -1379,8 +1500,7 @@ function uploadFiles() {
 dom.backButton.addEventListener('click', handleBack);
 dom.undoButton.addEventListener('click', undo);
 dom.redoButton.addEventListener('click', redo);
-dom.saveButton.addEventListener('click', saveEntry);
-dom.uploadButton.addEventListener('click', () => dom.addFilesButton.click());
+dom.saveButton.addEventListener('click', handleSaveButtonClick);
 dom.uploadClose.addEventListener('click', closeUploadModal);
 dom.uploadBackdrop.addEventListener('click', closeUploadModal);
 dom.newFolderButton?.addEventListener('click', () => promptNewFolder());
@@ -1464,6 +1584,11 @@ dom.textarea.addEventListener('input', () => {
   scheduleAutoSave();
 });
 dom.photoStrip.addEventListener('click', (event) => {
+  const uploadButton = event.target.closest('#editorUploadButton');
+  if (uploadButton) {
+    dom.addFilesButton.click();
+    return;
+  }
   const button = event.target.closest('[data-photo-index]');
   if (!button) return;
   openViewer(Number(button.dataset.photoIndex));

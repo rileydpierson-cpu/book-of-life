@@ -171,7 +171,7 @@ async function walkFiles(rootDir, collector = []) {
   }
 
   for (const entry of entries) {
-    if (entry.isDirectory() && (entry.name === '.trash' || entry.name === '.LifeServerTrash')) continue;
+    if (entry.isDirectory() && (entry.name === '.trash' || entry.name === '.LifeServerTrash' || entry.name === '.LifeServer')) continue;
     const fullPath = path.join(rootDir, entry.name);
     if (entry.isDirectory()) {
       await walkFiles(fullPath, collector);

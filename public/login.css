@@ -19,6 +19,14 @@ body {
   background: radial-gradient(circle at top, #1f2630 0%, var(--bg) 58%);
 }
 
+.ph,
+.ph-fill,
+.ph-bold {
+  display: inline-block;
+  line-height: 1;
+  vertical-align: middle;
+}
+
 .login-shell {
   min-height: 100vh;
   display: grid;
@@ -43,6 +51,7 @@ body {
   place-items: center;
   background: rgba(255, 255, 255, 0.08);
   font-size: 1.4rem;
+  color: var(--accent);
 }
 
 h1 {

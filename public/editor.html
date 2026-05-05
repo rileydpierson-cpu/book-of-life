@@ -4,7 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>LifeServer Editor</title>
-    <link rel="stylesheet" href="/vendor/fontawesome/css/all.min.css" />
+    <link rel="stylesheet" href="/vendor/phosphor/regular/style.css" />
+    <link rel="stylesheet" href="/vendor/phosphor/fill/style.css" />
+    <link rel="stylesheet" href="/vendor/phosphor/duotone/style.css" />
+    <link rel="stylesheet" href="/vendor/phosphor/bold/style.css" />
     <link rel="stylesheet" href="/editor.css?v=2026-04-24-2" />
     <link rel="stylesheet" href="/media-viewer.css?v=2026-04-24-2" />
   </head>
@@ -12,26 +15,27 @@
     <div class="editor-shell">
       <header class="editor-topbar">
         <div class="editor-topbar-left">
-          <button id="editorBackButton" class="editor-icon-button" type="button" aria-label="Back"><i class="fa-solid fa-chevron-left"></i></button>
+          <button id="editorBackButton" class="editor-icon-button" type="button" aria-label="Back"><i class="ph-bold ph-caret-left"></i></button>
           <div>
             <h1 id="editorTitle" class="editor-title">Entry</h1>
-            <p id="editorSubtitle" class="editor-subtitle">Loading…</p>
+            <p id="editorSubtitle" class="editor-subtitle">Loading...</p>
           </div>
         </div>
         <div class="editor-topbar-right">
-          <button id="undoButton" class="editor-icon-button" type="button" aria-label="Undo"><i class="fa-solid fa-rotate-left"></i></button>
-          <button id="redoButton" class="editor-icon-button" type="button" aria-label="Redo"><i class="fa-solid fa-rotate-right"></i></button>
-          <button id="saveButton" class="save-button" type="button" aria-label="Save entry"><i class="fa-solid fa-check"></i><span>Save</span></button>
+          <button id="undoButton" class="editor-icon-button" type="button" aria-label="Undo"><i class="ph-bold ph-arrow-counter-clockwise"></i></button>
+          <button id="redoButton" class="editor-icon-button" type="button" aria-label="Redo"><i class="ph-bold ph-arrow-clockwise"></i></button>
+          <button id="saveButton" class="save-button" type="button" aria-label="Save entry"><i class="ph-bold ph-check"></i></button>
         </div>
       </header>
 
       <section class="editor-media-panel">
-        <div class="editor-media-panel-head">
-          <div class="editor-media-count"><i class="fa-regular fa-images"></i> <span id="editorPhotoCount">0 photos</span></div>
-          <button id="editorUploadButton" class="editor-icon-button" type="button" aria-label="Add photos"><i class="fa-solid fa-plus"></i></button>
-        </div>
-        <div id="editorPhotoStripWrap" class="editor-photo-strip-wrap hidden">
-          <div id="editorPhotoStrip" class="editor-photo-strip"></div>
+        <div id="editorPhotoStripWrap" class="editor-photo-strip-wrap">
+          <div id="editorPhotoStrip" class="editor-photo-strip">
+            <button id="editorUploadButton" class="editor-photo-thumb editor-upload-tile" type="button" aria-label="Upload media">
+              <i class="ph-bold ph-upload-simple"></i>
+              <span>Upload Media</span>
+            </button>
+          </div>
         </div>
       </section>
 
@@ -41,7 +45,6 @@
             <button id="editorModeRaw" class="editor-mode-button is-active" type="button" data-editor-mode="raw" aria-pressed="true">Raw text</button>
             <button id="editorModePreview" class="editor-mode-button" type="button" data-editor-mode="preview" aria-pressed="false">Preview</button>
           </div>
-          <span id="saveStatus" class="save-status">Loading…</span>
         </div>
         <div class="editor-surface-stack">
           <textarea id="editorTextarea" class="editor-textarea" spellcheck="false" autocomplete="off" autocapitalize="sentences"></textarea>
@@ -55,39 +58,40 @@
       <div class="editor-upload-window">
         <div class="settings-window-head">
           <h2 id="editorUploadTitle">Add media</h2>
-          <button id="editorUploadClose" class="editor-icon-button" type="button" aria-label="Close upload"><i class="fa-solid fa-xmark"></i></button>
+          <button id="editorUploadClose" class="editor-icon-button" type="button" aria-label="Close upload"><i class="ph-bold ph-x"></i></button>
         </div>
         <button id="editorFolderButton" class="editor-folder-button" type="button">
-          <span class="upload-folder-icon"><i class="fa-solid fa-folder-open"></i></span>
+          <span class="upload-folder-icon"><i class="ph-duotone ph-folder-open"></i></span>
           <strong id="editorFolderLabel">Choose a folder</strong>
         </button>
         <div class="upload-folder-tree-shell editor-upload-folder-tree-shell">
-          <button id="editorNewFolderButton" class="editor-icon-button" type="button" aria-label="Create folder"><i class="fa-solid fa-plus"></i></button>
+          <button id="editorNewFolderButton" class="editor-icon-button" type="button" aria-label="Create folder"><i class="ph-bold ph-plus"></i></button>
           <div id="editorFolderTree" class="editor-folder-tree"></div>
         </div>
         <label class="editor-file-input hidden" aria-hidden="true">
           <input id="editorFileInput" type="file" multiple accept="image/*,video/*,.heic,.heif,.mov,.mp4,.m4v,.webm,.avi,.mkv,.3gp" />
         </label>
-        <div id="editorUploadSelectionLoading" class="upload-selection-loading hidden" aria-live="polite"><i class="fa-solid fa-spinner fa-spin"></i><span>Preparing previews...</span></div>
+        <p class="section-subtitle">Files are uploaded as-is. Preview generation in the browser does not alter the original file metadata.</p>
+        <div id="editorUploadSelectionLoading" class="upload-selection-loading hidden" aria-live="polite"><i class="ph ph-spinner-gap is-spinning"></i><span>Preparing previews...</span></div>
         <div id="editorUploadPreviewList" class="upload-preview-list upload-preview-list-view"></div>
         <div class="upload-shared-date-shell">
           <label class="editor-check-row">
             <input id="editorSetExifDate" type="checkbox" />
-            <span id="editorExifDateLabel">Specify Datestamp</span>
+            <span id="editorExifDateLabel">Override LifeServer datestamp</span>
           </label>
           <input id="editorSharedDate" class="upload-shared-date-input" type="date" disabled />
         </div>
         <button id="editorAddFilesButton" class="editor-file-picker" type="button">
-          <span><i class="fa-solid fa-photo-film"></i> Add Files</span>
+          <span><i class="ph-duotone ph-images-square"></i> Add Files</span>
         </button>
         <div class="upload-actions upload-actions-stacked">
-          <button id="editorUploadSubmit" class="save-button upload-submit-button" type="button"><span class="upload-submit-fill"></span><span class="upload-submit-content"><i class="fa-solid fa-upload"></i><span id="editorUploadSubmitLabel">Upload</span></span></button>
+          <button id="editorUploadSubmit" class="save-button upload-submit-button" type="button"><span class="upload-submit-fill"></span><span class="upload-submit-content"><i class="ph-bold ph-upload-simple"></i><span id="editorUploadSubmitLabel">Upload</span></span></button>
           <button id="editorUploadCancel" class="ghost-button upload-cancel-button hidden" type="button">Cancel upload</button>
         </div>
       </div>
     </div>
 
-    <button id="editorUploadResume" class="upload-resume hidden" type="button" aria-label="Show upload progress"><i class="fa-solid fa-cloud-arrow-up"></i><span id="editorUploadResumeLabel">Uploading...</span></button>
+    <button id="editorUploadResume" class="upload-resume hidden" type="button" aria-label="Show upload progress"><i class="ph-bold ph-cloud-arrow-up"></i><span id="editorUploadResumeLabel">Uploading...</span></button>
 
     <script src="/vendor/exifr/full.umd.js?v=2026-05-02-1" defer></script>
     <script src="/media-viewer.js?v=2026-04-24-2" defer></script>
