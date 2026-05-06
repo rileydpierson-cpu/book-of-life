@@ -644,7 +644,6 @@ body.search-bar-open .topbar {
   box-shadow: none;
 }
 .journal-wrap,
-.entry-media-strip-wrap,
 .photo-grid,
 .search-photo-stack-wrap {
   grid-column: 1 / -1;
@@ -707,6 +706,11 @@ body.search-bar-open .topbar {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+.lazy-media-bg {
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
 }
 .hero-gradient {
   position: absolute;
@@ -771,25 +775,57 @@ body.search-bar-open .topbar {
   margin: 0;
   appearance: none;
 }
-.media-tile { padding: 0; margin: 0; }
+.media-tile { padding: 0; margin: 0; 
+  background-position: center;
+  background-size: cover;}
 
 .photo-strip-button { width: calc(clamp(180px, 22vw, 240px) * var(--tile-scale)); aspect-ratio: 1.12 / 1; min-height: calc(174px * var(--tile-scale)); flex: 0 0 auto; }
 .photo-grid-button { aspect-ratio: 1 / 1; }
 .media-skeleton {
   position: absolute;
   inset: 0;
-  background: linear-gradient(110deg, var(--accent-soft), transparent 55%, var(--accent-soft));
-  animation: shimmer 1.2s linear infinite;
+  overflow: hidden;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 18% 22%, rgba(255, 255, 255, 0.18), transparent 28%),
+    linear-gradient(180deg, color-mix(in srgb, var(--paper) 84%, var(--accent-soft)), color-mix(in srgb, var(--paper) 92%, white));
+  opacity: 1;
+  transition: opacity 220ms ease;
+  will-change: opacity;
 }
-@keyframes shimmer {
-  from { transform: translateX(-35%); }
-  to { transform: translateX(35%); }
+.media-skeleton::after {
+  content: '';
+  position: absolute;
+  inset: -8%;
+  background: linear-gradient(
+    100deg,
+    transparent 18%,
+    rgba(255, 255, 255, 0.06) 34%,
+    rgba(255, 255, 255, 0.42) 50%,
+    rgba(255, 255, 255, 0.08) 66%,
+    transparent 82%
+  );
+  transform: translate3d(-140%, 0, 0);
+  animation: media-skeleton-shimmer 1.55s ease-in-out infinite;
+  will-change: transform;
 }
-.lazy-media {
+.media-skeleton.is-exiting {
+  opacity: 0;
+}
+@keyframes media-skeleton-shimmer {
+  from { transform: translate3d(-140%, 0, 0); }
+  to { transform: translate3d(140%, 0, 0); }
+}
+.lazy-media:not(button) {
   opacity: 0;
   transition: opacity 140ms ease;
 }
-.lazy-media.is-ready { opacity: 1; }
+.lazy-media:not(button).is-ready { opacity: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+  .media-skeleton::after { animation: none; }
+  .media-skeleton { transition: none; }
+}
 .media-badge {
   position: absolute;
   right: 0px;
@@ -830,39 +866,6 @@ body.search-bar-open .topbar {
 .card-fallback-icon i,
 .journal-edit-button i {
   font-size: 1.05em;
-}
-
-.entry-media-strip-wrap {
-  overflow-x: auto;
-  padding: 20px 0 6px;
-  scrollbar-width: none;
-}
-.entry-media-strip-wrap::-webkit-scrollbar { display: none; }
-.entry-media-strip {
-  display: flex;
-  width: fit-content;
-  gap: 12px;
-  align-items: stretch;
-}
-.entry-media-tile {
-  position: relative;
-  overflow: hidden;
-  width: clamp(180px, 27vw, 230px);
-  min-height: 180px;
-  aspect-ratio: 1.06 / 1;
-  border: 0;
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--paper) 96%, white);
-  cursor: pointer;
-  box-shadow: var(--shadow-soft);
-  padding: 0;
-  flex: 0 0 auto;
-}
-.entry-media-tile .lazy-media,
-.entry-media-tile .lazy-media.is-ready {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
 }
 
 .journal-wrap {
@@ -1363,6 +1366,85 @@ body.search-bar-open .topbar {
 .empty-state h2 { margin: 0 0 10px; }
 .empty-state p { margin: 0; color: var(--muted); }
 
+.timeline-boot-state {
+  width: min(720px, 100%);
+  margin: 40px auto 16px;
+}
+
+.timeline-boot-card {
+  padding: 24px 26px;
+  border-radius: 24px;
+  background: var(--paper-strong);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-soft);
+}
+
+.timeline-boot-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 1rem;
+}
+
+.timeline-boot-card p {
+  margin: 10px 0 0;
+  color: var(--muted);
+}
+
+.timeline-skeleton-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.timeline-skeleton-line {
+  height: 12px;
+  width: 72%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--line) 70%, transparent), color-mix(in srgb, var(--paper) 35%, white), color-mix(in srgb, var(--line) 70%, transparent));
+  background-size: 220% 100%;
+  animation: timeline-skeleton-shimmer 1.4s linear infinite;
+}
+
+.timeline-skeleton-line.wide { width: 100%; }
+.timeline-skeleton-line.short { width: 48%; }
+
+.timeline-status {
+  position: sticky;
+  top: calc(var(--topbar-height, 74px) + 8px);
+  z-index: 3;
+  width: fit-content;
+  max-width: min(100%, 420px);
+  margin: 0 auto 18px;
+  padding: 10px 14px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--paper-strong) 88%, transparent);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-soft);
+  color: var(--muted);
+  backdrop-filter: blur(14px);
+}
+
+.timeline-status.is-error {
+  color: #b04a4a;
+  border-color: color-mix(in srgb, #b04a4a 26%, var(--line));
+}
+
+.timeline-unit {
+  width: 100%;
+}
+.timeline-unit.is-placeholder {
+  contain: layout paint style;
+}
+.timeline-placeholder {
+  width: 100%;
+}
+
+@keyframes timeline-skeleton-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -20% 0; }
+}
+
 @media (max-width: 1100px) {
   :root { --day-width: min(100%, calc(100vw - 278px)); }
   .year-carousel { grid-auto-columns: calc((100% - 32px) / 3); }
@@ -1435,13 +1517,6 @@ body.search-bar-open .topbar {
   .entry-card-head {
     grid-template-columns: auto minmax(0, 1fr);
     gap: 14px;
-  }
-  .entry-media-strip {
-    gap: 10px;
-  }
-  .entry-media-tile {
-    width: min(72vw, 220px);
-    min-height: 164px;
   }
   .journal-wrap { width: 100%; }
   .day-heading { width: 100%; padding-bottom: 16px; }
@@ -1754,8 +1829,8 @@ body.search-bar-open .topbar {
   background: rgba(18, 20, 24, 0.78);
   color: #fff;
   backdrop-filter: blur(12px);
-  transform: translateY(calc(100% + 18px));
-  transition: transform 180ms ease;
+  /* transform: translateY(calc(100% + 18px));
+  transition: transform 180ms ease; */
   z-index: 2;
   scrollbar-width: none; 
   -ms-overflow-style: none;

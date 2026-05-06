@@ -59,9 +59,22 @@
             <section id="timelineSection" class="timeline-section">
               <div id="timelinePane" class="timeline-pane">
                 <div id="timelineTopSpacer" class="timeline-spacer"></div>
-                <div id="timelineFeed" class="timeline-feed"></div>
+                <div id="timelineFeed" class="timeline-feed">
+                  <div class="timeline-boot-state" aria-live="polite">
+                    <div class="timeline-boot-card">
+                      <div class="timeline-boot-head"><i class="ph ph-spinner-gap is-spinning"></i><strong>Loading your timeline…</strong></div>
+                      <p>Preparing the first days so the page becomes usable before the full cache finishes.</p>
+                      <div class="timeline-skeleton-list">
+                        <span class="timeline-skeleton-line wide"></span>
+                        <span class="timeline-skeleton-line"></span>
+                        <span class="timeline-skeleton-line short"></span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
                 <div id="timelineBottomSpacer" class="timeline-spacer"></div>
               </div>
+              <div id="timelineStatus" class="timeline-status hidden" aria-live="polite"></div>
             </section>
           </section>
 

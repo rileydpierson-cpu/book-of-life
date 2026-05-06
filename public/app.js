@@ -39,6 +39,18 @@ const state = {
   totalDays: 0,
   indexToDate: {},
   dateIndexMap: {},
+  homeSourceDays: [],
+  homeSourceIndexByDate: {},
+  homeSourceStartIndex: 0,
+  homeSourceEndIndex: -1,
+  searchResultDays: [],
+  searchResultIndexByDate: {},
+  fullTimelineDays: [],
+  fullTimelineLoaded: false,
+  fullTimelinePromise: null,
+  fullTimelineError: '',
+  timelineBooting: true,
+  timelineCaching: false,
   loadedDays: [],
   loadedStart: null,
   loadedEnd: null,
@@ -48,6 +60,9 @@ const state = {
   searchQuery: '',
   searchUiOpen: false,
   searchInputTimer: 0,
+  searchRequestSeq: 0,
+  activeSearchRequest: 0,
+  searchAbortController: null,
   activeDate: null,
   expandedDates: new Set(),
   mediaObserver: null,
@@ -106,6 +121,9 @@ const state = {
   timelinePointers: new Map(),
   timelinePinchStartDistance: null,
   timelinePinchStartColumns: Number(localStorage.getItem('lifeserver-grid-columns') || 0) || null,
+  timelineMeasuredHeights: new Map(),
+  timelineAverageHeight: 280,
+  timelineCorrectionSuppressedUntil: 0,
   theme: localStorage.getItem('lifeserver-theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
   gridColumns: Number(localStorage.getItem('lifeserver-grid-columns') || 0) || null
 };
@@ -145,6 +163,7 @@ const dom = {
   timelineFeed: document.getElementById('timelineFeed'),
   timelineTopSpacer: document.getElementById('timelineTopSpacer'),
   timelineBottomSpacer: document.getElementById('timelineBottomSpacer'),
+  timelineStatus: document.getElementById('timelineStatus'),
   searchForm: document.getElementById('searchForm'),
   searchInput: document.getElementById('searchInput'),
   clearSearch: document.getElementById('clearSearch'),
@@ -708,23 +727,6 @@ function updateTopbarDateLabel() {
   dom.topbarDateLabel.textContent = currentTopbarDateLabel();
 }
 
-function buildInlineMediaCollection(media, {
-  maxItems = media.length,
-  wrapClass = 'entry-media-strip-wrap',
-  stripClass = 'entry-media-strip',
-  tileClass = 'entry-media-tile'
-} = {}) {
-  const items = (media || []).slice(0, maxItems);
-  if (!items.length) return '';
-  return `
-    <div class="${wrapClass}">
-      <div class="${stripClass}">
-        ${items.map((item) => buildMediaTile(item, tileClass)).join('')}
-      </div>
-    </div>
-  `;
-}
-
 function getFolderChildren(rootId, parentPath = '') {
   const root = state.folderRoots.find((item) => item.rootId === rootId);
   if (!root) return [];
@@ -889,7 +891,7 @@ function prefetchTimelineRange(start, limit) {
 }
 
 function prefetchAdjacentChunks(response) {
-  if (state.searchMode || !state.bootstrap) return;
+  if (state.searchMode || !state.bootstrap || state.fullTimelineLoaded) return;
   const chunkSize = timelineChunkSize();
   if (response.startIndex > 0) {
     const start = Math.max(0, response.startIndex - chunkSize);
@@ -985,9 +987,287 @@ function renderRail() {
   state.indexToDate = Object.fromEntries(items.map((item) => [item.index, item.isoDate]));
 }
 
+function createHomeSkeletonDay(item) {
+  const isoDate = item?.isoDate;
+  return {
+    isoDate,
+    dateLabel: item?.longLabel || item?.label || isoDate,
+    monthKey: isoDate ? isoDate.slice(0, 7) : '',
+    monthLabel: isoDate ? monthLabelForIso(isoDate) : '',
+    photoCount: 0,
+    photos: [],
+    journal: null,
+    __hydrated: false
+  };
+}
+
+function initializeHomeSourceFromBootstrap() {
+  const items = state.bootstrap?.railDates || [];
+  state.homeSourceDays = items.map((item) => createHomeSkeletonDay(item));
+  state.homeSourceStartIndex = 0;
+  state.homeSourceEndIndex = Math.max(-1, state.homeSourceDays.length - 1);
+  state.homeSourceIndexByDate = Object.fromEntries(state.homeSourceDays.map((day, index) => [day.isoDate, index]));
+}
+
+function activeSourceDays() {
+  return state.searchMode ? state.searchResultDays : state.homeSourceDays;
+}
+
+function activeSourceIndexByDate() {
+  return state.searchMode ? state.searchResultIndexByDate : state.homeSourceIndexByDate;
+}
+
+function activeSourceTotal() {
+  return activeSourceDays().length;
+}
+
+function getGlobalIndexForLocal(localIndex) {
+  if (localIndex === null || localIndex === undefined || localIndex < 0) return null;
+  const source = activeSourceDays();
+  const day = source[localIndex];
+  if (!day) return null;
+  if (state.searchMode) return state.dateIndexMap[day.isoDate] ?? null;
+  return state.homeSourceEndIndex - localIndex;
+}
+
+function getLocalIndexForDate(isoDate) {
+  return activeSourceIndexByDate()[isoDate];
+}
+
+function getLocalIndexForGlobalIndex(globalIndex) {
+  const isoDate = state.indexToDate[globalIndex];
+  if (!isoDate) return undefined;
+  return state.homeSourceIndexByDate[isoDate];
+}
+
+function syncLoadedDaysFromWindow() {
+  const source = activeSourceDays();
+  if (!source.length || state.loadedStart === null || state.loadedEnd === null) {
+    state.loadedDays = [];
+    return;
+  }
+  state.loadedDays = source.slice(state.loadedStart, state.loadedEnd + 1);
+}
+
+function isHydratedHomeDay(localIndex) {
+  const day = state.homeSourceDays[localIndex];
+  return Boolean(day?.__hydrated);
+}
+
+function isLoadedLocalIndex(localIndex) {
+  return state.loadedStart !== null
+    && state.loadedEnd !== null
+    && localIndex >= state.loadedStart
+    && localIndex <= state.loadedEnd;
+}
+
+function mergeTimelineResponseIntoHomeSource(response) {
+  const changedIndexes = [];
+  const responseDays = [...(response?.days || [])].reverse();
+  responseDays.forEach((day) => {
+    const localIndex = state.homeSourceIndexByDate[day.isoDate];
+    if (localIndex === undefined) return;
+    const previous = state.homeSourceDays[localIndex];
+    state.homeSourceDays[localIndex] = {
+      ...previous,
+      ...day,
+      __hydrated: true
+    };
+    if (!previous?.__hydrated) changedIndexes.push(localIndex);
+  });
+  syncLoadedDaysFromWindow();
+  return changedIndexes;
+}
+
+async function ensureHomeRangeLoaded(start, end) {
+  if (state.searchMode) return false;
+  const source = state.homeSourceDays;
+  if (!source.length) return false;
+
+  const safeStart = clamp(start, 0, source.length - 1);
+  const safeEnd = clamp(end, safeStart, source.length - 1);
+  let minGlobal = null;
+  let maxGlobal = null;
+
+  for (let localIndex = safeStart; localIndex <= safeEnd; localIndex += 1) {
+    if (isHydratedHomeDay(localIndex)) continue;
+    const globalIndex = getGlobalIndexForLocal(localIndex);
+    if (globalIndex === null || globalIndex === undefined) continue;
+    if (minGlobal === null || globalIndex < minGlobal) minGlobal = globalIndex;
+    if (maxGlobal === null || globalIndex > maxGlobal) maxGlobal = globalIndex;
+  }
+
+  if (minGlobal === null || maxGlobal === null) return false;
+
+  const response = await getTimelineChunk(minGlobal, (maxGlobal - minGlobal) + 1);
+  const changedIndexes = mergeTimelineResponseIntoHomeSource(response);
+  prefetchAdjacentChunks(response);
+  if (!state.searchMode && dom.timelineFeed.querySelector('.timeline-unit')) {
+    refreshHomeTimelineWindow({ indexes: changedIndexes });
+  } else {
+    renderTimelineWindow();
+  }
+  return true;
+}
+
+function timelineVisibleWindowSize() {
+  return timelineHydrationWindowSize();
+}
+
+function suppressTimelineCorrection(durationMs = 520) {
+  const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  state.timelineCorrectionSuppressedUntil = now + durationMs;
+}
+
+function isTimelineCorrectionSuppressed() {
+  const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  return now < (state.timelineCorrectionSuppressedUntil || 0);
+}
+
+function renderTimelineLoadingState(label = 'Loading your timeline…', detail = 'Preparing the first days so the page becomes usable before the full cache finishes.') {
+  dom.timelineTopSpacer.style.height = '0px';
+  dom.timelineBottomSpacer.style.height = '0px';
+  dom.timelineFeed.innerHTML = `
+    <div class="timeline-boot-state" aria-live="polite">
+      <div class="timeline-boot-card">
+        <div class="timeline-boot-head">${renderPhIcon('spinner-gap', { spin: true })}<strong>${escapeHtml(label)}</strong></div>
+        <p>${escapeHtml(detail)}</p>
+        <div class="timeline-skeleton-list">
+          <span class="timeline-skeleton-line wide"></span>
+          <span class="timeline-skeleton-line"></span>
+          <span class="timeline-skeleton-line short"></span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function setTimelineStatus(message, { error = false } = {}) {
+  if (!dom.timelineStatus) return;
+  if (!message) {
+    dom.timelineStatus.textContent = '';
+    dom.timelineStatus.classList.add('hidden');
+    dom.timelineStatus.classList.remove('is-error');
+    return;
+  }
+  dom.timelineStatus.textContent = message;
+  dom.timelineStatus.classList.toggle('is-error', Boolean(error));
+  dom.timelineStatus.classList.remove('hidden');
+}
+
+function updateTimelineStatus() {
+  if (state.timelineBooting) {
+    setTimelineStatus('Loading timeline…');
+    return;
+  }
+  if (state.fullTimelineError) {
+    setTimelineStatus(state.fullTimelineError, { error: true });
+    return;
+  }
+  if (!state.searchMode && state.timelineCaching && !state.fullTimelineLoaded) {
+    setTimelineStatus('Caching timeline…');
+    return;
+  }
+  setTimelineStatus('');
+}
+
 function isDateLoaded(isoDate) {
-  const targetIndex = state.dateIndexMap[isoDate];
-  return targetIndex !== undefined && state.loadedStart !== null && targetIndex >= state.loadedStart && targetIndex <= state.loadedEnd;
+  const targetIndex = getLocalIndexForDate(isoDate);
+  return targetIndex !== undefined
+    && state.loadedStart !== null
+    && targetIndex >= state.loadedStart
+    && targetIndex <= state.loadedEnd
+    && (state.searchMode || isHydratedHomeDay(targetIndex));
+}
+
+function applyHomeTimelineDays(days, total = days.length) {
+  state.totalDays = Number(total || 0);
+  state.fullTimelineDays = Array.isArray(days) ? [...days] : [];
+  state.fullTimelineLoaded = true;
+  state.fullTimelineError = '';
+}
+
+function restoreHomeTimelineState() {
+  state.searchMode = false;
+}
+
+async function ensureFullTimelineLoaded({ force = false } = {}) {
+  if (state.fullTimelineLoaded && !force) return;
+  if (state.fullTimelinePromise && !force) return state.fullTimelinePromise;
+
+  const total = Math.max(0, Number(state.totalDays || state.bootstrap?.totalDays || 0));
+  if (!total) {
+    applyHomeTimelineDays([], 0);
+    return;
+  }
+
+  state.timelineCaching = true;
+  updateTimelineStatus();
+  const promise = getTimelineChunk(0, total)
+    .then((response) => {
+      const responseDays = [...(response.days || [])].reverse();
+      applyHomeTimelineDays(responseDays, response.total);
+      setHomeSource(responseDays, { startIndex: response.startIndex, endIndex: response.endIndex, preserveWindow: true });
+      return response;
+    })
+    .catch((error) => {
+      state.fullTimelineError = 'Timeline cache did not finish. Scrolling will continue using on-demand slices.';
+      throw error;
+    })
+    .finally(() => {
+      state.timelineCaching = false;
+      updateTimelineStatus();
+      if (state.fullTimelinePromise === promise) state.fullTimelinePromise = null;
+    });
+
+  state.fullTimelinePromise = promise;
+  return promise;
+}
+
+function setHomeSource(days, { startIndex = 0, endIndex = Math.max(-1, days.length - 1), preserveWindow = false } = {}) {
+  state.homeSourceDays = Array.isArray(days) ? [...days] : [];
+  state.homeSourceStartIndex = startIndex;
+  state.homeSourceEndIndex = endIndex;
+  state.homeSourceIndexByDate = Object.fromEntries(state.homeSourceDays.map((day, index) => [day.isoDate, index]));
+
+  if (!preserveWindow || !state.loadedDays.length || state.searchMode) return;
+
+  const firstIsoDate = state.loadedDays[0]?.isoDate;
+  const lastIsoDate = state.loadedDays[state.loadedDays.length - 1]?.isoDate;
+  const nextStart = state.homeSourceIndexByDate[firstIsoDate];
+  const nextEnd = state.homeSourceIndexByDate[lastIsoDate];
+  if (nextStart === undefined || nextEnd === undefined) return;
+  state.loadedStart = nextStart;
+  state.loadedEnd = nextEnd;
+  state.loadedDays = state.homeSourceDays.slice(nextStart, nextEnd + 1);
+}
+
+function setSearchSource(days) {
+  state.searchResultDays = Array.isArray(days) ? [...days] : [];
+  state.searchResultIndexByDate = Object.fromEntries(state.searchResultDays.map((day, index) => [day.isoDate, index]));
+}
+
+function buildLocalTimelineResponse(startIndex, limit) {
+  const total = state.fullTimelineDays.length;
+  if (!total) {
+    return { total: 0, startIndex: 0, endIndex: -1, hasOlder: false, hasNewer: false, days: [] };
+  }
+
+  const safeStart = clamp(Number(startIndex || 0), 0, Math.max(0, total - 1));
+  const safeLimit = Math.max(1, Number(limit || timelineChunkSize()));
+  const endExclusive = Math.min(total, safeStart + safeLimit);
+  const days = state.fullTimelineDays
+    .slice(total - endExclusive, total - safeStart)
+    .reverse();
+
+  return {
+    total,
+    startIndex: safeStart,
+    endIndex: endExclusive - 1,
+    hasOlder: safeStart > 0,
+    hasNewer: endExclusive < total,
+    days
+  };
 }
 
 function renderScrollYearMarks() {
@@ -1075,37 +1355,61 @@ function hideJumpLoader() {
 
 async function refreshBootstrap(focusDate = null) {
   const anchor = !focusDate && state.route.view === 'home' ? captureScrollAnchor() : null;
+  if (state.searchAbortController) {
+    state.searchAbortController.abort();
+    state.searchAbortController = null;
+  }
   state.chunkCache.clear();
   state.pendingChunks.clear();
   state.monthCache.clear();
   state.yearCache.clear();
+  state.fullTimelineDays = [];
+  state.fullTimelineLoaded = false;
+  state.fullTimelinePromise = null;
+  state.fullTimelineError = '';
+  state.homeSourceDays = [];
+  state.homeSourceIndexByDate = {};
+  state.homeSourceStartIndex = 0;
+  state.homeSourceEndIndex = -1;
+  state.searchResultDays = [];
+  state.searchResultIndexByDate = {};
+  state.timelineBooting = true;
   state.loadedDays = [];
   state.loadedStart = null;
   state.loadedEnd = null;
+  renderTimelineLoadingState();
+  updateTimelineStatus();
   state.bootstrap = await fetchJson('/api/bootstrap', { cache: 'no-store' });
   state.totalDays = state.bootstrap.totalDays;
   renderDefaultYearSubtitle();
   renderYearCarousel();
   renderRail();
+  initializeHomeSourceFromBootstrap();
   renderScrollYearMarks();
   updateTopbarDateLabel();
+  const initialDate = (focusDate && state.dateIndexMap[focusDate] !== undefined) ? focusDate : (anchor?.isoDate || state.bootstrap?.lastDate);
+  await ensureTimelineLoaded(initialDate);
+  state.timelineBooting = false;
+  updateTimelineStatus();
 
   if (focusDate && state.dateIndexMap[focusDate] !== undefined) {
+    restoreHomeTimelineState();
     await scrollToDate(focusDate, 'auto');
     return;
   }
 
   if (anchor?.isoDate && state.dateIndexMap[anchor.isoDate] !== undefined) {
-    await ensureTimelineContainsDate(anchor.isoDate, 'center');
+    restoreHomeTimelineState();
     requestAnimationFrame(() => restoreScrollAnchor(anchor));
     return;
   }
 
   if (state.bootstrap?.lastDate) {
-    await ensureTimelineLoaded(state.bootstrap.lastDate);
+    restoreHomeTimelineState();
     return;
   }
 
+  restoreHomeTimelineState();
   renderTimeline();
 }
 
@@ -1530,10 +1834,10 @@ function buildMediaTile(media, className, { hero = false, label = '', badge = ''
   const previewSrc = media.type === 'video' ? (media.previewUrl || media.thumbUrl) : media.thumbUrl;
   const previewNode = media.type === 'video'
     ? `<video class="lazy-media" data-src="${previewSrc}" muted autoplay loop playsinline preload="none" poster="${escapeHtml(media.thumbUrl || '')}" aria-hidden="true"></video>`
-    : `<img class="lazy-media" data-src="${previewSrc}" alt="${escapeHtml(media.fileName || '')}" draggable="false" />`;
+    : '';
   const likedIndicator = media.liked ? `<span class="media-liked-indicator" aria-hidden="true">${renderPhIcon('heart', { variant: 'fill' })}</span>` : '';
   return `
-    <button class="${className} media-tile open-media ${hero ? 'hero-photo' : ''}" type="button" data-media-id="${media.id}">
+    <button class="${className} media-tile open-media ${hero ? 'hero-photo' : ''} ${media.type === 'video' ? '' : 'lazy-media lazy-media-bg'}" type="button" data-media-id="${media.id}" ${media.type === 'video' ? '' : `data-src="${previewSrc}"`}>
       <div class="media-skeleton"></div>
       ${previewNode}
       ${likedIndicator}
@@ -1625,18 +1929,19 @@ function buildSearchPhotoStack(media) {
   return `
     <div class="search-photo-stack-wrap">
       <div class="search-photo-stack">
-        ${stack.map((item, index) => `<button class="search-photo-stack-item open-media" type="button" data-media-id="${item.id}" style="--stack-index:${index}">${item.type === 'video'
+        ${stack.map((item, index) => `<button class="search-photo-stack-item open-media ${item.type === 'video' ? '' : 'lazy-media lazy-media-bg'}" type="button" data-media-id="${item.id}" style="--stack-index:${index}" ${item.type === 'video' ? '' : `data-src="${item.thumbUrl}"`}>${item.type === 'video'
           ? `<video class="lazy-media" data-src="${item.previewUrl || item.thumbUrl}" muted autoplay loop playsinline preload="none" poster="${escapeHtml(item.thumbUrl || '')}" aria-hidden="true"></video>`
-          : `<img class="lazy-media" data-src="${item.thumbUrl}" alt="${escapeHtml(item.fileName || '')}" draggable="false" />`}${item.liked ? `<span class="media-liked-indicator" aria-hidden="true">${renderPhIcon('heart', { variant: 'fill' })}</span>` : ''}</button>`).join('')}
+          : ''}${item.liked ? `<span class="media-liked-indicator" aria-hidden="true">${renderPhIcon('heart', { variant: 'fill' })}</span>` : ''}</button>`).join('')}
       </div>
     </div>
   `;
 }
 
-function buildNewestGapCard() {
+function buildNewestGapCard(day, globalIndex = null) {
   const todayIso = state.bootstrap?.today?.isoDate;
-  const newestDay = state.loadedDays[0];
+  const newestDay = day || state.loadedDays[0];
   if (!todayIso || !newestDay?.isoDate) return null;
+  if (globalIndex !== null && globalIndex !== state.totalDays - 1) return null;
   if (diffDaysBetweenIso(todayIso, newestDay.isoDate) <= 0) return null;
   return {
     html: buildGapCardHtml({ isoDate: addDaysToIso(todayIso, 1) }, newestDay),
@@ -1656,9 +1961,7 @@ function buildDayHtml(day) {
     const stripItems = searchCompact ? media.slice(0, Math.min(media.length, 4)) : media;
     if (searchCompact) {
       mediaHtml = buildSearchPhotoStack(stripItems);
-    } else if (media.length <= 4) {
-      mediaHtml = buildInlineMediaCollection(stripItems);
-    } else if (media.length >= 5) {
+    } else {
       mediaHtml = `<div class="photo-grid">${media.map((item) => buildMediaTile(item, 'photo-grid-button')).join('')}</div>`;
     }
   }
@@ -1689,6 +1992,469 @@ function rebuildViewerSequence() {
   state.viewerSequence = state.loadedDays.flatMap((day) => day.photos.map((photo) => photo));
 }
 
+function shouldShowMonthDivider(localIndex) {
+  const source = activeSourceDays();
+  const day = source[localIndex];
+  const newerDay = localIndex > 0 ? source[localIndex - 1] : null;
+  return Boolean(day && (!newerDay || day.monthKey !== newerDay.monthKey));
+}
+
+function buildTimelineUnitHtml(localIndex) {
+  const source = activeSourceDays();
+  const day = source[localIndex];
+  if (!day) return '';
+  const hydrated = state.searchMode || (isLoadedLocalIndex(localIndex) && isHydratedHomeDay(localIndex));
+
+  const globalIndex = getGlobalIndexForLocal(localIndex);
+  const newestGap = !state.searchMode && localIndex === 0 ? buildNewestGapCard(day, globalIndex) : null;
+  const newestGapHtml = newestGap?.html
+    ? `${newestGap.monthKey !== day.monthKey ? `<div class="month-divider"><span class="month-divider-label">${escapeHtml(newestGap.monthLabel)}</span></div>` : ''}${newestGap.html}`
+    : '';
+  const monthDividerHtml = shouldShowMonthDivider(localIndex)
+    ? `<div class="month-divider"><span class="month-divider-label">${escapeHtml(day.monthLabel)}</span></div>`
+    : '';
+  const gapHtml = !state.searchMode && localIndex < source.length - 1
+    ? buildGapCardHtml(day, source[localIndex + 1])
+    : '';
+  return `
+    <section class="timeline-unit ${hydrated ? 'is-hydrated' : 'is-placeholder'}" data-source-index="${localIndex}" data-day-date="${day.isoDate}">
+      <div class="timeline-unit-newest-gap">${newestGapHtml}</div>
+      <div class="timeline-unit-month-divider">${monthDividerHtml}</div>
+      <div class="timeline-unit-day">${timelineUnitBodyHtml(localIndex)}</div>
+      <div class="timeline-unit-gap">${gapHtml}</div>
+    </section>
+  `;
+}
+
+function buildTimelinePlaceholderHtml(day, localIndex) {
+  const frozenHeight = Math.max(estimateTimelineUnitHeight(), Math.round(estimateHeightForDay(day)));
+  return `<div class="timeline-placeholder" aria-hidden="true" data-placeholder-index="${localIndex}" style="height:${frozenHeight}px"></div>`;
+}
+
+function timelineUnitBodyHtml(localIndex) {
+  const source = activeSourceDays();
+  const day = source[localIndex];
+  if (!day) return '';
+  const hydrated = state.searchMode || (isLoadedLocalIndex(localIndex) && isHydratedHomeDay(localIndex));
+  return hydrated ? buildDayHtml(day) : buildTimelinePlaceholderHtml(day, localIndex);
+}
+
+function refreshTimelineUnitDecorations(localIndex) {
+  const source = activeSourceDays();
+  const day = source[localIndex];
+  if (!day) return;
+  const unit = dom.timelineFeed.querySelector(`.timeline-unit[data-source-index="${localIndex}"]`);
+  if (!unit) return;
+
+  const globalIndex = getGlobalIndexForLocal(localIndex);
+  const newestGap = !state.searchMode && localIndex === 0 ? buildNewestGapCard(day, globalIndex) : null;
+  const newestGapHtml = newestGap?.html
+    ? `${newestGap.monthKey !== day.monthKey ? `<div class="month-divider"><span class="month-divider-label">${escapeHtml(newestGap.monthLabel)}</span></div>` : ''}${newestGap.html}`
+    : '';
+  const monthDividerHtml = shouldShowMonthDivider(localIndex)
+    ? `<div class="month-divider"><span class="month-divider-label">${escapeHtml(day.monthLabel)}</span></div>`
+    : '';
+  const gapHtml = !state.searchMode && localIndex < source.length - 1
+    ? buildGapCardHtml(day, source[localIndex + 1])
+    : '';
+
+  const newestGapNode = unit.querySelector('.timeline-unit-newest-gap');
+  const monthDividerNode = unit.querySelector('.timeline-unit-month-divider');
+  const gapNode = unit.querySelector('.timeline-unit-gap');
+  if (newestGapNode) newestGapNode.innerHTML = newestGapHtml;
+  if (monthDividerNode) monthDividerNode.innerHTML = monthDividerHtml;
+  if (gapNode) gapNode.innerHTML = gapHtml;
+}
+
+function refreshTimelineUnitContent(localIndex) {
+  const source = activeSourceDays();
+  const day = source[localIndex];
+  if (!day) return;
+  const unit = dom.timelineFeed.querySelector(`.timeline-unit[data-source-index="${localIndex}"]`);
+  if (!unit) return;
+  const dayNode = unit.querySelector('.timeline-unit-day');
+  if (!dayNode) return;
+  const hydrated = state.searchMode || (isLoadedLocalIndex(localIndex) && isHydratedHomeDay(localIndex));
+  unit.classList.toggle('is-hydrated', hydrated);
+  unit.classList.toggle('is-placeholder', !hydrated);
+  dayNode.innerHTML = timelineUnitBodyHtml(localIndex);
+}
+
+function estimateTimelineUnitHeight() {
+  return 300;
+}
+
+function timelineHydrationWindowSize() {
+  return 20;
+}
+
+function estimateHeightForDay(day) {
+  if (!day?.isoDate) return estimateTimelineUnitHeight();
+  return state.timelineMeasuredHeights.get(day.isoDate) || estimateTimelineUnitHeight();
+}
+
+function sumEstimatedHeights(days) {
+  return Math.round((days || []).reduce((sum, day) => sum + estimateHeightForDay(day), 0));
+}
+
+function estimateHeightForDayFromSnapshot(day, measuredHeights) {
+  if (!day?.isoDate) return estimateTimelineUnitHeight();
+  return measuredHeights.get(day.isoDate) || estimateTimelineUnitHeight();
+}
+
+function getVirtualTopForLocalIndexFromSnapshot(localIndex, measuredHeights) {
+  if (localIndex === null || localIndex === undefined || localIndex <= 0) return 0;
+  const source = activeSourceDays();
+  let total = 0;
+  for (let index = 0; index < localIndex; index += 1) {
+    total += estimateHeightForDayFromSnapshot(source[index], measuredHeights);
+  }
+  return total;
+}
+
+function refreshTimelineHeightMetrics({ anchor = null } = {}) {
+  const units = Array.from(document.querySelectorAll('#timelineFeed .timeline-unit.is-hydrated'));
+  if (!units.length) return;
+  const previousMeasuredHeights = new Map(state.timelineMeasuredHeights);
+  let totalHeight = 0;
+  let count = 0;
+  let compensationDelta = 0;
+  const anchorDocumentY = timelineMarkerDocumentY();
+  const nextMeasuredHeights = [];
+  units.forEach((node) => {
+    const localIndex = Number(node.dataset.sourceIndex);
+    const day = activeSourceDays()[localIndex];
+    const height = Math.max(1, Math.round(node.getBoundingClientRect().height));
+    const previousHeight = estimateHeightForDayFromSnapshot(day, previousMeasuredHeights);
+    if (day?.isoDate) nextMeasuredHeights.push([day.isoDate, height]);
+    const virtualTop = getVirtualTopForLocalIndexFromSnapshot(localIndex, previousMeasuredHeights);
+    const documentTop = (window.scrollY + dom.timelinePane.getBoundingClientRect().top + Number(dom.timelineTopSpacer.style.height.replace('px', '') || 0)) + virtualTop;
+    if (!isTimelineCorrectionSuppressed() && documentTop < anchorDocumentY && previousHeight !== height) {
+      compensationDelta += (height - previousHeight);
+    }
+    totalHeight += height;
+    count += 1;
+  });
+  nextMeasuredHeights.forEach(([isoDate, height]) => state.timelineMeasuredHeights.set(isoDate, height));
+  if (count) state.timelineAverageHeight = totalHeight / count;
+  if (!isTimelineCorrectionSuppressed() && anchor) {
+    restoreScrollAnchor(anchor);
+    return;
+  }
+  if (!isTimelineCorrectionSuppressed() && compensationDelta) {
+    window.scrollBy({ top: compensationDelta, behavior: 'auto' });
+  }
+}
+
+function updateTimelineSpacers() {
+  if (state.searchMode) {
+    const source = activeSourceDays();
+    const topDays = state.loadedStart === null ? [] : source.slice(0, state.loadedStart);
+    const bottomDays = state.loadedEnd === null ? [] : source.slice(state.loadedEnd + 1);
+    dom.timelineTopSpacer.style.height = `${sumEstimatedHeights(topDays)}px`;
+    dom.timelineBottomSpacer.style.height = `${sumEstimatedHeights(bottomDays)}px`;
+    return;
+  }
+  dom.timelineTopSpacer.style.height = '0px';
+  dom.timelineBottomSpacer.style.height = '0px';
+}
+
+function renderHomeTimelineScaffold() {
+  const source = state.homeSourceDays;
+  if (!source.length) return false;
+  let html = '';
+  for (let localIndex = 0; localIndex < source.length; localIndex += 1) {
+    html += buildTimelineUnitHtml(localIndex);
+  }
+  dom.timelineFeed.innerHTML = html;
+  return true;
+}
+
+function refreshHomeTimelineWindow({ previousStart = null, previousEnd = null, indexes = null } = {}) {
+  if (!state.homeSourceDays.length) return;
+  const anchor = state.route.view === 'home' ? captureScrollAnchor() : null;
+  const targetIndexes = new Set(Array.isArray(indexes) ? indexes : []);
+
+  const inRange = (index, start, end) => (
+    start !== null
+    && end !== null
+    && index >= start
+    && index <= end
+  );
+
+  if (!Array.isArray(indexes)) {
+    const minIndex = Math.min(
+      previousStart ?? Number.POSITIVE_INFINITY,
+      state.loadedStart ?? Number.POSITIVE_INFINITY
+    );
+    const maxIndex = Math.max(
+      previousEnd ?? Number.NEGATIVE_INFINITY,
+      state.loadedEnd ?? Number.NEGATIVE_INFINITY
+    );
+
+    if (Number.isFinite(minIndex) && Number.isFinite(maxIndex)) {
+      for (let index = minIndex; index <= maxIndex; index += 1) {
+        const wasLoaded = inRange(index, previousStart, previousEnd);
+        const isLoaded = inRange(index, state.loadedStart, state.loadedEnd);
+        if (wasLoaded !== isLoaded) targetIndexes.add(index);
+      }
+    }
+  }
+
+  targetIndexes.forEach((localIndex) => {
+    refreshTimelineUnitContent(localIndex);
+  });
+  rebuildViewerSequence();
+  setupMediaObserver();
+  refreshTimelineHeightMetrics({ anchor });
+  updateActiveFromScroll();
+  syncScrollThumb();
+}
+
+function renderTimelineWindow() {
+  const source = activeSourceDays();
+
+  if (!source.length) {
+    const todayIso = state.bootstrap?.today?.isoDate;
+    if (!state.searchMode && !state.totalDays && todayIso) {
+      const cardHtml = buildGapCardHtml({ isoDate: addDaysToIso(todayIso, 1) }, { isoDate: addDaysToIso(todayIso, -1) });
+      dom.timelineFeed.innerHTML = `
+        <div class="month-divider"><span class="month-divider-label">${escapeHtml(monthLabelForIso(todayIso))}</span></div>
+        ${cardHtml}
+      `;
+      dom.timelineTopSpacer.style.height = '0px';
+      dom.timelineBottomSpacer.style.height = '0px';
+      rebuildViewerSequence();
+      setupMediaObserver();
+      updateActiveFromScroll();
+      syncScrollThumb();
+      return;
+    }
+    dom.timelineFeed.innerHTML = `
+      <div class="empty-state">
+        <h2>${state.searchMode ? 'No matching journal entries' : 'No timeline data yet'}</h2>
+        <p>${state.searchMode ? 'Try another search phrase.' : 'Once your folders are indexed, your timeline will appear here.'}</p>
+      </div>
+    `;
+    dom.timelineTopSpacer.style.height = '0px';
+    dom.timelineBottomSpacer.style.height = '0px';
+    rebuildViewerSequence();
+    updateStickyMonth();
+    return;
+  }
+
+  if (!state.searchMode) {
+    if (!dom.timelineFeed.querySelector('.timeline-unit')) {
+      renderHomeTimelineScaffold();
+    }
+    rebuildViewerSequence();
+    setupMediaObserver();
+    refreshTimelineHeightMetrics();
+    updateTimelineSpacers();
+    updateActiveFromScroll();
+    syncScrollThumb();
+    return;
+  }
+
+  let html = '';
+  const renderStart = state.searchMode ? (state.loadedStart ?? 0) : 0;
+  const renderEnd = state.searchMode ? (state.loadedEnd ?? (source.length - 1)) : (source.length - 1);
+  for (let localIndex = renderStart; localIndex <= renderEnd; localIndex += 1) {
+    html += buildTimelineUnitHtml(localIndex);
+  }
+  dom.timelineFeed.innerHTML = html;
+  rebuildViewerSequence();
+  setupMediaObserver();
+  refreshTimelineHeightMetrics();
+  updateTimelineSpacers();
+  updateActiveFromScroll();
+  syncScrollThumb();
+}
+
+function setVisibleWindow(start, end) {
+  const source = activeSourceDays();
+  if (!source.length) {
+    state.loadedDays = [];
+    state.loadedStart = null;
+    state.loadedEnd = null;
+    renderTimelineWindow();
+    return;
+  }
+
+  const safeStart = clamp(start, 0, source.length - 1);
+  const safeEnd = clamp(end, safeStart, source.length - 1);
+  const previousStart = state.loadedStart;
+  const previousEnd = state.loadedEnd;
+  state.loadedStart = safeStart;
+  state.loadedEnd = safeEnd;
+  syncLoadedDaysFromWindow();
+  if (!state.searchMode && dom.timelineFeed.querySelector('.timeline-unit')) {
+    refreshHomeTimelineWindow({ previousStart, previousEnd });
+    return;
+  }
+  renderTimelineWindow();
+}
+
+function buildWindowRangeAroundIndex(localIndex, placement = 'center') {
+  const total = activeSourceTotal();
+  const size = Math.min(Math.max(1, timelineHydrationWindowSize()), Math.max(1, total));
+  if (placement === 'top') {
+    const start = clamp(localIndex, 0, Math.max(0, total - size));
+    return { start, end: Math.min(total - 1, start + size - 1) };
+  }
+  const start = clamp(localIndex - Math.floor(size / 2), 0, Math.max(0, total - size));
+  return { start, end: Math.min(total - 1, start + size - 1) };
+}
+
+function timelineMarkerDocumentY() {
+  return window.scrollY + topOffset() + 80;
+}
+
+function timelineMarkerViewportY() {
+  return topOffset() + 80;
+}
+
+function getVirtualTopForLocalIndex(localIndex) {
+  if (localIndex === null || localIndex === undefined || localIndex <= 0) return 0;
+  const source = activeSourceDays();
+  let total = 0;
+  for (let index = 0; index < localIndex; index += 1) total += estimateHeightForDay(source[index]);
+  return total;
+}
+
+function predictSearchLocalIndexFromScroll() {
+  const source = activeSourceDays();
+  if (!source.length) return null;
+  const paneTop = window.scrollY + dom.timelinePane.getBoundingClientRect().top;
+  const offset = Math.max(0, timelineMarkerDocumentY() - paneTop);
+  let remaining = offset;
+  for (let index = 0; index < source.length; index += 1) {
+    const height = estimateHeightForDay(source[index]);
+    if (remaining <= height) return index;
+    remaining -= height;
+  }
+  return source.length - 1;
+}
+
+function predictActiveLocalIndexFromAnchor() {
+  const domIndex = findVisibleLocalIndexFromDom();
+  if (domIndex !== null && domIndex !== undefined) return domIndex;
+  const source = activeSourceDays();
+  if (!source.length) return null;
+  const paneTop = window.scrollY + dom.timelinePane.getBoundingClientRect().top;
+  const topSpacerHeight = Number(dom.timelineTopSpacer.style.height.replace('px', '') || 0);
+  const offset = Math.max(0, timelineMarkerDocumentY() - paneTop - topSpacerHeight);
+  let remaining = offset;
+  const start = state.searchMode ? (state.loadedStart ?? 0) : 0;
+  const end = state.searchMode ? (state.loadedEnd ?? (source.length - 1)) : (source.length - 1);
+  for (let index = start; index <= end; index += 1) {
+    const day = source[index];
+    const height = estimateHeightForDay(day);
+    if (remaining <= height) return index;
+    remaining -= height;
+  }
+  return clamp(end, 0, source.length - 1);
+}
+
+function findVisibleLocalIndexFromDom() {
+  const units = Array.from(document.querySelectorAll('#timelineFeed .timeline-unit'));
+  if (!units.length) return null;
+  const markerY = timelineMarkerViewportY();
+  let nearestIndex = null;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+
+  for (const unit of units) {
+    const rect = unit.getBoundingClientRect();
+    if (rect.bottom < 0 || rect.top > window.innerHeight) continue;
+    const localIndex = Number(unit.dataset.sourceIndex);
+    if (!Number.isFinite(localIndex)) continue;
+    if (rect.top <= markerY && rect.bottom >= markerY) return localIndex;
+    const distance = rect.top > markerY ? rect.top - markerY : markerY - rect.bottom;
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearestIndex = localIndex;
+    }
+  }
+
+  return nearestIndex;
+}
+
+function predictHomeGlobalIndexFromScroll() {
+  if (!state.totalDays) return null;
+  const domIndex = findVisibleLocalIndexFromDom();
+  if (domIndex !== null && domIndex !== undefined) return getGlobalIndexForLocal(domIndex);
+  if (state.homeSourceDays.length) {
+    const source = state.homeSourceDays;
+    const paneTop = window.scrollY + dom.timelinePane.getBoundingClientRect().top;
+    const offset = Math.max(0, timelineMarkerDocumentY() - paneTop);
+    let remaining = offset;
+    for (let index = 0; index < source.length; index += 1) {
+      const height = estimateHeightForDay(source[index]);
+      if (remaining <= height) return getGlobalIndexForLocal(index);
+      remaining -= height;
+    }
+    return getGlobalIndexForLocal(source.length - 1);
+  }
+  const paneTop = window.scrollY + dom.timelinePane.getBoundingClientRect().top;
+  const offset = Math.max(0, timelineMarkerDocumentY() - paneTop);
+  const avg = estimateTimelineUnitHeight();
+  const estimatedTotalHeight = Math.max(avg, state.totalDays * avg);
+  const ratio = clamp(offset / estimatedTotalHeight, 0, 1);
+  return clamp(Math.round((1 - ratio) * Math.max(0, state.totalDays - 1)), 0, Math.max(0, state.totalDays - 1));
+}
+
+async function recoverIfOutrun() {
+  if (!state.searchMode) return false;
+  if (state.route.view !== 'home' || !activeSourceDays().length) return false;
+  const units = Array.from(document.querySelectorAll('#timelineFeed .timeline-unit'));
+  if (!units.length) return false;
+
+  const markerY = topOffset() + 80;
+  const firstRect = units[0].getBoundingClientRect();
+  const lastRect = units[units.length - 1].getBoundingClientRect();
+  const tolerance = estimateTimelineUnitHeight() * 1.5;
+  const outrunAbove = markerY < firstRect.top - tolerance;
+  const outrunBelow = markerY > lastRect.bottom + tolerance;
+  if (!outrunAbove && !outrunBelow) return false;
+
+  if (state.searchMode) {
+    const localIndex = predictSearchLocalIndexFromScroll();
+    if (localIndex === null) return false;
+    const range = buildWindowRangeAroundIndex(localIndex, 'center');
+    setVisibleWindow(range.start, range.end);
+    return true;
+  }
+
+  if (state.fullTimelineLoaded) {
+    const globalIndex = predictHomeGlobalIndexFromScroll();
+    if (globalIndex === null) return false;
+    const isoDate = state.indexToDate[globalIndex];
+    const localIndex = isoDate ? state.homeSourceIndexByDate[isoDate] : null;
+    if (localIndex === null || localIndex === undefined) return false;
+    const range = buildWindowRangeAroundIndex(localIndex, 'center');
+    setVisibleWindow(range.start, range.end);
+    return true;
+  }
+
+  const targetGlobalIndex = predictHomeGlobalIndexFromScroll();
+  if (targetGlobalIndex === null) return false;
+  const chunkSize = timelineChunkSize();
+  const start = Math.max(0, targetGlobalIndex - Math.floor(chunkSize / 2));
+  const response = await getTimelineChunk(start, chunkSize);
+  applyTimelineResponse(response, { replace: true, placement: 'center' });
+  return true;
+}
+
+function reconcileWindowAroundActiveDate() {
+  if (state.route.view !== 'home' || !state.loadedDays.length) return;
+  const localIndex = findVisibleLocalIndexFromDom() ?? getLocalIndexForDate(state.activeDate);
+  if (localIndex === undefined) return;
+  const range = buildWindowRangeAroundIndex(localIndex, 'center');
+  if (range.start === state.loadedStart && range.end === state.loadedEnd) return;
+  setVisibleWindow(range.start, range.end);
+  if (!state.searchMode) void ensureHomeRangeLoaded(range.start, range.end);
+}
+
 function enqueueMediaLoad(node) {
   if (!node || !node.dataset.src || state.mediaQueueSet.has(node)) return;
   state.mediaQueue.push(node);
@@ -1698,8 +2464,13 @@ function enqueueMediaLoad(node) {
 
 function finishMediaNode(node) {
   state.mediaQueueSet.delete(node);
-  const skeleton = node.parentElement?.querySelector('.media-skeleton');
-  if (skeleton) skeleton.remove();
+  const skeleton = node.classList.contains('media-tile')
+    ? node.querySelector('.media-skeleton')
+    : node.parentElement?.querySelector('.media-skeleton');
+  if (skeleton) {
+    skeleton.classList.add('is-exiting');
+    window.setTimeout(() => skeleton.remove(), 220);
+  }
 }
 
 function processMediaQueue() {
@@ -1730,6 +2501,19 @@ function processMediaQueue() {
       node.onerror = done;
       node.src = src;
       node.load();
+      continue;
+    }
+
+    if (node instanceof HTMLButtonElement) {
+      const image = new Image();
+      image.decoding = 'async';
+      image.onload = () => {
+        node.style.backgroundImage = `url("${src.replace(/"/g, '\\"')}")`;
+        node.classList.add('is-ready');
+        done();
+      };
+      image.onerror = done;
+      image.src = src;
       continue;
     }
 
@@ -1778,178 +2562,42 @@ function restoreScrollAnchor(anchor) {
   window.scrollBy({ top: afterTop - anchor.top, behavior: 'auto' });
 }
 
-function trimLoadedWindow(direction) {
-  const limit = maxLoadedDays();
-  if (state.loadedDays.length <= limit) return;
-  const overflow = state.loadedDays.length - limit;
-  if (overflow <= 0) return;
-
-  if (direction === 'older') {
-    state.loadedDays = state.loadedDays.slice(overflow);
-    state.loadedEnd -= overflow;
-  } else if (direction === 'newer') {
-    state.loadedDays = state.loadedDays.slice(0, state.loadedDays.length - overflow);
-    state.loadedStart += overflow;
-  }
-}
-
 function renderTimeline() {
-  if (!state.loadedDays.length) {
-    const todayIso = state.bootstrap?.today?.isoDate;
-    if (!state.searchMode && !state.totalDays && todayIso) {
-      const cardHtml = buildGapCardHtml({ isoDate: addDaysToIso(todayIso, 1) }, { isoDate: addDaysToIso(todayIso, -1) });
-      dom.timelineFeed.innerHTML = `
-        <div class="month-divider"><span class="month-divider-label">${escapeHtml(monthLabelForIso(todayIso))}</span></div>
-        ${cardHtml}
-      `;
-      dom.timelineTopSpacer.style.height = '0px';
-      dom.timelineBottomSpacer.style.height = '0px';
-      rebuildViewerSequence();
-      setupMediaObserver();
-      setupSentinelObserver();
-      updateActiveFromScroll();
-      syncScrollThumb();
-      return;
-    }
-    dom.timelineFeed.innerHTML = `
-      <div class="empty-state">
-        <h2>${state.searchMode ? 'No matching journal entries' : 'No timeline data yet'}</h2>
-        <p>${state.searchMode ? 'Try another search phrase.' : 'Once your folders are indexed, your timeline will appear here.'}</p>
-      </div>
-    `;
-    dom.timelineTopSpacer.style.height = '0px';
-    dom.timelineBottomSpacer.style.height = '0px';
-    rebuildViewerSequence();
-    updateStickyMonth();
-    return;
-  }
-
-  const approxDayHeight = isMobileViewport() ? 240 : 280;
-  const missingAbove = state.totalDays && state.loadedEnd !== null ? Math.max(0, state.totalDays - 1 - state.loadedEnd) : 0;
-  const missingBelow = state.loadedStart !== null ? Math.max(0, state.loadedStart) : 0;
-  dom.timelineTopSpacer.style.height = `${missingAbove * approxDayHeight}px`;
-  dom.timelineBottomSpacer.style.height = `${missingBelow * approxDayHeight}px`;
-
-  let html = '';
-  if (!state.searchMode && state.loadedEnd < state.totalDays - 1) html += '<div id="topSentinel" class="timeline-sentinel"></div>';
-
-  let previousMonth = null;
-  const newestGap = !state.searchMode && state.loadedEnd === state.totalDays - 1 ? buildNewestGapCard() : null;
-  if (newestGap?.html) {
-    if (newestGap.monthKey !== previousMonth) {
-      html += `<div class="month-divider"><span class="month-divider-label">${escapeHtml(newestGap.monthLabel)}</span></div>`;
-      previousMonth = newestGap.monthKey;
-    }
-    html += newestGap.html;
-  }
-  for (let index = 0; index < state.loadedDays.length; index += 1) {
-    const day = state.loadedDays[index];
-    if (day.monthKey !== previousMonth) {
-      html += `<div class="month-divider"><span class="month-divider-label">${escapeHtml(day.monthLabel)}</span></div>`;
-      previousMonth = day.monthKey;
-    }
-    html += buildDayHtml(day);
-    if (!state.searchMode && index < state.loadedDays.length - 1) {
-      const olderDay = state.loadedDays[index + 1];
-      html += buildGapCardHtml(day, olderDay);
-    }
-  }
-
-  if (!state.searchMode && state.loadedStart > 0) html += '<div id="bottomSentinel" class="timeline-sentinel"></div>';
-
-  dom.timelineFeed.innerHTML = html;
-  rebuildViewerSequence();
-  setupMediaObserver();
-  setupSentinelObserver();
-  updateActiveFromScroll();
-  syncScrollThumb();
+  renderTimelineWindow();
 }
 
-function applyTimelineResponse(response, { replace = false } = {}) {
+function applyTimelineResponse(response, { placement = 'center', focusDate = null, focusGlobalIndex = null } = {}) {
   cacheTimelineResponse(response);
   state.totalDays = response.total;
-  const responseDays = [...response.days].reverse();
-  const anchor = !replace ? captureScrollAnchor() : null;
-  let direction = 'replace';
-
-  if (replace || state.loadedStart === null) {
-    state.loadedDays = responseDays;
-    state.loadedStart = response.startIndex;
-    state.loadedEnd = response.endIndex;
-  } else if (response.endIndex < state.loadedStart) {
-    state.loadedDays = [...state.loadedDays, ...responseDays];
-    state.loadedStart = response.startIndex;
-    direction = 'older';
-  } else if (response.startIndex > state.loadedEnd) {
-    state.loadedDays = [...responseDays, ...state.loadedDays];
-    state.loadedEnd = response.endIndex;
-    direction = 'newer';
-  } else {
-    state.loadedDays = responseDays;
-    state.loadedStart = response.startIndex;
-    state.loadedEnd = response.endIndex;
-  }
-
-  trimLoadedWindow(direction);
-  renderTimeline();
-  prefetchAdjacentChunks(response);
-
-  if (anchor) {
-    requestAnimationFrame(() => restoreScrollAnchor(anchor));
-  }
+  mergeTimelineResponseIntoHomeSource(response);
+  const resolvedGlobalIndex = focusGlobalIndex ?? (focusDate ? state.dateIndexMap[focusDate] : response.endIndex);
+  const localIndex = getLocalIndexForGlobalIndex(resolvedGlobalIndex);
+  if (localIndex === undefined) return;
+  const range = buildWindowRangeAroundIndex(localIndex, placement);
+  setVisibleWindow(range.start, range.end);
 }
 
 async function ensureTimelineLoaded(anchorDate) {
   if (state.searchMode || !state.bootstrap) return;
-  const targetIndex = anchorDate ? state.dateIndexMap[anchorDate] : undefined;
-  const chunkSize = timelineChunkSize();
-
-  if (state.loadedStart !== null && targetIndex !== undefined && targetIndex >= state.loadedStart && targetIndex <= state.loadedEnd) {
-    return;
-  }
-
-  const start = targetIndex === undefined
-    ? Math.max(0, state.totalDays - chunkSize)
-    : Math.max(0, targetIndex - Math.floor(chunkSize / 2));
-
-  const response = await getTimelineChunk(start, chunkSize);
-  applyTimelineResponse(response, { replace: true });
+  const targetIndex = anchorDate ? state.dateIndexMap[anchorDate] : (state.totalDays - 1);
+  if (targetIndex === undefined || targetIndex < 0) return;
+  const localIndex = getLocalIndexForGlobalIndex(targetIndex);
+  if (localIndex === undefined) return;
+  const range = buildWindowRangeAroundIndex(localIndex, 'center');
+  setVisibleWindow(range.start, range.end);
+  await ensureHomeRangeLoaded(range.start, range.end);
 }
 
 async function loadOlderChunk() {
-  if (state.searchMode || state.loadedStart === null || state.loadedStart <= 0) return;
-  const chunkSize = timelineChunkSize();
-  const start = Math.max(0, state.loadedStart - chunkSize);
-  const limit = state.loadedStart - start;
-  const response = await getTimelineChunk(start, limit);
-  applyTimelineResponse(response, { replace: false });
+  reconcileWindowAroundActiveDate();
 }
 
 async function loadNewerChunk() {
-  if (state.searchMode || state.loadedEnd === null || state.loadedEnd >= state.totalDays - 1) return;
-  const chunkSize = timelineChunkSize();
-  const start = state.loadedEnd + 1;
-  const limit = Math.min(chunkSize, state.totalDays - start);
-  const response = await getTimelineChunk(start, limit);
-  applyTimelineResponse(response, { replace: false });
+  reconcileWindowAroundActiveDate();
 }
 
 function setupSentinelObserver() {
-  if (state.sentinelObserver) state.sentinelObserver.disconnect();
-  if (state.searchMode) return;
-
-  state.sentinelObserver = new IntersectionObserver((entries) => {
-    entries.forEach((entry) => {
-      if (!entry.isIntersecting) return;
-      if (entry.target.id === 'bottomSentinel') loadOlderChunk().catch(() => {});
-      if (entry.target.id === 'topSentinel') loadNewerChunk().catch(() => {});
-    });
-  }, { rootMargin: '300px 0px 300px 0px' });
-
-  const top = document.getElementById('topSentinel');
-  const bottom = document.getElementById('bottomSentinel');
-  if (top) state.sentinelObserver.observe(top);
-  if (bottom) state.sentinelObserver.observe(bottom);
+  return;
 }
 
 function updateStickyMonth() {
@@ -1966,8 +2614,10 @@ function updateActiveFromScroll() {
     return;
   }
 
-  const dayBlocks = Array.from(document.querySelectorAll('.day-block'));
-  if (!dayBlocks.length) {
+  const activeLocalIndex = predictActiveLocalIndexFromAnchor();
+  const source = activeSourceDays();
+  const predictedDay = activeLocalIndex !== null && activeLocalIndex !== undefined ? source[activeLocalIndex] : null;
+  if (!predictedDay) {
     state.activeDate = null;
     updateStickyMonth();
     updateRailActive();
@@ -1976,15 +2626,7 @@ function updateActiveFromScroll() {
     return;
   }
 
-  const threshold = topOffset() + 80;
-  let current = dayBlocks[0];
-  for (const block of dayBlocks) {
-    const rect = block.getBoundingClientRect();
-    if (rect.top <= threshold) current = block;
-    else break;
-  }
-
-  state.activeDate = current?.dataset.dayDate || dayBlocks[0].dataset.dayDate || null;
+  state.activeDate = predictedDay.isoDate;
   updateStickyMonth();
   updateRailActive();
   updateScrollThumbLabel();
@@ -1995,16 +2637,24 @@ async function ensureTimelineContainsDate(isoDate, placement = 'center') {
   const targetIndex = state.dateIndexMap[isoDate];
   if (targetIndex === undefined) return;
 
-  if (state.loadedStart !== null && targetIndex >= state.loadedStart && targetIndex <= state.loadedEnd) {
+  const localIndex = getLocalIndexForDate(isoDate);
+  if (isDateLoaded(isoDate)) {
     return;
   }
 
-  const chunkSize = timelineChunkSize();
-  const start = placement === 'top'
-    ? Math.max(0, targetIndex - chunkSize + 1)
-    : Math.max(0, targetIndex - Math.floor(chunkSize / 2));
-  const response = await getTimelineChunk(start, chunkSize);
-  applyTimelineResponse(response, { replace: true });
+  if (!state.searchMode) {
+    const nextLocalIndex = getLocalIndexForGlobalIndex(targetIndex);
+    if (nextLocalIndex === undefined) return;
+    const range = buildWindowRangeAroundIndex(nextLocalIndex, 'center');
+    setVisibleWindow(range.start, range.end);
+    await ensureHomeRangeLoaded(range.start, range.end);
+    return;
+  }
+
+  if (localIndex !== undefined) {
+    const range = buildWindowRangeAroundIndex(localIndex, placement);
+    setVisibleWindow(range.start, range.end);
+  }
 }
 
 function positionDatePrecisely(isoDate, behavior = 'auto') {
@@ -2024,6 +2674,7 @@ async function scrollToDate(isoDate, behavior = 'auto') {
 
   const needsLoad = !isDateLoaded(isoDate);
   if (needsLoad) showJumpLoader(`Loading ${dateRailLabel(isoDate)}…`);
+  suppressTimelineCorrection(900);
   await ensureTimelineContainsDate(isoDate, 'top');
   positionDatePrecisely(isoDate, behavior);
   [80, 220, 420].forEach((delay) => {
@@ -2097,9 +2748,39 @@ async function jumpToIndex(index, behavior = 'auto') {
   await scrollToDate(isoDate, behavior);
 }
 
+function scrollToTimelineUnitIndex(index, behavior = 'auto') {
+  if (state.route.view !== 'home' || state.searchMode) return false;
+  const localIndex = getLocalIndexForGlobalIndex(index);
+  if (localIndex === undefined) return false;
+
+  let unit = dom.timelineFeed.querySelector(`.timeline-unit[data-source-index="${localIndex}"]`);
+  if (!unit) return false;
+
+  const range = buildWindowRangeAroundIndex(localIndex, 'center');
+  if (range.start !== state.loadedStart || range.end !== state.loadedEnd) {
+    setVisibleWindow(range.start, range.end);
+    void ensureHomeRangeLoaded(range.start, range.end);
+    unit = dom.timelineFeed.querySelector(`.timeline-unit[data-source-index="${localIndex}"]`);
+    if (!unit) return false;
+  }
+
+  suppressTimelineCorrection(280);
+  const top = Math.max(0, window.scrollY + unit.getBoundingClientRect().top - topOffset());
+  window.scrollTo({ top, behavior });
+
+  const isoDate = unit.dataset.dayDate || state.indexToDate[index];
+  if (isoDate) state.activeDate = isoDate;
+  updateStickyMonth();
+  updateRailActive();
+  syncScrollThumb();
+  updateTopbarDateLabel();
+  return true;
+}
+
 async function queueScrollHandleJump(index) {
   state.scrollPreviewIndex = index;
   syncScrollThumb();
+  if (scrollToTimelineUnitIndex(index, 'auto')) return;
   state.scrollHandleQueuedIndex = index;
   if (state.scrollHandleBusy) return;
   state.scrollHandleBusy = true;
@@ -2504,19 +3185,26 @@ function handleGapCardClick(card) {
 
 async function runSearch(query) {
   const term = String(query || '').trim();
+  const requestId = ++state.searchRequestSeq;
+  state.activeSearchRequest = requestId;
   state.searchQuery = term;
   state.scrollPreviewIndex = null;
   state.scrollHandleQueuedIndex = null;
   state.scrollHandleBusy = false;
   dom.clearSearch.classList.toggle('hidden', !term);
+  if (state.searchAbortController) {
+    state.searchAbortController.abort();
+    state.searchAbortController = null;
+  }
   if (!term) {
-    state.searchMode = false;
+    restoreHomeTimelineState();
+    setSearchSource([]);
     dom.yearCarouselShell?.classList.remove('hidden');
     if (dom.yearSectionTitle) dom.yearSectionTitle.textContent = 'Browse your years';
     renderDefaultYearSubtitle();
     await goHome({ push: false, restoreScroll: false });
     await ensureTimelineLoaded(state.bootstrap?.lastDate);
-    renderTimeline();
+    if (requestId !== state.activeSearchRequest) return;
     requestAnimationFrame(() => {
       updateActiveFromScroll();
       syncScrollThumb();
@@ -2524,21 +3212,46 @@ async function runSearch(query) {
     return;
   }
 
-  const response = await fetchJson(`/api/search?q=${encodeURIComponent(term)}`);
+  const controller = new AbortController();
+  state.searchAbortController = controller;
+  let response;
+  try {
+    response = await fetchJson(`/api/search?q=${encodeURIComponent(term)}`, { cache: 'no-store', signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted) return;
+    throw error;
+  } finally {
+    if (state.searchAbortController === controller) state.searchAbortController = null;
+  }
+
+  if (requestId !== state.activeSearchRequest || state.searchQuery !== term) return;
+
   await goHome({ push: false, restoreScroll: false });
+  if (requestId !== state.activeSearchRequest || state.searchQuery !== term) return;
   state.searchMode = true;
+  setSearchSource(response.days);
   dom.yearCarouselShell?.classList.add('hidden');
   if (dom.yearSectionTitle) dom.yearSectionTitle.textContent = `Search results for ${term}`;
   if (dom.yearSectionSubtitle) dom.yearSectionSubtitle.textContent = `${response.total} matching days`;
-  state.loadedDays = response.days;
-  state.loadedStart = null;
-  state.loadedEnd = null;
   state.activeDate = response.days[0]?.isoDate || null;
-  renderTimeline();
-  window.scrollTo({ top: dom.timelineSection.getBoundingClientRect().top + window.scrollY - topOffset(), behavior: 'auto' });
+  if (response.days.length) {
+    const range = buildWindowRangeAroundIndex(0, 'top');
+    setVisibleWindow(range.start, range.end);
+  } else {
+    state.loadedDays = [];
+    state.loadedStart = null;
+    state.loadedEnd = null;
+    renderTimeline();
+  }
+  state.topbarHidden = false;
+  dom.body.classList.remove('topbar-hidden');
+  state.mobileTopbarAnchorY = window.scrollY;
   requestAnimationFrame(() => {
     updateActiveFromScroll();
     syncScrollThumb();
+    state.topbarHidden = false;
+    dom.body.classList.remove('topbar-hidden');
+    state.mobileTopbarAnchorY = window.scrollY;
     showScrollHandle();
   });
 }
@@ -2934,8 +3647,14 @@ function attachEvents() {
     scrollRaf = requestAnimationFrame(() => {
       scrollRaf = 0;
       updateActiveFromScroll();
-      syncScrollThumb();
-      updateHistoryScrollY();
+      recoverIfOutrun()
+        .then((recovered) => {
+          if (!recovered) reconcileWindowAroundActiveDate();
+          else updateActiveFromScroll();
+          syncScrollThumb();
+          updateHistoryScrollY();
+        })
+        .catch(console.error);
     });
   }, { passive: true });
 
@@ -2955,6 +3674,7 @@ function attachEvents() {
     dom.scrollYearMarks?.classList.add('visible');
     state.scrollPreviewIndex = indexFromHandleDrag(event.clientY);
     syncScrollThumb();
+    queueScrollHandleJump(state.scrollPreviewIndex).catch(console.error);
     dom.scrollGrabber.setPointerCapture(event.pointerId);
     showScrollHandle();
   });
@@ -2973,10 +3693,8 @@ function attachEvents() {
     dom.scrollHandle.classList.remove('is-dragging');
     dom.scrollYearMarks?.classList.remove('visible');
     try { dom.scrollGrabber.releasePointerCapture(event.pointerId); } catch (error) {}
-    const finalIndex = state.scrollPreviewIndex;
     state.scrollPreviewIndex = null;
     syncScrollThumb();
-    if (finalIndex !== null && finalIndex !== undefined) queueScrollHandleJump(finalIndex).catch(console.error);
     showScrollHandle();
   };
   dom.scrollGrabber.addEventListener('pointerup', stopScrollDrag);
@@ -3082,8 +3800,13 @@ function parseInitialRoute() {
 }
 
 async function bootstrapApp() {
+  renderTimelineLoadingState();
   applyTheme(state.theme);
   applyGridColumns(state.gridColumns || gridColumnBounds().base);
+  state.timelineBooting = true;
+  updateTimelineStatus();
+  const initialState = history.state || parseInitialRoute();
+  history.replaceState(initialState, '', location.href || '#');
   state.bootstrap = await fetchJson('/api/bootstrap');
   state.totalDays = state.bootstrap.totalDays;
   renderDefaultYearSubtitle();
@@ -3092,17 +3815,23 @@ async function bootstrapApp() {
   updateTopbarDateLabel();
   renderYearCarousel();
   renderRail();
+  initializeHomeSourceFromBootstrap();
   renderScrollYearMarks();
   attachEvents();
-  await ensureTimelineLoaded(state.bootstrap.lastDate);
-  renderTimeline();
+  const initialFocusDate = initialState?.focusDate && state.dateIndexMap[initialState.focusDate] !== undefined
+    ? initialState.focusDate
+    : state.bootstrap.lastDate;
+  restoreHomeTimelineState();
+  if (initialFocusDate) await ensureTimelineLoaded(initialFocusDate);
+  else renderTimeline();
+  state.timelineBooting = false;
+  updateTimelineStatus();
   showScrollHandle();
   showScrollTopButton();
 
-  const initialState = history.state || parseInitialRoute();
-  history.replaceState(initialState, '', location.href || '#');
   await routeToState(initialState);
   updateActiveFromScroll();
+  reconcileWindowAroundActiveDate();
   syncScrollThumb();
 }
 

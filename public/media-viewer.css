@@ -38,7 +38,8 @@ body.viewer-open {
   --viewer-details-desktop-gap: 0px;
   --viewer-details-desktop-shift: 28px;
   --viewer-details-desktop-opacity: 0;
-  --viewer-mobile-details-visible: 0px;
+  --viewer-mobile-details-height: 0px;
+  --viewer-mobile-details-visible: clamp(0px, calc(var(--viewer-mobile-details-height) - var(--viewer-details-offset)), var(--viewer-mobile-details-height));
   --viewer-mobile-topbar-height: 67px;
   --viewer-mobile-toolbar-height: 63px;
   --viewer-media-safe-top: 90px;
@@ -435,8 +436,12 @@ body.viewer-open {
   transition: opacity 180ms ease, visibility 0s linear 0s;
   width: 100%;
   bottom: 43px;
+  appearance: none;
   background: none;
   backdrop-filter: none;
+  cursor: pointer;
+  font: inherit;
+  outline: none;
   text-align: left;
   background: linear-gradient(45deg, color-mix(in srgb, var(--paper-strong) 100%, transparent), color-mix(in srgb, var(--paper-strong) 75%, transparent));
   border: solid 1px white;
@@ -510,6 +515,11 @@ body.viewer-open {
 
 .ph-fill.ph-heart {
   text-shadow: 0px 0px 20px #000000;
+  color: #ff6b81;
+}
+
+.viewer-tool .ph-fill.ph-heart {
+  text-shadow: none;
 }
 
 .viewer-toolbar .viewer-tool:hover i {
@@ -551,6 +561,7 @@ body.viewer-open {
   overflow: auto;
   overscroll-behavior: contain;
   transform: translate3d(0, var(--viewer-details-offset), 0);
+  will-change: transform;
   z-index: 110;
   box-shadow: 0 -24px 60px rgba(0, 0, 0, 0);
   backdrop-filter: blur(18px);
@@ -845,10 +856,6 @@ body.viewer-open {
   .viewer-details-handle {
     display: none;
   }
-
-  .viewer-description-summary {
-    bottom: 92px;
-  }
 }
 
 @media (max-width: 900px) {
@@ -895,7 +902,7 @@ body.viewer-open {
   }
 
   .viewer-description-summary {
-    bottom: calc(var(--viewer-mobile-toolbar-height) + var(--viewer-mobile-details-visible) + 10px + env(safe-area-inset-bottom, 0px));
+    bottom: calc(var(--viewer-mobile-toolbar-height) - 20px + env(safe-area-inset-bottom, 0px));
   }
 
   .viewer-status-caption {

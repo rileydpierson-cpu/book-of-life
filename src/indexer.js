@@ -520,10 +520,18 @@ class TimelineIndexer {
       }
     }
 
+    const previewCharLimit = 300;
+    const longestLineLength = normalizedLines.reduce((max, line) => Math.max(max, line.length), 0);
+    const totalPreviewChars = normalizedLines.join('\n').trim().length;
+    const isTruncated =
+      normalizedLines.length > 3
+      || totalPreviewChars > previewCharLimit
+      || longestLineLength > previewCharLimit;
+
     return {
       text: previewLines.join('\n').trim(),
       lines: previewLines,
-      isTruncated: normalizedLines.length > 3
+      isTruncated
     };
   }
 
@@ -680,14 +688,7 @@ class TimelineIndexer {
     for (let index = this.state.dayKeys.length - 1; index >= 0; index -= 1) {
       const isoDate = this.state.dayKeys[index];
       const day = this.state.days.get(isoDate);
-      const haystacks = [
-        day.dateLabel,
-        shortDateLabel(isoDate),
-        day.journal?.title || '',
-        day.journal?.raw || ''
-      ].join('\n').toLowerCase();
-
-      if (haystacks.includes(term)) matches.push(this.serializeDay(isoDate, { searchTerm: rawQuery }));
+      if (day?.searchText?.includes(term)) matches.push(this.serializeDay(isoDate, { searchTerm: rawQuery }));
       if (matches.length >= 200) break;
     }
 
@@ -791,6 +792,12 @@ class TimelineIndexer {
       }
       day.photos = (day.photos || []).slice().sort((a, b) => a.capturedAt.localeCompare(b.capturedAt) || a.filePath.localeCompare(b.filePath));
       day.photoIds = day.photos.map((photo) => photo.id);
+      day.searchText = [
+        day.dateLabel,
+        shortDateLabel(isoDate),
+        day.journal?.title || '',
+        day.journal?.raw || ''
+      ].join('\n').toLowerCase();
       const year = Number(isoDate.slice(0, 4));
       const monthKey = slugMonth(new Date(`${isoDate}T12:00:00Z`));
 

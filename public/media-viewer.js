@@ -270,6 +270,7 @@
         chromeVisible: true,
         detailsOpen: false,
         detailsProgress: 0,
+        detailsMeasuredHeight: 0,
         detailsAnimationTimer: 0,
         stageSettleTimer: 0,
         detailsTouchId: null,
@@ -327,6 +328,7 @@
       this.handleDetailsTouchEnd = this.handleDetailsTouchEnd.bind(this);
       this.handleDetailsPointerMove = this.handleDetailsPointerMove.bind(this);
       this.handleDetailsPointerEnd = this.handleDetailsPointerEnd.bind(this);
+      this.updateMobileDetailsHeight = this.updateMobileDetailsHeight.bind(this);
       this.carouselSlots = new Map();
 
       this.root = document.createElement('div');
@@ -372,7 +374,7 @@
               ${renderPhIcon('caret-right', { variant: 'bold' })}
             </button>
 
-            <p class="viewer-description-summary hidden" data-role="description-summary"></p>
+            <button class="viewer-description-summary hidden" data-role="description-summary" type="button" aria-label="Open details and edit description"></button>
 
             <div class="viewer-toolbar">
               <button class="viewer-tool viewer-info-button" data-role="info" type="button" aria-label="Show media details">
@@ -513,10 +515,17 @@
       }
 
       this.attachEvents();
+      if (typeof window.ResizeObserver === 'function') {
+        this.detailsResizeObserver = new window.ResizeObserver(() => {
+          this.updateMobileDetailsHeight();
+        });
+        this.detailsResizeObserver.observe(this.dom.details);
+      }
       this.applyStageGesture();
       this.applyChromeState({ immediate: true });
       this.applyDetailsProgress(0, { immediate: true });
       this.setDescriptionValue('');
+      this.updateMobileDetailsHeight();
     }
 
     attachEvents() {
@@ -542,6 +551,9 @@
       this.dom.zoomReset.addEventListener('click', () => this.resetTransform());
       this.dom.backdrop.addEventListener('click', () => {
         this.toggleChrome();
+      });
+      this.dom.descriptionSummary.addEventListener('click', () => {
+        this.openDetailsAndFocusDescription();
       });
 
       this.dom.description.addEventListener('input', () => this.handleDescriptionInput());
@@ -618,6 +630,7 @@
     handleResize() {
       if (!this.isOpen()) return;
       this.updateShareButtonVisibility();
+      this.updateMobileDetailsHeight();
       if (this.state.carouselAnimating) this.finishCarouselAnimation();
       this.applyDetailsProgress(this.state.detailsProgress, { immediate: true });
       this.rebuildCarouselWindow(this.state.index);
@@ -992,7 +1005,7 @@
 
       if (!mostlyVertical || this.isDesktopSidePanel()) return;
       event.preventDefault();
-      this.applyWheelDetailsDelta(event.deltaY);
+      this.applyWheelDetailsDelta(-event.deltaY);
     }
 
     handleDetailsWheel(event) {
@@ -1002,13 +1015,14 @@
       const mostlyVertical = Math.abs(event.deltaY) > Math.abs(event.deltaX) * 1.15;
       if (!mostlyVertical) return;
 
-      const scrollingDown = event.deltaY > 0;
+      const detailsDeltaY = -event.deltaY;
+      const scrollingDown = detailsDeltaY > 0;
       const canDismiss = this.dom.details.scrollTop <= 2;
-      const canReveal = event.deltaY < 0 && this.state.detailsProgress < 1;
+      const canReveal = detailsDeltaY < 0 && this.state.detailsProgress < 1;
       if (!canReveal && !(scrollingDown && canDismiss)) return;
 
       event.preventDefault();
-      this.applyWheelDetailsDelta(event.deltaY);
+      this.applyWheelDetailsDelta(detailsDeltaY);
     }
 
     applyWheelDetailsDelta(deltaY) {
@@ -1101,10 +1115,28 @@
       this.dom.description.value = value || '';
     }
 
+    updateMobileDetailsHeight() {
+      const height = Math.round(this.dom.details.offsetHeight || 0);
+      this.state.detailsMeasuredHeight = height;
+      this.root.style.setProperty('--viewer-mobile-details-height', `${height}px`);
+    }
+
     updateDescriptionSummary(item) {
       const descriptionText = this.state.descriptionDirty ? this.readDescriptionValue() : (item?.description || '');
       this.dom.descriptionSummary.textContent = descriptionText;
       this.dom.descriptionSummary.classList.toggle('hidden', !descriptionText);
+    }
+
+    openDetailsAndFocusDescription() {
+      if (!this.getCurrentItem()) return;
+      this.commitDetails(true);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (!this.state.detailsOpen || this.root.classList.contains('hidden')) return;
+          this.dom.description.focus({ preventScroll: true });
+          this.dom.description.setSelectionRange(this.dom.description.value.length, this.dom.description.value.length);
+        });
+      });
     }
 
     setFileNameValidationState(state) {
@@ -2234,8 +2266,8 @@
     }
 
     getSheetTravel() {
-      const rect = this.dom.details.getBoundingClientRect();
-      return Math.max(rect.height + 28, 260);
+      const height = this.state.detailsMeasuredHeight || this.dom.details.offsetHeight || 0;
+      return Math.max(height + 28, 260);
     }
 
     applyDetailsProgress(progress, { immediate = false } = {}) {
@@ -2245,14 +2277,11 @@
       if (this.state.detailsProgress > 0.02) this.setChromeVisible(true, { immediate });
 
       const mobileOffset = Math.round((1 - this.state.detailsProgress) * this.getSheetTravel());
-      const mobileDetailsHeight = Math.round(this.dom.details.getBoundingClientRect().height || 0);
-      const mobileVisibleHeight = Math.max(0, Math.min(mobileDetailsHeight, mobileDetailsHeight - mobileOffset));
       const desktopShift = Math.round((1 - this.state.detailsProgress) * 28);
       const desktopWidth = Math.round(this.state.detailsProgress * 340);
       const desktopGap = 0;
       this.root.style.setProperty('--viewer-details-progress', this.state.detailsProgress.toFixed(4));
       this.root.style.setProperty('--viewer-details-offset', `${mobileOffset}px`);
-      this.root.style.setProperty('--viewer-mobile-details-visible', `${mobileVisibleHeight}px`);
       this.root.style.setProperty('--viewer-details-desktop-shift', `${desktopShift}px`);
       this.root.style.setProperty('--viewer-details-desktop-width', `${desktopWidth}px`);
       this.root.style.setProperty('--viewer-details-desktop-gap', `${desktopGap}px`);
@@ -2397,6 +2426,7 @@
         ? this.options.getDescriptionValue(item) || ''
         : (item?.description || ''));
       this.state.descriptionDirty = false;
+      this.updateMobileDetailsHeight();
       this.updateLikeButton(item);
       this.updateStatus(item);
       this.applyDetailsProgress(this.state.detailsProgress, { immediate: true });

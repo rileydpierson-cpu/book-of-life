@@ -822,10 +822,10 @@ function renderPhotos() {
       <span>Upload Media</span>
     </button>
   ` + state.photos.map((photo, index) => `
-    <button class="editor-photo-thumb" type="button" data-photo-index="${index}">
+    <button class="editor-photo-thumb ${photo.type === 'video' ? '' : 'editor-photo-thumb-image'}" type="button" data-photo-index="${index}" ${photo.type === 'video' ? '' : `style="background-image:url('${String(photo.thumbUrl || '').replace(/'/g, "\\'")}')"`}>
       ${photo.type === 'video'
         ? `<video src="${photo.previewUrl || photo.thumbUrl}" muted autoplay loop playsinline preload="metadata" poster="${photo.thumbUrl || ''}" aria-hidden="true"></video><span class="editor-video-mark">${renderPhIcon('play-fill', { variant: 'fill' })}</span>`
-        : `<img src="${photo.thumbUrl}" alt="${photo.fileName || ''}" />`}
+        : ''}
     </button>
   `).join('');
   dom.uploadButton = document.getElementById('editorUploadButton');

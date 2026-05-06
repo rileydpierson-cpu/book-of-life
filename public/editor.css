@@ -145,6 +145,11 @@ body {
 }
 .editor-photo-thumb img,
 .editor-photo-thumb video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.editor-photo-thumb-image {
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+}
 .editor-photo-thumb .editor-video-mark {
   position: absolute;
   right: 6px;
