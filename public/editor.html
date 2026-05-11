@@ -57,9 +57,22 @@
       <div class="editor-upload-backdrop"></div>
       <div class="editor-upload-window">
         <div class="settings-window-head">
-          <h2 id="editorUploadTitle">Add media</h2>
+          <div>
+            <h2 id="editorUploadTitle">Add media</h2>
+          </div>
           <button id="editorUploadClose" class="editor-icon-button" type="button" aria-label="Close upload"><i class="ph-bold ph-x"></i></button>
         </div>
+        <label class="editor-file-input hidden" aria-hidden="true">
+          <input id="editorFileInput" type="file" multiple accept="image/*,video/*,.heic,.heif,.mov,.mp4,.m4v,.webm,.avi,.mkv,.3gp" />
+        </label>
+        <!-- <p class="section-subtitle">Files are uploaded as-is. Preview generation in the browser does not alter the original file metadata.</p> -->
+        <div id="editorUploadSelectionLoading" class="upload-selection-loading hidden" aria-live="polite"><i class="ph ph-spinner-gap is-spinning"></i><span>Preparing previews...</span></div>
+        <div class="upload-context-row">
+          <button id="editorDateModeToggle" class="upload-context-toggle" type="button">Uploading for</button>
+          <button id="editorContextDateTrigger" class="upload-preview-trigger" type="button">May 8, 2026</button>
+          <input id="editorSharedDate" class="upload-preview-picker-input" type="date" />
+        </div>
+        <div id="editorUploadPreviewList" class="upload-preview-list upload-preview-list-view"></div>
         <button id="editorFolderButton" class="editor-folder-button" type="button">
           <span class="upload-folder-icon"><i class="ph-duotone ph-folder-open"></i></span>
           <strong id="editorFolderLabel">Choose a folder</strong>
@@ -68,21 +81,9 @@
           <button id="editorNewFolderButton" class="editor-icon-button" type="button" aria-label="Create folder"><i class="ph-bold ph-plus"></i></button>
           <div id="editorFolderTree" class="editor-folder-tree"></div>
         </div>
-        <label class="editor-file-input hidden" aria-hidden="true">
-          <input id="editorFileInput" type="file" multiple accept="image/*,video/*,.heic,.heif,.mov,.mp4,.m4v,.webm,.avi,.mkv,.3gp" />
-        </label>
-        <p class="section-subtitle">Files are uploaded as-is. Preview generation in the browser does not alter the original file metadata.</p>
-        <div id="editorUploadSelectionLoading" class="upload-selection-loading hidden" aria-live="polite"><i class="ph ph-spinner-gap is-spinning"></i><span>Preparing previews...</span></div>
-        <div id="editorUploadPreviewList" class="upload-preview-list upload-preview-list-view"></div>
-        <div class="upload-shared-date-shell">
-          <label class="editor-check-row">
-            <input id="editorSetExifDate" type="checkbox" />
-            <span id="editorExifDateLabel">Override LifeServer datestamp</span>
-          </label>
-          <input id="editorSharedDate" class="upload-shared-date-input" type="date" disabled />
-        </div>
+        <input id="editorSetExifDate" class="hidden" type="checkbox" />
         <button id="editorAddFilesButton" class="editor-file-picker" type="button">
-          <span><i class="ph-duotone ph-images-square"></i> Add Files</span>
+          <span><i class="ph-bold ph-plus"></i> Add More</span>
         </button>
         <div class="upload-actions upload-actions-stacked">
           <button id="editorUploadSubmit" class="save-button upload-submit-button" type="button"><span class="upload-submit-fill"></span><span class="upload-submit-content"><i class="ph-bold ph-upload-simple"></i><span id="editorUploadSubmitLabel">Upload</span></span></button>

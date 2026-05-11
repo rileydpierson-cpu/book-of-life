@@ -57,12 +57,19 @@ const state = {
   chunkCache: new Map(),
   pendingChunks: new Map(),
   searchMode: false,
+  searchLoading: false,
   searchQuery: '',
   searchUiOpen: false,
   searchInputTimer: 0,
   searchRequestSeq: 0,
   activeSearchRequest: 0,
   searchAbortController: null,
+  searchRawDays: [],
+  searchFolders: [],
+  searchActiveFolderKeys: new Set(),
+  searchDetailDate: '',
+  searchDetailResultIndex: 0,
+  searchResultsScrollY: 0,
   activeDate: null,
   expandedDates: new Set(),
   mediaObserver: null,
@@ -88,6 +95,35 @@ const state = {
   monthCache: new Map(),
   yearCache: new Map(),
   settingsOpen: false,
+  calendarModal: {
+    isOpen: false,
+    busy: false,
+    context: '',
+    selectedDate: '',
+    visibleMonth: '',
+    minDate: '',
+    maxDate: '',
+    title: '',
+    subtitle: '',
+    confirmLabel: 'Confirm',
+    helperText: '',
+    isDateEnabled: null,
+    onConfirm: null,
+    returnFocus: null,
+    metadata: null
+  },
+  timeModal: {
+    isOpen: false,
+    busy: false,
+    title: '',
+    subtitle: '',
+    confirmLabel: 'Confirm',
+    helperText: '',
+    selectedTime: '12:00',
+    onConfirm: null,
+    returnFocus: null,
+    metadata: null
+  },
   viewerSequence: [],
   viewerIndex: -1,
   viewerLoadToken: 0,
@@ -112,6 +148,8 @@ const state = {
   uploadProgressRatio: 0,
   uploadCreatingFolder: null,
   uploadPreparing: false,
+  uploadProcessing: false,
+  uploadSharedDateRestore: null,
   viewerClosing: false,
   viewerDateToastTimer: null,
   viewerLastShownDate: '',
@@ -128,23 +166,38 @@ const state = {
   gridColumns: Number(localStorage.getItem('lifeserver-grid-columns') || 0) || null
 };
 
+const TIME_HOUR_VALUES = Array.from({ length: 12 }, (_, index) => String(index + 1));
+const TIME_MINUTE_VALUES = Array.from({ length: 60 }, (_, index) => String(index).padStart(2, '0'));
+const TIME_PERIOD_VALUES = ['AM', 'PM'];
+const TIME_SPINNER_REPEAT_COUNT = 5;
+const TIME_SPINNER_CENTER_REPEAT = Math.floor(TIME_SPINNER_REPEAT_COUNT / 2);
+const AVAILABLE_THEMES = new Set(['light', 'dark', 'sepia', 'forest', 'ocean', 'rose']);
+const MEDIA_LIKE_SAVE_DELAY_MS = 200;
+const pendingMediaLikeSaves = new Map();
+const mediaLikeSaveVersions = new Map();
+const timeSpinnerScrollTimers = new Map();
+const timeSpinnerSuppressUntil = new WeakMap();
+
 const dom = {
   body: document.body,
+  topbar: document.getElementById('topbar'),
   homeButton: document.getElementById('homeButton'),
   topbarDateLabel: document.getElementById('topbarDateLabel'),
+  topbarMeta: document.getElementById('topbarMeta'),
   topbarActions: document.getElementById('topbarActions'),
   uploadTopbarButton: document.getElementById('uploadTopbarButton'),
   searchToggleButton: document.getElementById('searchToggleButton'),
   searchCloseButton: document.getElementById('searchCloseButton'),
+  searchBackButton: document.getElementById('searchBackButton'),
   settingsButton: document.getElementById('settingsButton'),
   settingsHomeButton: document.getElementById('settingsHomeButton'),
   settingsTodayButton: document.getElementById('settingsTodayButton'),
+  settingsJumpButton: document.getElementById('settingsJumpButton'),
   settingsUploadButton: document.getElementById('settingsUploadButton'),
   settingsModal: document.getElementById('settingsModal'),
   settingsCloseButton: document.getElementById('settingsCloseButton'),
   logoutButton: document.getElementById('logoutButton'),
-  themeLight: document.getElementById('themeLight'),
-  themeDark: document.getElementById('themeDark'),
+  themeChoices: Array.from(document.querySelectorAll('[data-theme-choice]')),
   yearSection: document.getElementById('yearSection'),
   yearSectionTitle: document.getElementById('yearSectionTitle'),
   yearSectionSubtitle: document.getElementById('yearSectionSubtitle'),
@@ -159,6 +212,11 @@ const dom = {
   explorerSubtitle: document.getElementById('explorerSubtitle'),
   explorerGrid: document.getElementById('explorerGrid'),
   timelineSection: document.getElementById('timelineSection'),
+  searchStatusSection: document.getElementById('searchStatusSection'),
+  searchStatusEyebrow: document.getElementById('searchStatusEyebrow'),
+  searchStatusTitle: document.getElementById('searchStatusTitle'),
+  searchStatusSubtitle: document.getElementById('searchStatusSubtitle'),
+  searchFilters: document.getElementById('searchFilters'),
   timelinePane: document.getElementById('timelinePane'),
   timelineFeed: document.getElementById('timelineFeed'),
   timelineTopSpacer: document.getElementById('timelineTopSpacer'),
@@ -167,6 +225,11 @@ const dom = {
   searchForm: document.getElementById('searchForm'),
   searchInput: document.getElementById('searchInput'),
   clearSearch: document.getElementById('clearSearch'),
+  searchDetailView: document.getElementById('searchDetailView'),
+  searchDetailNav: document.getElementById('searchDetailNav'),
+  searchDetailPrevResult: document.getElementById('searchDetailPrevResult'),
+  searchDetailNextResult: document.getElementById('searchDetailNextResult'),
+  searchDetailBody: document.getElementById('searchDetailBody'),
   scrollHandle: document.getElementById('scrollHandle'),
   scrollTrack: document.getElementById('scrollTrack'),
   scrollThumb: document.getElementById('scrollThumb'),
@@ -198,6 +261,8 @@ const dom = {
   uploadClose: document.getElementById('uploadClose'),
   uploadWindow: document.querySelector('#uploadModal .upload-window'),
   uploadTitle: document.getElementById('uploadTitle'),
+  uploadDateModeToggle: document.getElementById('uploadDateModeToggle'),
+  uploadContextDateTrigger: document.getElementById('uploadContextDateTrigger'),
   uploadFolderButton: document.getElementById('uploadFolderButton'),
   uploadFolderLabel: document.getElementById('uploadFolderLabel'),
   uploadFolderTree: document.getElementById('uploadFolderTree'),
@@ -206,9 +271,11 @@ const dom = {
   uploadFileInput: document.getElementById('uploadFileInput'),
   uploadFilePicker: document.querySelector('#uploadModal .upload-file-picker'),
   uploadSelectionLoading: document.getElementById('uploadSelectionLoading'),
+  uploadSelectionLoadingLabel: document.querySelector('#uploadSelectionLoading span'),
   uploadCheckRow: document.querySelector('#uploadModal .upload-check-row'),
   uploadPreviewList: document.getElementById('uploadPreviewList'),
   uploadSetExifDate: document.getElementById('uploadSetExifDate'),
+  uploadSharedDateControls: document.getElementById('uploadSharedDateControls'),
   uploadSharedDate: document.getElementById('uploadSharedDate'),
   uploadExifDateLabel: document.getElementById('uploadExifDateLabel'),
   uploadSubmit: document.getElementById('uploadSubmit'),
@@ -216,9 +283,53 @@ const dom = {
   uploadCancel: document.getElementById('uploadCancel'),
   uploadResume: document.getElementById('uploadResume'),
   uploadResumeLabel: document.getElementById('uploadResumeLabel'),
+  calendarModal: document.getElementById('calendarModal'),
+  calendarBackdrop: document.querySelector('#calendarModal .calendar-backdrop'),
+  calendarWindow: document.querySelector('#calendarModal .calendar-window'),
+  calendarTitle: document.getElementById('calendarTitle'),
+  calendarSubtitle: document.getElementById('calendarSubtitle'),
+  calendarPrevMonth: document.getElementById('calendarPrevMonth'),
+  calendarNextMonth: document.getElementById('calendarNextMonth'),
+  calendarMonthLabel: document.getElementById('calendarMonthLabel'),
+  calendarGrid: document.getElementById('calendarGrid'),
+  calendarFooter: document.getElementById('calendarFooter'),
+  calendarSelectionLabel: document.getElementById('calendarSelectionLabel'),
+  calendarHelperText: document.getElementById('calendarHelperText'),
+  calendarCloseButton: document.getElementById('calendarCloseButton'),
+  calendarCancelButton: document.getElementById('calendarCancelButton'),
+  calendarConfirmButton: document.getElementById('calendarConfirmButton'),
+  timeModal: document.getElementById('timeModal'),
+  timeBackdrop: document.querySelector('#timeModal .calendar-backdrop'),
+  timeWindow: document.querySelector('#timeModal .time-window'),
+  timeTitle: document.getElementById('timeTitle'),
+  timeSubtitle: document.getElementById('timeSubtitle'),
+  timeHourLane: document.getElementById('timeHourLane'),
+  timeMinuteLane: document.getElementById('timeMinuteLane'),
+  timePeriodLane: document.getElementById('timePeriodLane'),
+  timeSelectionLabel: document.getElementById('timeSelectionLabel'),
+  timeHelperText: document.getElementById('timeHelperText'),
+  timeCloseButton: document.getElementById('timeCloseButton'),
+  timeCancelButton: document.getElementById('timeCancelButton'),
+  timeConfirmButton: document.getElementById('timeConfirmButton'),
   viewerTagsInput: document.getElementById('viewerTagsInput'),
   viewerTagsSave: document.getElementById('viewerTagsSave')
 };
+
+function syncOverlayBodyState() {
+  const viewerHidden = !mediaViewer?.isOpen?.();
+  const uploadHidden = dom.uploadModal?.classList.contains('hidden');
+  const calendarHidden = dom.calendarModal?.classList.contains('hidden');
+  const timeHidden = dom.timeModal?.classList.contains('hidden');
+  if (viewerHidden && uploadHidden && calendarHidden && timeHidden && !state.settingsOpen) {
+    dom.body.classList.remove('viewer-open');
+  }
+}
+
+function renderSearchDescriptionSummary(item) {
+  const description = String(item?.description || '');
+  if (!state.searchMode || !state.searchQuery || !item?.searchMatch) return escapeHtml(description);
+  return highlightPlainText(description, state.searchQuery);
+}
 
 const mediaViewer = window.createMediaViewer({
   getItems: () => state.viewerSequence,
@@ -226,7 +337,7 @@ const mediaViewer = window.createMediaViewer({
     dom.body.classList.add('viewer-open');
   },
   onClose: () => {
-    if (dom.uploadModal.classList.contains('hidden') && !state.settingsOpen) dom.body.classList.remove('viewer-open');
+    syncOverlayBodyState();
   },
   onRequestClose: () => {
     closeViewer();
@@ -236,6 +347,14 @@ const mediaViewer = window.createMediaViewer({
       history.replaceState({ ...history.state, viewerMediaId: item.id }, '', location.href);
     }
   },
+  onStepUnavailable: async (_direction, viewer) => {
+    if (state.searchMode || state.fullTimelineLoaded || !state.totalDays) return false;
+    const currentId = viewer.getCurrentItem()?.id;
+    await ensureFullTimelineLoaded();
+    rebuildViewerSequence({ preferredMediaId: currentId, refreshOpenViewer: viewer.isOpen() });
+    return true;
+  },
+  renderDescriptionSummary: (item) => renderSearchDescriptionSummary(item),
   onSaveTags: async (item, tags) => {
     const payload = await fetchJson(`/api/media/${item.id}/tags`, {
       method: 'POST',
@@ -300,21 +419,17 @@ const mediaViewer = window.createMediaViewer({
       syncViewerMediaMutation(item.id, (photo) => {
         Object.assign(photo, nextPhoto);
       });
-      state.viewerSequence = state.loadedDays.flatMap((day) => day.photos.map((photo) => photo));
+      rebuildViewerSequence();
     }
     void refreshBootstrap(payload.photo?.isoDate || item.isoDate || state.bootstrap?.lastDate || null).catch(console.error);
     return payload;
   },
   onLoadFolders: async () => fetchJson('/api/upload/folders'),
-  onToggleLike: async (item, liked) => {
-    const payload = await fetchJson(`/api/media/${item.id}/like`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ liked })
-    });
-    item.liked = Boolean(payload.liked);
+  onToggleLike: (item, liked) => {
+    item.liked = Boolean(liked);
     syncViewerMediaMutation(item.id, (photo) => { photo.liked = item.liked; });
     syncMediaTileLikedState(item.id, item.liked);
+    queueMediaLikeSave(item.id, item.liked);
     return { liked: item.liked };
   },
   onDelete: async (item, index, viewer) => {
@@ -334,8 +449,52 @@ const mediaViewer = window.createMediaViewer({
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(value)
     });
-    await refreshBootstrap(payload.photo?.isoDate || item.isoDate || state.bootstrap?.lastDate || null);
+    if (payload?.photo) applyClientMediaDateMutation(item, payload.photo);
+    void refreshBootstrap(payload.photo?.isoDate || item.isoDate || state.bootstrap?.lastDate || null).catch(console.error);
     return payload;
+  },
+  onPickDate: async (item, currentIsoDate, currentTime, viewer) => {
+    const maxDate = state.bootstrap?.today?.isoDate || fileDateToLocalIso(Date.now()) || '';
+    openCalendarModal({
+      context: 'move-media',
+      title: 'Move media to a different day',
+      subtitle: item?.fileName || 'Choose a date for this media.',
+      confirmLabel: 'Move media',
+      helperText: 'This updates the media day while keeping the current time.',
+      initialDate: currentIsoDate || item?.isoDate || maxDate,
+      minDate: '1900-01-01',
+      maxDate,
+      isDateEnabled: (isoDate) => isWithinCalendarRange(isoDate, '1900-01-01', maxDate),
+      onConfirm: async (selectedDate) => {
+        const payload = await fetchJson(`/api/media/${item.id}/date-time`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ isoDate: selectedDate, time: currentTime || '12:00' })
+        });
+        if (payload?.photo) applyClientMediaDateMutation(item, payload.photo);
+        void refreshBootstrap(payload.photo?.isoDate || item?.isoDate || state.bootstrap?.lastDate || null).catch(console.error);
+        await viewer.reselectAfterMutation(item.id, payload, { forceDateToast: true });
+      }
+    });
+  },
+  onPickTime: async (item, currentIsoDate, currentTime, viewer) => {
+    openTimeModal({
+      title: 'Choose a time',
+      subtitle: item?.fileName || 'Pick a capture time for this media.',
+      confirmLabel: 'Use this time',
+      helperText: 'This updates the capture time while keeping the selected date.',
+      initialTime: currentTime || '12:00',
+      onConfirm: async (selectedTime) => {
+        const payload = await fetchJson(`/api/media/${item.id}/date-time`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ isoDate: currentIsoDate || item.isoDate, time: selectedTime })
+        });
+        if (payload?.photo) applyClientMediaDateMutation(item, payload.photo);
+        void refreshBootstrap(payload.photo?.isoDate || item?.isoDate || state.bootstrap?.lastDate || null).catch(console.error);
+        await viewer.reselectAfterMutation(item.id, payload, { forceDateToast: true });
+      }
+    });
   },
   onError: (error) => {
     console.error(error);
@@ -475,6 +634,17 @@ function fileDateToLocalIso(value) {
   return [date.getFullYear(), `${date.getMonth() + 1}`.padStart(2, '0'), `${date.getDate()}`.padStart(2, '0')].join('-');
 }
 
+function fileDateToLocalCapturedAt(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const isoDate = fileDateToLocalIso(date);
+  const hours = `${date.getHours()}`.padStart(2, '0');
+  const minutes = `${date.getMinutes()}`.padStart(2, '0');
+  const seconds = `${date.getSeconds()}`.padStart(2, '0');
+  return `${isoDate}T${hours}:${minutes}:${seconds}.000Z`;
+}
+
 function isValidIsoDate(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
 }
@@ -503,6 +673,571 @@ function diffDaysBetweenIso(laterIso, earlierIso) {
   const earlier = isoToUtcDate(earlierIso);
   if (!later || !earlier) return 0;
   return Math.round((later.getTime() - earlier.getTime()) / 86400000);
+}
+
+function monthKeyFromIso(isoDate) {
+  return isValidIsoDate(isoDate) ? isoDate.slice(0, 7) : '';
+}
+
+function monthStartIso(monthKey) {
+  return /^\d{4}-\d{2}$/.test(String(monthKey || '')) ? `${monthKey}-01` : '';
+}
+
+function addMonthsToMonthKey(monthKey, delta) {
+  const startIso = monthStartIso(monthKey);
+  const date = isoToUtcDate(startIso);
+  if (!date) return '';
+  date.setUTCMonth(date.getUTCMonth() + Number(delta || 0), 1);
+  return [
+    date.getUTCFullYear(),
+    `${date.getUTCMonth() + 1}`.padStart(2, '0')
+  ].join('-');
+}
+
+function daysInMonthKey(monthKey) {
+  const startIso = monthStartIso(monthKey);
+  const date = isoToUtcDate(startIso);
+  if (!date) return 31;
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)).getUTCDate();
+}
+
+function compareIsoDates(a, b) {
+  if (!isValidIsoDate(a) || !isValidIsoDate(b)) return 0;
+  return a.localeCompare(b);
+}
+
+function isWithinCalendarRange(isoDate, minDate, maxDate) {
+  if (!isValidIsoDate(isoDate)) return false;
+  if (isValidIsoDate(minDate) && compareIsoDates(isoDate, minDate) < 0) return false;
+  if (isValidIsoDate(maxDate) && compareIsoDates(isoDate, maxDate) > 0) return false;
+  return true;
+}
+
+function clampIsoDate(isoDate, minDate, maxDate) {
+  if (!isValidIsoDate(isoDate)) return '';
+  if (isValidIsoDate(minDate) && compareIsoDates(isoDate, minDate) < 0) return minDate;
+  if (isValidIsoDate(maxDate) && compareIsoDates(isoDate, maxDate) > 0) return maxDate;
+  return isoDate;
+}
+
+function buildCalendarMonthDays(monthKey) {
+  const firstDay = isoToUtcDate(monthStartIso(monthKey));
+  if (!firstDay) return [];
+  const firstWeekday = firstDay.getUTCDay();
+  const firstGridDate = new Date(firstDay);
+  firstGridDate.setUTCDate(firstGridDate.getUTCDate() - firstWeekday);
+  return Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(firstGridDate);
+    date.setUTCDate(firstGridDate.getUTCDate() + index);
+    const isoDate = [
+      date.getUTCFullYear(),
+      `${date.getUTCMonth() + 1}`.padStart(2, '0'),
+      `${date.getUTCDate()}`.padStart(2, '0')
+    ].join('-');
+    return {
+      isoDate,
+      inMonth: monthKeyFromIso(isoDate) === monthKey
+    };
+  });
+}
+
+function isCalendarDateEnabled(isoDate) {
+  const modal = state.calendarModal;
+  if (!modal?.isOpen) return false;
+  if (!isWithinCalendarRange(isoDate, modal.minDate, modal.maxDate)) return false;
+  if (typeof modal.isDateEnabled === 'function') return Boolean(modal.isDateEnabled(isoDate));
+  return true;
+}
+
+function firstEnabledDateForMonth(monthKey) {
+  const entries = buildCalendarMonthDays(monthKey).filter((entry) => entry.inMonth);
+  return entries.find((entry) => isCalendarDateEnabled(entry.isoDate))?.isoDate || '';
+}
+
+function formatCalendarSelectionText(isoDate) {
+  return isValidIsoDate(isoDate) ? dateRailLabel(isoDate) : 'Choose a date';
+}
+
+function findCalendarDaySummary(isoDate) {
+  const localIndex = state.homeSourceIndexByDate[isoDate];
+  const homeDay = localIndex !== undefined ? state.homeSourceDays[localIndex] : null;
+  const searchIndex = state.searchResultIndexByDate[isoDate];
+  const searchDay = searchIndex !== undefined ? state.searchResultDays[searchIndex] : null;
+  const day = homeDay || searchDay || null;
+  if (!day) return { hasJournal: false, hasMedia: false };
+  return {
+    hasJournal: Boolean(day.hasJournal || day.journal),
+    hasMedia: Number(day.photoCount || day.photos?.length || 0) > 0
+  };
+}
+
+function renderCalendarModal() {
+  const modal = state.calendarModal;
+  if (!dom.calendarModal || !modal.isOpen) return;
+  const autoConfirm = modal.context === 'jump-date';
+  dom.calendarTitle.textContent = modal.title || 'Choose a date';
+  dom.calendarSubtitle.textContent = modal.subtitle || '';
+  dom.calendarMonthLabel.textContent = monthLabelForIso(monthStartIso(modal.visibleMonth));
+  dom.calendarConfirmButton.textContent = modal.busy ? 'Working...' : (modal.confirmLabel || 'Confirm');
+  dom.calendarConfirmButton.disabled = modal.busy || !isCalendarDateEnabled(modal.selectedDate);
+  dom.calendarPrevMonth.disabled = modal.busy;
+  dom.calendarNextMonth.disabled = modal.busy;
+  dom.calendarSelectionLabel.textContent = formatCalendarSelectionText(modal.selectedDate);
+  dom.calendarHelperText.textContent = modal.helperText || '';
+  dom.calendarFooter?.classList.toggle('hidden', autoConfirm);
+
+  const todayIso = state.bootstrap?.today?.isoDate || '';
+  const days = buildCalendarMonthDays(modal.visibleMonth);
+  dom.calendarGrid.innerHTML = days.map(({ isoDate, inMonth }) => {
+    const enabled = isCalendarDateEnabled(isoDate);
+    const selected = isoDate === modal.selectedDate;
+    const { hasJournal, hasMedia } = findCalendarDaySummary(isoDate);
+    const classes = [
+      'calendar-day',
+      !inMonth ? 'is-outside-month' : '',
+      selected ? 'is-selected' : '',
+      isoDate === todayIso ? 'is-today' : '',
+      (hasJournal || hasMedia) ? 'is-has-content' : '',
+      enabled ? '' : 'is-disabled'
+    ].filter(Boolean).join(' ');
+    const marker = `${hasJournal ? renderPhIcon('note', { variant: 'duotone' }) : ''}${hasMedia ? renderPhIcon('images-square', { variant: 'duotone' }) : ''}`;
+    return `<button class="${classes}" type="button" role="gridcell" data-calendar-date="${isoDate}" aria-selected="${selected ? 'true' : 'false'}" ${enabled ? '' : 'disabled'}><span class="calendar-day-number">${escapeHtml(String(Number(isoDate.slice(-2))))}</span><span class="calendar-day-dot" aria-hidden="true">${marker}</span></button>`;
+  }).join('');
+}
+
+function focusCalendarDate(isoDate = state.calendarModal.selectedDate) {
+  if (!dom.calendarGrid) return;
+  const target = isValidIsoDate(isoDate)
+    ? dom.calendarGrid.querySelector(`[data-calendar-date="${isoDate}"]`)
+    : null;
+  if (target && !target.disabled) {
+    target.focus({ preventScroll: true });
+    return;
+  }
+  const fallback = dom.calendarGrid.querySelector('.calendar-day:not(:disabled)');
+  fallback?.focus({ preventScroll: true });
+}
+
+function closeCalendarModal({ restoreFocus = true } = {}) {
+  if (!state.calendarModal.isOpen) return;
+  const { returnFocus } = state.calendarModal;
+  state.calendarModal = {
+    isOpen: false,
+    busy: false,
+    context: '',
+    selectedDate: '',
+    visibleMonth: '',
+    minDate: '',
+    maxDate: '',
+    title: '',
+    subtitle: '',
+    confirmLabel: 'Confirm',
+    helperText: '',
+    isDateEnabled: null,
+    onConfirm: null,
+    returnFocus: null,
+    metadata: null
+  };
+  dom.calendarModal.classList.add('hidden');
+  syncOverlayBodyState();
+  if (restoreFocus && returnFocus instanceof HTMLElement && returnFocus.isConnected) {
+    requestAnimationFrame(() => returnFocus.focus({ preventScroll: true }));
+  }
+}
+
+function openCalendarModal({
+  context = '',
+  title = 'Choose a date',
+  subtitle = '',
+  confirmLabel = 'Confirm',
+  helperText = '',
+  initialDate = '',
+  visibleMonth = '',
+  minDate = '',
+  maxDate = '',
+  isDateEnabled = null,
+  onConfirm = null,
+  returnFocus = document.activeElement,
+  metadata = null
+} = {}) {
+  const fallbackDate = state.bootstrap?.today?.isoDate || state.bootstrap?.lastDate || initialDate || minDate || maxDate || '';
+  let selectedDate = clampIsoDate(initialDate || fallbackDate, minDate, maxDate);
+  state.calendarModal = {
+    isOpen: true,
+    busy: false,
+    context,
+    selectedDate,
+    visibleMonth: visibleMonth || monthKeyFromIso(selectedDate || fallbackDate) || monthKeyFromIso(minDate || maxDate || fallbackDate),
+    minDate: isValidIsoDate(minDate) ? minDate : '',
+    maxDate: isValidIsoDate(maxDate) ? maxDate : '',
+    title,
+    subtitle,
+    confirmLabel,
+    helperText,
+    isDateEnabled,
+    onConfirm,
+    returnFocus,
+    metadata
+  };
+  if (!isCalendarDateEnabled(state.calendarModal.selectedDate)) {
+    const monthDefault = firstEnabledDateForMonth(state.calendarModal.visibleMonth);
+    state.calendarModal.selectedDate = monthDefault || '';
+  }
+  renderCalendarModal();
+  dom.calendarModal.classList.remove('hidden');
+  dom.body.classList.add('viewer-open');
+  requestAnimationFrame(() => focusCalendarDate());
+}
+
+async function confirmCalendarModal() {
+  if (!state.calendarModal.isOpen || state.calendarModal.busy || !isCalendarDateEnabled(state.calendarModal.selectedDate)) return;
+  const onConfirm = state.calendarModal.onConfirm;
+  if (typeof onConfirm !== 'function') {
+    closeCalendarModal();
+    return;
+  }
+  state.calendarModal.busy = true;
+  renderCalendarModal();
+  try {
+    await onConfirm(state.calendarModal.selectedDate, state.calendarModal.metadata || {});
+    closeCalendarModal();
+  } finally {
+    if (state.calendarModal.isOpen) {
+      state.calendarModal.busy = false;
+      renderCalendarModal();
+    }
+  }
+}
+
+function navigateCalendarMonth(delta) {
+  if (!state.calendarModal.isOpen || state.calendarModal.busy) return;
+  const nextMonth = addMonthsToMonthKey(state.calendarModal.visibleMonth, delta);
+  if (!nextMonth) return;
+  state.calendarModal.visibleMonth = nextMonth;
+  const currentSelectedMonth = monthKeyFromIso(state.calendarModal.selectedDate);
+  if (currentSelectedMonth !== nextMonth) {
+    const firstEnabled = firstEnabledDateForMonth(nextMonth);
+    if (firstEnabled) state.calendarModal.selectedDate = firstEnabled;
+  }
+  renderCalendarModal();
+  requestAnimationFrame(() => focusCalendarDate());
+}
+
+function normalizeTimeValue(value) {
+  const match = String(value || '').match(/^(\d{2}):(\d{2})/);
+  if (!match) return '12:00';
+  const hours = Math.min(23, Math.max(0, Number(match[1] || 0)));
+  const minutes = Math.min(59, Math.max(0, Number(match[2] || 0)));
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
+
+function getTimeParts(value) {
+  const normalized = normalizeTimeValue(value);
+  const [hours24, minutes] = normalized.split(':').map(Number);
+  const period = hours24 >= 12 ? 'PM' : 'AM';
+  const hour12 = hours24 % 12 || 12;
+  return {
+    hour24: hours24,
+    hour12: String(hour12),
+    minute: String(minutes).padStart(2, '0'),
+    period
+  };
+}
+
+function composeTimeValue({ hour12 = '12', minute = '00', period = 'AM' } = {}) {
+  const normalizedHour = Math.min(12, Math.max(1, Number(hour12) || 12));
+  const normalizedMinute = Math.min(59, Math.max(0, Number(minute) || 0));
+  const normalizedPeriod = String(period || 'AM').toUpperCase() === 'PM' ? 'PM' : 'AM';
+  let hours24 = normalizedHour % 12;
+  if (normalizedPeriod === 'PM') hours24 += 12;
+  return `${String(hours24).padStart(2, '0')}:${String(normalizedMinute).padStart(2, '0')}`;
+}
+
+function formatTimeSelectionText(value) {
+  const normalized = normalizeTimeValue(value);
+  const [hours, minutes] = normalized.split(':').map(Number);
+  const date = new Date(Date.UTC(2000, 0, 1, hours, minutes, 0));
+  return new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', timeZone: 'UTC' }).format(date);
+}
+
+function timeSpinnerValuesForPart(part) {
+  if (part === 'hour') return TIME_HOUR_VALUES;
+  if (part === 'minute') return TIME_MINUTE_VALUES;
+  if (part === 'period') return TIME_PERIOD_VALUES;
+  return [];
+}
+
+function buildTimeSpinnerMarkup(part, values) {
+  return Array.from({ length: TIME_SPINNER_REPEAT_COUNT }, (_, cycle) => values.map((value) => `
+    <div
+      class="time-spinner-option"
+      data-time-option="${part}"
+      data-time-cycle="${cycle}"
+      data-time-value="${escapeHtml(value)}"
+      role="option"
+      aria-selected="false"
+    >${escapeHtml(value)}</div>
+  `).join('')).join('');
+}
+
+function renderTimeSpinnerLanes() {
+  if (dom.timeHourLane && !dom.timeHourLane.childElementCount) {
+    dom.timeHourLane.innerHTML = buildTimeSpinnerMarkup('hour', TIME_HOUR_VALUES);
+  }
+  if (dom.timeMinuteLane && !dom.timeMinuteLane.childElementCount) {
+    dom.timeMinuteLane.innerHTML = buildTimeSpinnerMarkup('minute', TIME_MINUTE_VALUES);
+  }
+  if (dom.timePeriodLane && !dom.timePeriodLane.childElementCount) {
+    dom.timePeriodLane.innerHTML = buildTimeSpinnerMarkup('period', TIME_PERIOD_VALUES);
+  }
+}
+
+function laneForTimePart(part) {
+  if (part === 'hour') return dom.timeHourLane;
+  if (part === 'minute') return dom.timeMinuteLane;
+  if (part === 'period') return dom.timePeriodLane;
+  return null;
+}
+
+function optionOffsetForCenter(lane, option) {
+  return Math.max(0, option.offsetTop - ((lane.clientHeight - option.offsetHeight) / 2));
+}
+
+function suppressTimeLaneScroll(lane, duration = 140) {
+  if (!lane) return;
+  timeSpinnerSuppressUntil.set(lane, performance.now() + duration);
+}
+
+function scrollTimeLaneToOption(lane, option, { behavior = 'auto', suppress = true } = {}) {
+  if (!lane || !option) return;
+  if (suppress) suppressTimeLaneScroll(lane);
+  lane.scrollTo({ top: optionOffsetForCenter(lane, option), behavior });
+}
+
+function syncTimeLaneSelectionClasses(part, selectedValue) {
+  const lane = laneForTimePart(part);
+  if (!lane) return;
+  lane.querySelectorAll('[data-time-option]').forEach((option) => {
+    const isSelected = option.dataset.timeValue === selectedValue
+      && Number(option.dataset.timeCycle || 0) === TIME_SPINNER_CENTER_REPEAT;
+    option.classList.toggle('is-selected', isSelected);
+    option.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+  });
+}
+
+function syncTimeModalSelectionUi() {
+  const parts = getTimeParts(state.timeModal.selectedTime);
+  dom.timeSelectionLabel.textContent = formatTimeSelectionText(state.timeModal.selectedTime);
+  syncTimeLaneSelectionClasses('hour', parts.hour12);
+  syncTimeLaneSelectionClasses('minute', parts.minute);
+  syncTimeLaneSelectionClasses('period', parts.period);
+}
+
+function centerTimeLaneOnValue(part, value, { behavior = 'auto' } = {}) {
+  const lane = laneForTimePart(part);
+  if (!lane) return;
+  const options = Array.from(lane.querySelectorAll(`[data-time-option="${part}"]`)).filter((option) => option.dataset.timeValue === String(value));
+  const target = options[TIME_SPINNER_CENTER_REPEAT] || options[Math.floor(options.length / 2)] || options[0];
+  if (!target) return;
+  scrollTimeLaneToOption(lane, target, { behavior, suppress: true });
+}
+
+function syncTimeSpinnerLanesToSelected({ behavior = 'auto' } = {}) {
+  const parts = getTimeParts(state.timeModal.selectedTime);
+  centerTimeLaneOnValue('hour', parts.hour12, { behavior });
+  centerTimeLaneOnValue('minute', parts.minute, { behavior });
+  centerTimeLaneOnValue('period', parts.period, { behavior });
+  syncTimeModalSelectionUi();
+}
+
+function centeredTimeOptionForLane(lane) {
+  if (!lane) return null;
+  const center = lane.scrollTop + (lane.clientHeight / 2);
+  let closest = null;
+  let closestDistance = Infinity;
+  lane.querySelectorAll('[data-time-option]').forEach((option) => {
+    const optionCenter = option.offsetTop + (option.offsetHeight / 2);
+    const distance = Math.abs(optionCenter - center);
+    if (distance < closestDistance) {
+      closest = option;
+      closestDistance = distance;
+    }
+  });
+  return closest;
+}
+
+function updateSelectedTimeForLaneValue(part, value) {
+  const parts = getTimeParts(state.timeModal.selectedTime);
+  if (part === 'hour') parts.hour12 = value;
+  if (part === 'minute') parts.minute = value;
+  if (part === 'period') parts.period = value;
+  state.timeModal.selectedTime = composeTimeValue(parts);
+  syncTimeModalSelectionUi();
+}
+
+function recenterTimeLane(part, value) {
+  centerTimeLaneOnValue(part, value, { behavior: 'auto' });
+}
+
+function snapTimeLaneToClosest(lane, part) {
+  const option = centeredTimeOptionForLane(lane);
+  if (!option) return;
+  const value = option.dataset.timeValue || '';
+  updateSelectedTimeForLaneValue(part, value);
+  scrollTimeLaneToOption(lane, option, { behavior: 'smooth', suppress: true });
+  const cycle = Number(option.dataset.timeCycle || 0);
+  if (cycle !== TIME_SPINNER_CENTER_REPEAT) {
+    window.setTimeout(() => recenterTimeLane(part, value), 140);
+  }
+}
+
+function scheduleTimeLaneSnap(lane, part) {
+  const existingTimer = timeSpinnerScrollTimers.get(part);
+  if (existingTimer) window.clearTimeout(existingTimer);
+  const timer = window.setTimeout(() => {
+    timeSpinnerScrollTimers.delete(part);
+    snapTimeLaneToClosest(lane, part);
+  }, 80);
+  timeSpinnerScrollTimers.set(part, timer);
+}
+
+function shiftTimePart(part, delta) {
+  const values = timeSpinnerValuesForPart(part);
+  if (!values.length) return;
+  const parts = getTimeParts(state.timeModal.selectedTime);
+  const currentValue = part === 'hour' ? parts.hour12 : part === 'minute' ? parts.minute : parts.period;
+  const currentIndex = values.indexOf(currentValue);
+  const nextIndex = (currentIndex + delta + values.length) % values.length;
+  updateSelectedTimeForLaneValue(part, values[nextIndex]);
+  centerTimeLaneOnValue(part, values[nextIndex], { behavior: 'auto' });
+}
+
+function renderTimeModal() {
+  if (!state.timeModal.isOpen || !dom.timeModal) return;
+  renderTimeSpinnerLanes();
+  dom.timeTitle.textContent = state.timeModal.title || 'Choose a time';
+  dom.timeSubtitle.textContent = state.timeModal.subtitle || '';
+  dom.timeHelperText.textContent = state.timeModal.helperText || '';
+  dom.timeConfirmButton.textContent = state.timeModal.busy ? 'Working...' : (state.timeModal.confirmLabel || 'Confirm');
+  dom.timeConfirmButton.disabled = state.timeModal.busy;
+  syncTimeModalSelectionUi();
+}
+
+function closeTimeModal({ restoreFocus = true } = {}) {
+  if (!state.timeModal.isOpen) return;
+  const { returnFocus } = state.timeModal;
+  state.timeModal = {
+    isOpen: false,
+    busy: false,
+    title: '',
+    subtitle: '',
+    confirmLabel: 'Confirm',
+    helperText: '',
+    selectedTime: '12:00',
+    onConfirm: null,
+    returnFocus: null,
+    metadata: null
+  };
+  timeSpinnerScrollTimers.forEach((timer) => window.clearTimeout(timer));
+  timeSpinnerScrollTimers.clear();
+  dom.timeModal.classList.add('hidden');
+  syncOverlayBodyState();
+  if (restoreFocus && returnFocus instanceof HTMLElement && returnFocus.isConnected) {
+    requestAnimationFrame(() => returnFocus.focus({ preventScroll: true }));
+  }
+}
+
+function openTimeModal({
+  title = 'Choose a time',
+  subtitle = '',
+  confirmLabel = 'Confirm',
+  helperText = '',
+  initialTime = '12:00',
+  onConfirm = null,
+  returnFocus = document.activeElement,
+  metadata = null
+} = {}) {
+  state.timeModal = {
+    isOpen: true,
+    busy: false,
+    title,
+    subtitle,
+    confirmLabel,
+    helperText,
+    selectedTime: normalizeTimeValue(initialTime),
+    onConfirm,
+    returnFocus,
+    metadata
+  };
+  renderTimeModal();
+  dom.timeModal.classList.remove('hidden');
+  dom.body.classList.add('viewer-open');
+  requestAnimationFrame(() => {
+    syncTimeSpinnerLanesToSelected({ behavior: 'auto' });
+    dom.timeHourLane?.focus({ preventScroll: true });
+  });
+}
+
+async function confirmTimeModal() {
+  if (!state.timeModal.isOpen || state.timeModal.busy) return;
+  const onConfirm = state.timeModal.onConfirm;
+  if (typeof onConfirm !== 'function') {
+    closeTimeModal();
+    return;
+  }
+  state.timeModal.busy = true;
+  renderTimeModal();
+  try {
+    await onConfirm(normalizeTimeValue(state.timeModal.selectedTime), state.timeModal.metadata || {});
+    closeTimeModal();
+  } finally {
+    if (state.timeModal.isOpen) {
+      state.timeModal.busy = false;
+      renderTimeModal();
+    }
+  }
+}
+
+function openJumpDateModal({ returnFocus = document.activeElement } = {}) {
+  const minDate = state.bootstrap?.firstDate || '';
+  const maxDate = state.bootstrap?.lastDate || '';
+  openCalendarModal({
+    context: 'jump-date',
+    title: 'Jump to a date',
+    subtitle: 'Browse to an existing day in your timeline.',
+    confirmLabel: 'Jump to date',
+    helperText: 'Only days that already have timeline content can be selected.',
+    initialDate: state.activeDate || maxDate || minDate,
+    visibleMonth: monthKeyFromIso(state.activeDate || maxDate || minDate),
+    minDate,
+    maxDate,
+    isDateEnabled: (isoDate) => state.dateIndexMap[isoDate] !== undefined,
+    onConfirm: async (selectedDate) => {
+      await scrollToDate(selectedDate, 'auto');
+    },
+    returnFocus
+  });
+}
+
+function openUploadForDateModal({ returnFocus = document.activeElement } = {}) {
+  const maxDate = state.bootstrap?.today?.isoDate || fileDateToLocalIso(Date.now()) || '';
+  const initialDate = topbarUploadDate() || maxDate;
+  openCalendarModal({
+    context: 'upload-media',
+    title: 'Choose an upload date',
+    subtitle: 'Pick the day these files belong to.',
+    confirmLabel: 'Upload media',
+    helperText: 'This opens the upload flow for the selected day.',
+    initialDate,
+    visibleMonth: monthKeyFromIso(initialDate),
+    minDate: '1900-01-01',
+    maxDate,
+    isDateEnabled: (isoDate) => isWithinCalendarRange(isoDate, '1900-01-01', maxDate),
+    onConfirm: async (selectedDate) => {
+      beginUploadSelection(selectedDate);
+    },
+    returnFocus
+  });
 }
 
 function openEditorForDate(isoDate, { create = false } = {}) {
@@ -549,6 +1284,49 @@ function uploadDateSourceLabel(item) {
   return 'Upload context date';
 }
 
+function uploadTimeValue(item) {
+  const match = String(item?.capturedAt || '').match(/T(\d{2}):(\d{2})/);
+  return match ? `${match[1]}:${match[2]}` : '12:00';
+}
+
+function buildUploadCapturedAt(isoDate, timeValue = '12:00', fallbackCapturedAt = '') {
+  if (!isValidIsoDate(isoDate)) return '';
+  const normalizedTime = /^\d{2}:\d{2}$/.test(String(timeValue || ''))
+    ? normalizeTimeValue(timeValue)
+    : (String(fallbackCapturedAt || '').match(/T(\d{2}:\d{2})/)?.[1] || '12:00');
+  return `${isoDate}T${normalizedTime}:00.000Z`;
+}
+
+function formatUploadDateTimeLabel(item) {
+  if (!isValidIsoDate(item?.isoDate)) return 'No date selected';
+  return `${dateRailLabel(item.isoDate)} at ${formatTimeSelectionText(uploadTimeValue(item))}`;
+}
+
+function uploadHasOriginalOverride(item) {
+  if (!item) return false;
+  return item.isoDate !== item.originalIsoDate || uploadTimeValue(item) !== uploadTimeValue({ capturedAt: item.originalCapturedAt });
+}
+
+function uploadDateTriggerLabel(item) {
+  return isValidIsoDate(item?.isoDate) ? dateRailLabel(item.isoDate) : 'Choose date';
+}
+
+function uploadTimeTriggerLabel(item) {
+  return formatTimeSelectionText(uploadTimeValue(item));
+}
+
+function formatUploadDimensions(item) {
+  const width = Number(item?.width || 0);
+  const height = Number(item?.height || 0);
+  if (!width || !height) return '';
+  return `${width} × ${height}`;
+}
+
+function formatUploadStats(item) {
+  const parts = [formatUploadDimensions(item), formatFileSize(item?.file?.size)];
+  return parts.filter(Boolean).join(' · ') || '—';
+}
+
 async function extractUploadMetadataDate(file, fallbackIsoDate) {
   const exifr = window.exifr;
   const isImage = /^image\//.test(file?.type || '') || /\.(jpg|jpeg|png|webp|avif|heic|heif|tif|tiff)$/i.test(file?.name || '');
@@ -557,20 +1335,67 @@ async function extractUploadMetadataDate(file, fallbackIsoDate) {
       const exif = await exifr.parse(file, { pick: ['DateTimeOriginal', 'CreateDate', 'ModifyDate'] });
       const exifDate = exif?.DateTimeOriginal || exif?.CreateDate || exif?.ModifyDate;
       const exifIsoDate = fileDateToLocalIso(exifDate);
-      if (exifIsoDate) return { isoDate: exifIsoDate, dateSource: 'exif' };
+      const exifCapturedAt = fileDateToLocalCapturedAt(exifDate);
+      if (exifIsoDate) return { isoDate: exifIsoDate, capturedAt: exifCapturedAt, dateSource: 'exif' };
     } catch (error) {}
   }
   const modifiedIsoDate = fileDateToLocalIso(file?.lastModified);
-  if (modifiedIsoDate) return { isoDate: modifiedIsoDate, dateSource: 'last-modified' };
-  return { isoDate: fallbackIsoDate || '', dateSource: 'context' };
+  const modifiedCapturedAt = fileDateToLocalCapturedAt(file?.lastModified);
+  if (modifiedIsoDate) return { isoDate: modifiedIsoDate, capturedAt: modifiedCapturedAt, dateSource: 'last-modified' };
+  return {
+    isoDate: fallbackIsoDate || '',
+    capturedAt: buildUploadCapturedAt(fallbackIsoDate || '', '12:00'),
+    dateSource: 'context'
+  };
+}
+
+async function extractUploadMediaDimensions(file, objectUrl) {
+  const isVideo = /^video\//.test(file?.type || '') || /\.(mp4|mov|m4v|webm|avi|mkv|3gp)$/i.test(file?.name || '');
+  if (isVideo) {
+    await new Promise((resolve) => {
+      const video = document.createElement('video');
+      const done = () => resolve();
+      video.preload = 'metadata';
+      video.onloadedmetadata = done;
+      video.onerror = done;
+      video.src = objectUrl;
+    });
+    const probe = document.createElement('video');
+    probe.preload = 'metadata';
+    probe.src = objectUrl;
+    await new Promise((resolve) => {
+      probe.onloadedmetadata = () => resolve();
+      probe.onerror = () => resolve();
+    });
+    return { width: Number(probe.videoWidth || 0), height: Number(probe.videoHeight || 0) };
+  }
+  await new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => resolve();
+    image.onerror = () => resolve();
+    image.src = objectUrl;
+  });
+  const probe = new Image();
+  probe.src = objectUrl;
+  await new Promise((resolve) => {
+    probe.onload = () => resolve();
+    probe.onerror = () => resolve();
+  });
+  return { width: Number(probe.naturalWidth || 0), height: Number(probe.naturalHeight || 0) };
 }
 
 function createSelectedUploadFile(file) {
+  const fallbackIsoDate = state.uploadContext?.isoDate || '';
+  const fallbackCapturedAt = buildUploadCapturedAt(fallbackIsoDate, '12:00');
   return {
     id: `upload-${Date.now()}-${state.uploadFileSeq += 1}`,
     file,
     objectUrl: URL.createObjectURL(file),
-    isoDate: state.uploadContext?.isoDate || '',
+    isoDate: fallbackIsoDate,
+    capturedAt: fallbackCapturedAt,
+    originalIsoDate: fallbackIsoDate,
+    originalCapturedAt: fallbackCapturedAt,
+    originalDateSource: 'context',
     dateSource: 'context'
   };
 }
@@ -581,10 +1406,12 @@ function revokeUploadSelectionFiles(files = state.uploadSelectedFiles) {
   });
 }
 
-function clearUploadSelection() {
+function clearUploadSelection({ preserveProcessing = false } = {}) {
   revokeUploadSelectionFiles();
   state.uploadSelectedFiles = [];
   state.uploadProgressRatio = 0;
+  if (!preserveProcessing) state.uploadProcessing = false;
+  state.uploadSharedDateRestore = null;
   setUploadPreparing(false);
   if (dom.uploadFileInput) dom.uploadFileInput.value = '';
 }
@@ -596,17 +1423,38 @@ function updateUploadButtonLabel() {
 }
 
 function updateUploadDateToggleLabel() {
-  if (dom.uploadExifDateLabel) dom.uploadExifDateLabel.textContent = 'Override LifeServer datestamp';
+  if (dom.uploadDateModeToggle) {
+    dom.uploadDateModeToggle.textContent = dom.uploadSetExifDate?.checked ? 'Uploading for' : 'Original file date';
+  }
+}
+
+function updateUploadSharedDateTriggerLabel() {
+  if (!dom.uploadSharedDate) return;
+  if (!dom.uploadSharedDate.value) {
+    dom.uploadSharedDate.value = state.uploadContext?.isoDate || state.uploadSelectedFiles[0]?.isoDate || '';
+  }
+  if (dom.uploadContextDateTrigger) {
+    dom.uploadContextDateTrigger.textContent = uploadDateTriggerLabel({ isoDate: dom.uploadSharedDate.value });
+  }
 }
 
 function updateUploadSharedDateUi() {
-  const enabled = Boolean(dom.uploadSetExifDate?.checked);
-  if (dom.uploadSharedDate) {
-    dom.uploadSharedDate.disabled = !enabled;
-    if (!dom.uploadSharedDate.value) {
-      dom.uploadSharedDate.value = state.uploadContext?.isoDate || state.uploadSelectedFiles[0]?.isoDate || '';
-    }
+  if (dom.uploadSharedDate && !dom.uploadSharedDate.value) dom.uploadSharedDate.value = state.uploadContext?.isoDate || state.uploadSelectedFiles[0]?.isoDate || '';
+  if (dom.uploadContextDateTrigger) dom.uploadContextDateTrigger.hidden = !Boolean(dom.uploadSetExifDate?.checked);
+  updateUploadSharedDateTriggerLabel();
+  updateUploadDateToggleLabel();
+}
+
+function setUploadContextDate(isoDate) {
+  if (!isValidIsoDate(isoDate)) return;
+  if (!state.uploadContext) state.uploadContext = { isoDate };
+  else state.uploadContext.isoDate = isoDate;
+  if (dom.uploadSharedDate) dom.uploadSharedDate.value = isoDate;
+  if (dom.uploadSetExifDate?.checked) {
+    applySharedUploadDate(isoDate);
+    renderUploadPreviews();
   }
+  updateUploadSharedDateUi();
 }
 
 function applySharedUploadDate(isoDate) {
@@ -614,6 +1462,7 @@ function applySharedUploadDate(isoDate) {
   state.uploadSelectedFiles = state.uploadSelectedFiles.map((item) => ({
     ...item,
     isoDate,
+    capturedAt: buildUploadCapturedAt(isoDate, uploadTimeValue(item), item.capturedAt),
     dateSource: 'shared'
   }));
 }
@@ -622,18 +1471,70 @@ function setUploadFileDate(fileId, isoDate) {
   if (!isValidIsoDate(isoDate)) return;
   state.uploadSelectedFiles = state.uploadSelectedFiles.map((item) => (
     item.id === fileId
-      ? { ...item, isoDate, dateSource: 'manual' }
+      ? { ...item, isoDate, capturedAt: buildUploadCapturedAt(isoDate, uploadTimeValue(item), item.capturedAt), dateSource: 'manual' }
       : item
   ));
   if (dom.uploadSetExifDate?.checked && dom.uploadSharedDate?.value && dom.uploadSharedDate.value !== isoDate) {
     dom.uploadSetExifDate.checked = false;
+    restoreUploadSharedDates();
   }
   updateUploadSharedDateUi();
+}
+
+function setUploadFileTime(fileId, timeValue) {
+  const normalizedTime = normalizeTimeValue(timeValue);
+  state.uploadSelectedFiles = state.uploadSelectedFiles.map((item) => (
+    item.id === fileId
+      ? { ...item, capturedAt: buildUploadCapturedAt(item.isoDate, normalizedTime, item.capturedAt), dateSource: 'manual' }
+      : item
+  ));
+}
+
+function resetUploadFileDateTime(fileId) {
+  state.uploadSelectedFiles = state.uploadSelectedFiles.map((item) => (
+    item.id === fileId
+      ? {
+          ...item,
+          isoDate: item.originalIsoDate,
+          capturedAt: item.originalCapturedAt,
+          dateSource: item.originalDateSource || 'context'
+        }
+      : item
+  ));
+}
+
+function openNativeUploadPicker(selector) {
+  const input = dom.uploadPreviewList?.querySelector(selector);
+  if (!input || input.disabled) return;
+  if (typeof input.showPicker === 'function') input.showPicker();
+  else input.click();
+}
+
+function captureUploadSharedRestoreState() {
+  state.uploadSharedDateRestore = state.uploadSelectedFiles.map((item) => ({
+    id: item.id,
+    isoDate: item.isoDate,
+    capturedAt: item.capturedAt,
+    dateSource: item.dateSource
+  }));
+}
+
+function restoreUploadSharedDates() {
+  if (!Array.isArray(state.uploadSharedDateRestore)) return;
+  const restoreMap = new Map(state.uploadSharedDateRestore.map((item) => [item.id, item]));
+  state.uploadSelectedFiles = state.uploadSelectedFiles.map((item) => {
+    const restore = restoreMap.get(item.id);
+    return restore ? { ...item, isoDate: restore.isoDate, capturedAt: restore.capturedAt, dateSource: restore.dateSource } : item;
+  });
+  state.uploadSharedDateRestore = null;
 }
 
 function setUploadPreparing(preparing) {
   state.uploadPreparing = Boolean(preparing);
   dom.uploadSelectionLoading?.classList.toggle('hidden', !state.uploadPreparing);
+  if (dom.uploadSelectionLoadingLabel) {
+    dom.uploadSelectionLoadingLabel.textContent = state.uploadProcessing ? 'Finishing upload...' : 'Preparing previews...';
+  }
   dom.uploadPreviewList?.classList.toggle('is-preparing', state.uploadPreparing);
 }
 
@@ -649,6 +1550,9 @@ function updateUploadPreviewProgress() {
 
 function removeUploadFile(fileId) {
   if (state.uploadXhr) return;
+  const item = state.uploadSelectedFiles.find((entry) => entry.id === fileId);
+  if (!item) return;
+  if (!window.confirm(`Remove ${uploadDisplayName(item.file?.name || 'this file')} from the upload list?`)) return;
   const nextFiles = [];
   let removed = null;
   state.uploadSelectedFiles.forEach((item) => {
@@ -657,7 +1561,14 @@ function removeUploadFile(fileId) {
   });
   if (removed?.objectUrl) URL.revokeObjectURL(removed.objectUrl);
   state.uploadSelectedFiles = nextFiles;
-  if (!state.uploadSelectedFiles.length && dom.uploadFileInput) dom.uploadFileInput.value = '';
+  if (Array.isArray(state.uploadSharedDateRestore)) {
+    state.uploadSharedDateRestore = state.uploadSharedDateRestore.filter((entry) => entry.id !== fileId);
+  }
+  if (!state.uploadSelectedFiles.length) {
+    if (dom.uploadFileInput) dom.uploadFileInput.value = '';
+    closeUploadModal();
+    return;
+  }
   updateUploadButtonLabel();
   updateUploadSharedDateUi();
   updateUploadUiState();
@@ -672,14 +1583,30 @@ async function appendUploadFiles(fileList) {
     const batch = await Promise.all(files.slice(index, index + batchSize).map(async (file) => {
       const item = createSelectedUploadFile(file);
       const metadata = await extractUploadMetadataDate(file, state.uploadContext?.isoDate || '');
+      const dimensions = await extractUploadMediaDimensions(file, item.objectUrl);
       item.isoDate = metadata.isoDate;
+      item.capturedAt = metadata.capturedAt || buildUploadCapturedAt(metadata.isoDate || state.uploadContext?.isoDate || '', '12:00');
+      item.width = dimensions.width;
+      item.height = dimensions.height;
+      item.originalIsoDate = item.isoDate;
+      item.originalCapturedAt = item.capturedAt;
+      item.originalDateSource = metadata.dateSource;
       item.dateSource = metadata.dateSource;
       if (dom.uploadSetExifDate?.checked && isValidIsoDate(dom.uploadSharedDate?.value)) {
         item.isoDate = dom.uploadSharedDate.value;
+        item.capturedAt = buildUploadCapturedAt(dom.uploadSharedDate.value, uploadTimeValue(item), item.capturedAt);
         item.dateSource = 'shared';
       }
       return item;
     }));
+    if (Array.isArray(state.uploadSharedDateRestore)) {
+      state.uploadSharedDateRestore.push(...batch.map((item) => ({
+        id: item.id,
+        isoDate: item.originalIsoDate,
+        capturedAt: item.originalCapturedAt,
+        dateSource: item.originalDateSource
+      })));
+    }
     state.uploadSelectedFiles = [...state.uploadSelectedFiles, ...batch];
     updateUploadButtonLabel();
     updateUploadSharedDateUi();
@@ -722,9 +1649,56 @@ function currentTopbarDateLabel() {
   return 'Memory browser';
 }
 
+function setTopbarHomeButton({ searchUiOpen = state.searchUiOpen, searchDetailOpen = state.route.view === 'search-detail' } = {}) {
+  if (!dom.homeButton) return;
+  if (searchUiOpen) {
+    dom.homeButton.classList.add('is-search-back');
+    dom.homeButton.setAttribute('aria-label', searchDetailOpen ? 'Back to search results' : 'Exit search');
+    dom.homeButton.innerHTML = `<span class="topbar-brand-mark" aria-hidden="true">${renderPhIcon('caret-left', { variant: 'bold' })}</span>`;
+    return;
+  }
+  dom.homeButton.classList.remove('is-search-back');
+  dom.homeButton.setAttribute('aria-label', 'Go to newest entry');
+  dom.homeButton.innerHTML = `<span class="topbar-brand-mark" aria-hidden="true">${renderPhIcon('book-open', { variant: 'fill' })}<span class="topbar-brand-name">LifeServer</span></span>`;
+}
+
+function searchTopbarMetaLabel() {
+  if (state.route.view === 'search-detail') {
+    const total = getSearchDetailHits().length;
+    return total ? `${Math.min(state.searchDetailResultIndex + 1, total)} of ${total} matches` : 'No matches';
+  }
+  if (state.searchLoading) return 'Searching...';
+  if (!state.searchMode || !state.searchQuery) return '';
+  const total = activeSourceTotal();
+  return `${total} result${total === 1 ? '' : 's'}`;
+}
+
 function updateTopbarDateLabel() {
   if (!dom.topbarDateLabel) return;
-  dom.topbarDateLabel.textContent = currentTopbarDateLabel();
+  const searchUiOpen = state.searchUiOpen;
+  const searchDetailOpen = state.route.view === 'search-detail';
+  setTopbarHomeButton({ searchUiOpen, searchDetailOpen });
+  if (searchUiOpen) {
+    const title = searchDetailOpen
+      ? (getSearchDayByDate(state.searchDetailDate)?.dateLabel || 'Search result')
+      : (state.searchQuery ? 'Search' : 'Search your memories');
+    dom.topbarDateLabel.textContent = title;
+    dom.topbarDateLabel.disabled = true;
+    dom.topbarDateLabel.setAttribute('aria-label', title);
+    if (dom.topbarMeta) {
+      const meta = searchTopbarMetaLabel();
+      dom.topbarMeta.textContent = meta;
+      dom.topbarMeta.classList.toggle('hidden', !meta);
+    }
+    return;
+  }
+  dom.topbarDateLabel.disabled = false;
+  dom.topbarDateLabel.setAttribute('aria-label', 'Jump to a specific date');
+  dom.topbarDateLabel.innerHTML = `${renderPhIcon('calendar-dots', { variant: 'duotone' })}<span>${escapeHtml(currentTopbarDateLabel())}</span>`;
+  if (dom.topbarMeta) {
+    dom.topbarMeta.textContent = '';
+    dom.topbarMeta.classList.add('hidden');
+  }
 }
 
 function getFolderChildren(rootId, parentPath = '') {
@@ -821,9 +1795,10 @@ function normalizeUploadTarget() {
 
 function updateUploadUiState() {
   dom.uploadWindow?.classList.toggle('is-uploading', Boolean(state.uploadXhr));
+  dom.uploadWindow?.classList.toggle('is-processing', Boolean(state.uploadProcessing));
   dom.uploadWindow?.classList.toggle('is-preparing', Boolean(state.uploadPreparing));
-  dom.uploadAddFiles?.classList.toggle('hidden', Boolean(state.uploadXhr));
-  if (dom.uploadSubmit) dom.uploadSubmit.hidden = !state.uploadSelectedFiles.length && !state.uploadXhr;
+  dom.uploadAddFiles?.classList.toggle('hidden', Boolean(state.uploadXhr || state.uploadProcessing));
+  if (dom.uploadSubmit) dom.uploadSubmit.hidden = !state.uploadSelectedFiles.length && !state.uploadXhr && !state.uploadProcessing;
   updateUploadSharedDateUi();
 }
 
@@ -847,7 +1822,7 @@ function isCoarsePointer() {
 }
 
 function topOffset() {
-  return isMobileViewport() ? 78 : 104;
+  return Math.ceil(dom.topbar?.offsetHeight || (isMobileViewport() ? 78 : 104));
 }
 
 function timelineChunkSize() {
@@ -904,11 +1879,12 @@ function prefetchAdjacentChunks(response) {
 }
 
 function applyTheme(theme) {
-  state.theme = theme === 'dark' ? 'dark' : 'light';
+  state.theme = AVAILABLE_THEMES.has(theme) ? theme : 'light';
   dom.body.dataset.theme = state.theme;
   localStorage.setItem('lifeserver-theme', state.theme);
-  dom.themeLight?.classList.toggle('is-active', state.theme === 'light');
-  dom.themeDark?.classList.toggle('is-active', state.theme === 'dark');
+  dom.themeChoices.forEach((button) => {
+    button.classList.toggle('is-active', button.dataset.themeChoice === state.theme);
+  });
 }
 
 function setThemeChoice(theme) {
@@ -994,9 +1970,10 @@ function createHomeSkeletonDay(item) {
     dateLabel: item?.longLabel || item?.label || isoDate,
     monthKey: isoDate ? isoDate.slice(0, 7) : '',
     monthLabel: isoDate ? monthLabelForIso(isoDate) : '',
-    photoCount: 0,
+    photoCount: Number(item?.photoCount || 0),
     photos: [],
     journal: null,
+    hasJournal: Boolean(item?.hasJournal),
     __hydrated: false
   };
 }
@@ -1021,12 +1998,16 @@ function activeSourceTotal() {
   return activeSourceDays().length;
 }
 
+function activeScrollTotal() {
+  return state.searchMode ? activeSourceTotal() : state.totalDays;
+}
+
 function getGlobalIndexForLocal(localIndex) {
   if (localIndex === null || localIndex === undefined || localIndex < 0) return null;
   const source = activeSourceDays();
   const day = source[localIndex];
   if (!day) return null;
-  if (state.searchMode) return state.dateIndexMap[day.isoDate] ?? null;
+  if (state.searchMode) return localIndex;
   return state.homeSourceEndIndex - localIndex;
 }
 
@@ -1189,6 +2170,17 @@ function applyHomeTimelineDays(days, total = days.length) {
 
 function restoreHomeTimelineState() {
   state.searchMode = false;
+  state.searchLoading = false;
+  state.searchQuery = '';
+  state.searchRawDays = [];
+  state.searchResultDays = [];
+  state.searchResultIndexByDate = {};
+  state.searchFolders = [];
+  state.searchActiveFolderKeys.clear();
+  state.searchDetailDate = '';
+  state.searchDetailResultIndex = 0;
+  state.searchResultsScrollY = 0;
+  state.route = { view: 'home', scrollY: state.homeScrollY || 0 };
 }
 
 async function ensureFullTimelineLoaded({ force = false } = {}) {
@@ -1247,6 +2239,95 @@ function setSearchSource(days) {
   state.searchResultIndexByDate = Object.fromEntries(state.searchResultDays.map((day, index) => [day.isoDate, index]));
 }
 
+function activeSearchFolderKeys() {
+  return [...state.searchActiveFolderKeys];
+}
+
+function cloneSearchDayWithFilters(day, folderKeys) {
+  const matchedMedia = Array.isArray(day?.matchedMedia) ? day.matchedMedia : [];
+  const countMediaMatches = (items) => items.reduce((sum, item) => sum + Math.max(1, Number(item.searchMatchCount || 0)), 0);
+  if (!folderKeys.length) {
+    return {
+      ...day,
+      matchedMedia: [...matchedMedia],
+      matchedMediaCount: matchedMedia.length,
+      matchCount: Number(day?.journalMatchCount || 0) + countMediaMatches(matchedMedia)
+    };
+  }
+  const filteredMedia = matchedMedia.filter((item) => folderKeys.includes(`${item.folderRootId || ''}::${item.folder || '.'}`));
+  if (!filteredMedia.length) return null;
+  return {
+    ...day,
+    matchedMedia: filteredMedia,
+    matchedMediaCount: filteredMedia.length,
+    matchCount: Number(day?.journalMatchCount || 0) + countMediaMatches(filteredMedia)
+  };
+}
+
+function applySearchFilters({ preserveWindow = false } = {}) {
+  const folderKeys = activeSearchFolderKeys();
+  const nextDays = state.searchRawDays
+    .map((day) => cloneSearchDayWithFilters(day, folderKeys))
+    .filter(Boolean);
+  setSearchSource(nextDays);
+  state.loadedStart = nextDays.length ? 0 : null;
+  state.loadedEnd = nextDays.length ? nextDays.length - 1 : null;
+  state.loadedDays = nextDays.length ? [...nextDays] : [];
+  if (!preserveWindow) state.activeDate = nextDays[0]?.isoDate || null;
+  rebuildViewerSequence();
+  renderSearchStatus();
+}
+
+function renderSearchStatus() {
+  const show = state.searchMode || state.searchLoading || Boolean(state.searchQuery);
+  dom.searchStatusSection?.classList.toggle('hidden', !show);
+  dom.searchStatusEyebrow?.classList.toggle('hidden', !state.searchLoading);
+  if (!show) {
+    if (dom.searchStatusTitle) dom.searchStatusTitle.textContent = '';
+    if (dom.searchStatusSubtitle) dom.searchStatusSubtitle.textContent = '';
+    if (dom.searchFilters) dom.searchFilters.innerHTML = '';
+    return;
+  }
+  const total = activeSourceTotal();
+  if (dom.searchStatusTitle) {
+    dom.searchStatusTitle.textContent = state.searchLoading
+      ? 'Searching your memories'
+      : `${total} matching result${total === 1 ? '' : 's'} for "${state.searchQuery}"`;
+  }
+  if (dom.searchStatusSubtitle) {
+    if (state.searchLoading) {
+      dom.searchStatusSubtitle.textContent = 'Looking through entries and media descriptions.';
+    } else if (!total) {
+      dom.searchStatusSubtitle.textContent = 'No matches found. Try another phrase or clear your folder filters.';
+    } else if (state.searchActiveFolderKeys.size) {
+      dom.searchStatusSubtitle.textContent = `${state.searchActiveFolderKeys.size} folder filter${state.searchActiveFolderKeys.size === 1 ? '' : 's'} active.`;
+    } else {
+      dom.searchStatusSubtitle.textContent = 'Journal text and media descriptions are included.';
+    }
+  }
+  if (!dom.searchFilters) return;
+  const filters = (state.searchFolders || []).map((folder) => {
+    const active = state.searchActiveFolderKeys.has(folder.key);
+    return `<button class="search-filter-chip ${active ? 'is-active' : ''}" type="button" data-search-folder="${escapeHtml(folder.key)}">${escapeHtml(folder.label)}<span>${folder.count}</span></button>`;
+  }).join('');
+  dom.searchFilters.innerHTML = filters ? `<div class="search-filter-row">${filters}</div>` : '';
+}
+
+function toggleSearchFolder(folderKey) {
+  if (!folderKey) return;
+  if (state.searchActiveFolderKeys.has(folderKey)) state.searchActiveFolderKeys.delete(folderKey);
+  else state.searchActiveFolderKeys.add(folderKey);
+  state.searchResultsScrollY = 0;
+  applySearchFilters();
+  if (activeSourceTotal()) {
+    const range = buildWindowRangeAroundIndex(0, 'top');
+    setVisibleWindow(range.start, range.end);
+  } else {
+    renderTimeline();
+  }
+  window.scrollTo({ top: 0, behavior: 'auto' });
+}
+
 function buildLocalTimelineResponse(startIndex, limit) {
   const total = state.fullTimelineDays.length;
   if (!total) {
@@ -1298,18 +2379,26 @@ function openSettings() {
 function closeSettings() {
   state.settingsOpen = false;
   dom.settingsModal.classList.add('hidden');
-  if (dom.photoViewer.classList.contains('hidden')) dom.body.classList.remove('viewer-open');
+  syncOverlayBodyState();
 }
 
 function syncTopbarSearchState() {
   dom.body.classList.toggle('search-bar-open', state.searchUiOpen);
+  dom.body.classList.toggle('search-ui-open', state.searchUiOpen);
+  dom.body.classList.toggle('search-is-idle', state.searchUiOpen && !state.searchLoading && !state.searchMode && !state.searchQuery);
+  dom.body.classList.toggle('search-detail-open', state.route.view === 'search-detail');
   dom.searchForm?.classList.toggle('hidden', !state.searchUiOpen);
+  dom.searchBackButton?.classList.add('hidden');
+  dom.searchDetailNav?.classList.toggle('hidden', state.route.view !== 'search-detail');
   dom.topbarActions?.classList.toggle('hidden', state.searchUiOpen);
-  dom.homeButton?.classList.toggle('hidden', state.searchUiOpen);
-  dom.clearSearch?.classList.toggle('hidden', !(dom.searchInput?.value || '').trim());
+  dom.clearSearch?.classList.add('hidden');
+  dom.searchCloseButton?.classList.toggle('hidden', !(dom.searchInput?.value || '').trim());
+  dom.yearSection?.classList.toggle('hidden', state.searchUiOpen || state.searchMode);
+  updateTopbarDateLabel();
 }
 
 function openSearchBar() {
+  if (!state.searchUiOpen && state.route.view === 'home') state.homeScrollY = window.scrollY;
   state.searchUiOpen = true;
   syncTopbarSearchState();
   window.requestAnimationFrame(() => {
@@ -1321,12 +2410,29 @@ function openSearchBar() {
 async function closeSearchBar({ clear = true } = {}) {
   window.clearTimeout(state.searchInputTimer);
   state.searchInputTimer = 0;
+  const shouldClear = clear && (dom.searchInput?.value || state.searchQuery || state.searchMode);
   state.searchUiOpen = false;
-  if (clear && dom.searchInput && (dom.searchInput.value || state.searchQuery)) {
+  dom.searchDetailView?.classList.add('hidden');
+  if (shouldClear && dom.searchInput) {
     dom.searchInput.value = '';
-    await runSearch('');
+    restoreHomeTimelineState();
+    await goHome({ push: false, restoreScroll: false, scrollY: state.homeScrollY || 0 });
+    await ensureTimelineLoaded(state.bootstrap?.lastDate);
+    window.scrollTo({ top: state.homeScrollY || 0, behavior: 'auto' });
+    renderTimeline();
+    renderDefaultYearSubtitle();
+    renderSearchStatus();
+  } else if (!shouldClear) {
+    restoreHomeTimelineState();
+    await goHome({ push: false, restoreScroll: false, scrollY: state.homeScrollY || 0 });
+    await ensureTimelineLoaded(state.bootstrap?.lastDate);
+    window.scrollTo({ top: state.homeScrollY || 0, behavior: 'auto' });
+    renderTimeline();
+    renderDefaultYearSubtitle();
+    renderSearchStatus();
   }
   syncTopbarSearchState();
+  updateTopbarDateLabel();
 }
 
 function topbarUploadDate() {
@@ -1458,6 +2564,7 @@ function renderUploadPreviewsFilenameLegacy() {
     const displayName = uploadDisplayName(file.name);
     return `<button class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}" type="button" ${state.uploadXhr ? 'disabled' : ''} data-upload-remove="${item.id}" aria-label="Remove ${escapeHtml(file.name)}"><div class="upload-preview-thumb">${isVideo ? `<video src="${item.objectUrl}" muted playsinline preload="none"></video><span class="upload-preview-video">${renderPhIcon('play-fill', { variant: 'fill' })}</span>` : `<img src="${item.objectUrl}" alt="${escapeHtml(file.name)}" loading="lazy" decoding="async" />`}${state.uploadXhr ? '' : `<span class="upload-preview-remove">${renderPhIcon('x', { variant: 'bold' })}</span>`}</div><div class="upload-preview-meta"><strong title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</strong><span>EXIF date · ${escapeHtml(formatUploadDateSummary(file, state.uploadContext?.isoDate, prefix))}</span><span>Size · ${escapeHtml(formatFileSize(file.size))}</span></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></button>`;
   }).join('');
+  dom.uploadPreviewList.innerHTML = dom.uploadPreviewList.innerHTML.replace(/<input class="upload-preview-date-input"[^>]*>/g, '');
   updateUploadPreviewProgress();
 }
 
@@ -1474,6 +2581,7 @@ function renderUploadPreviewsExifLegacy() {
       : `<img src="${item.objectUrl}" alt="${escapeHtml(file.name)}" loading="lazy" decoding="async" />`;
     return `<button class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}" type="button" ${state.uploadXhr ? 'disabled' : ''} data-upload-remove="${item.id}" aria-label="Remove ${escapeHtml(file.name)}"><div class="upload-preview-thumb">${previewThumb}${state.uploadXhr ? '' : `<span class="upload-preview-remove">${renderPhIcon('x', { variant: 'bold' })}</span>`}</div><div class="upload-preview-meta"><strong title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</strong><span>${escapeHtml(formatUploadDateSummary(file, state.uploadContext?.isoDate, setExifDate))}</span><span>Size Â· ${escapeHtml(formatFileSize(file.size))}</span></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></button>`;
   }).join('');
+  dom.uploadPreviewList.innerHTML = dom.uploadPreviewList.innerHTML.replace(/<input class="upload-preview-date-input"[^>]*>/g, '');
   updateUploadPreviewProgress();
 }
 
@@ -1490,6 +2598,7 @@ function renderUploadPreviews() {
       : `<img src="${item.objectUrl}" alt="${escapeHtml(file.name)}" loading="lazy" decoding="async" />`;
     return `<button class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}" type="button" ${state.uploadXhr ? 'disabled' : ''} data-upload-remove="${item.id}" aria-label="Remove ${escapeHtml(file.name)}"><div class="upload-preview-thumb">${previewThumb}${state.uploadXhr ? '' : `<span class="upload-preview-remove">${renderPhIcon('x', { variant: 'bold' })}</span>`}</div><div class="upload-preview-meta"><strong title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</strong><span>${escapeHtml(formatUploadDateSummary(file, state.uploadContext?.isoDate, setExifDate))}</span><span>Size - ${escapeHtml(formatFileSize(file.size))}</span></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></button>`;
   }).join('');
+  dom.uploadPreviewList.innerHTML = dom.uploadPreviewList.innerHTML.replace(/<input class="upload-preview-date-input"[^>]*>/g, '');
   updateUploadPreviewProgress();
 }
 
@@ -1521,7 +2630,7 @@ function renderUploadFolderTree() {
 async function openUploadModal(isoDate) {
   state.uploadContext = { isoDate };
   // dom.uploadTitle.textContent = `Add media for ${dateRailLabel(isoDate)}`;
-  dom.uploadTitle.textContent = `Add media`;
+  dom.uploadTitle.textContent = `Upload media`;
   if (!state.uploadXhr) {
     state.uploadProgressRatio = 0;
     dom.uploadSetExifDate.checked = true;
@@ -1541,11 +2650,12 @@ async function openUploadModal(isoDate) {
 }
 
 function closeUploadModal() {
+  state.uploadProcessing = false;
   if (state.uploadXhr) {
     dom.uploadModal.classList.add('hidden');
     dom.uploadResumeLabel.textContent = dom.uploadSubmitLabel?.textContent || 'Uploading…';
     dom.uploadResume?.classList.remove('hidden');
-    if (dom.photoViewer.classList.contains('hidden') && !state.settingsOpen) dom.body.classList.remove('viewer-open');
+    syncOverlayBodyState();
     return;
   }
   state.uploadContext = null;
@@ -1555,7 +2665,7 @@ function closeUploadModal() {
   dom.uploadModal.classList.add('hidden');
   dom.uploadResume?.classList.add('hidden');
   updateUploadUiState();
-  if (dom.photoViewer.classList.contains('hidden') && !state.settingsOpen) dom.body.classList.remove('viewer-open');
+  syncOverlayBodyState();
 }
 
 function setUploadTarget(rootId, relativePath) {
@@ -1568,6 +2678,7 @@ function setUploadTarget(rootId, relativePath) {
 function renderUploadPreviews() {
   if (!dom.uploadPreviewList) return;
   const files = state.uploadSelectedFiles || [];
+  const sharedOverrideActive = Boolean(dom.uploadSetExifDate?.checked);
   dom.uploadPreviewList.innerHTML = files.map((item) => {
     const file = item.file;
     const isVideo = /^video\//.test(file.type) || /\.(mp4|mov|m4v|webm|avi|mkv|3gp)$/i.test(file.name);
@@ -1575,24 +2686,20 @@ function renderUploadPreviews() {
     const previewThumb = isVideo
       ? `<video src="${item.objectUrl}" muted playsinline preload="none"></video><span class="upload-preview-video">${renderPhIcon('play-fill', { variant: 'fill' })}</span>`
       : `<img src="${item.objectUrl}" alt="${escapeHtml(file.name)}" loading="lazy" decoding="async" />`;
-    return `<div class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}"><div class="upload-preview-thumb">${previewThumb}${state.uploadXhr ? '' : `<button class="upload-preview-remove" type="button" data-upload-remove="${item.id}" aria-label="Remove ${escapeHtml(file.name)}">${renderPhIcon('x', { variant: 'bold' })}</button>`}</div><div class="upload-preview-meta"><div class="upload-preview-meta-row"><div class="upload-preview-meta-copy"><strong title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</strong><span>${escapeHtml(uploadDateSourceLabel(item))}</span><span>Size · ${escapeHtml(formatFileSize(file.size))}</span></div><button class="upload-preview-date" type="button" data-upload-date-trigger="${item.id}" aria-label="Change date for ${escapeHtml(displayName)}">${renderPhIcon('calendar-dots', { variant: 'duotone' })}<strong title="${escapeHtml(displayName)}">${escapeHtml(monthDayLabel(item.isoDate) || 'No date')}</strong></button><input class="upload-preview-date-input" type="date" data-upload-date-input="${item.id}" value="${escapeHtml(item.isoDate || '')}" /></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></div></div>`;
+    const controlsDisabled = state.uploadXhr || sharedOverrideActive;
+    return `<div class="upload-preview-card ${state.uploadXhr ? '' : 'is-removable'}"><div class="upload-preview-thumb">${previewThumb}${state.uploadXhr ? '' : `<button class="upload-preview-remove" type="button" data-upload-remove="${item.id}" aria-label="Remove ${escapeHtml(file.name)}">${renderPhIcon('x', { variant: 'bold' })}</button>`}</div><div class="upload-preview-meta"><div class="upload-preview-meta-row"><div class="upload-preview-meta-copy"><strong title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</strong></div><div class="upload-preview-fields"><button class="upload-preview-trigger" type="button" data-upload-date-trigger="${item.id}" ${controlsDisabled ? 'disabled' : ''}>${escapeHtml(uploadDateTriggerLabel(item))}</button><span class="upload-preview-connector">at</span><button class="upload-preview-trigger" type="button" data-upload-time-trigger="${item.id}" ${controlsDisabled ? 'disabled' : ''}>${escapeHtml(uploadTimeTriggerLabel(item))}</button>${uploadHasOriginalOverride(item) && !controlsDisabled ? `<button class="upload-preview-reset" type="button" data-upload-reset="${item.id}" aria-label="Reset date and time for ${escapeHtml(displayName)}">${renderPhIcon('arrow-counter-clockwise', { variant: 'bold' })}</button>` : ''}<input class="upload-preview-picker-input" type="date" data-upload-date-input="${item.id}" value="${escapeHtml(item.isoDate || '')}" ${controlsDisabled ? 'disabled' : ''} /><input class="upload-preview-picker-input" type="time" data-upload-time-input="${item.id}" value="${escapeHtml(uploadTimeValue(item))}" step="60" ${controlsDisabled ? 'disabled' : ''} /></div><div class="upload-preview-stats">${escapeHtml(formatUploadStats(item))}</div></div><div class="upload-preview-progress"><span class="upload-preview-progress-fill" data-upload-progress="${item.id}"></span></div></div></div>`;
   }).join('');
+  if (dom.uploadAddFiles) dom.uploadPreviewList.appendChild(dom.uploadAddFiles);
   updateUploadPreviewProgress();
-}
-
-function openUploadDatePicker(fileId) {
-  const input = dom.uploadPreviewList?.querySelector(`[data-upload-date-input="${fileId}"]`);
-  if (!input) return;
-  if (typeof input.showPicker === 'function') input.showPicker();
-  else input.click();
 }
 
 function handleUploadSharedDateToggle() {
   if (dom.uploadSetExifDate?.checked) {
-    if (!isValidIsoDate(dom.uploadSharedDate?.value)) {
-      dom.uploadSharedDate.value = state.uploadContext?.isoDate || state.uploadSelectedFiles[0]?.isoDate || '';
-    }
+    captureUploadSharedRestoreState();
+    if (!isValidIsoDate(dom.uploadSharedDate?.value)) dom.uploadSharedDate.value = state.uploadContext?.isoDate || state.uploadSelectedFiles[0]?.isoDate || '';
     if (isValidIsoDate(dom.uploadSharedDate?.value)) applySharedUploadDate(dom.uploadSharedDate.value);
+  } else {
+    restoreUploadSharedDates();
   }
   updateUploadSharedDateUi();
   renderUploadPreviews();
@@ -1601,11 +2708,14 @@ function handleUploadSharedDateToggle() {
 async function openUploadModal(isoDate) {
   state.uploadContext = { isoDate };
   // dom.uploadTitle.textContent = `Add media for ${dateRailLabel(isoDate)}`;
-  dom.uploadTitle.textContent = `Add media`;
+  dom.uploadTitle.textContent = `Upload media`;
   if (!state.uploadXhr) {
     state.uploadProgressRatio = 0;
+    state.uploadProcessing = false;
     dom.uploadSetExifDate.checked = false;
     if (dom.uploadSharedDate) dom.uploadSharedDate.value = isoDate || '';
+    state.uploadSharedDateRestore = null;
+    updateUploadSharedDateTriggerLabel();
     dom.uploadSubmit.style.setProperty('--upload-progress', '0%');
     updateUploadButtonLabel();
     dom.uploadCancel?.classList.add('hidden');
@@ -1679,6 +2789,10 @@ function uploadMediaFiles() {
   form.append('relativePath', state.uploadTarget.relativePath || '');
   form.append('targetIsoDate', state.uploadContext.isoDate);
   form.append('setExifDate', dom.uploadSetExifDate.checked ? '1' : '0');
+  form.append('fileDateTimes', JSON.stringify(state.uploadSelectedFiles.map((item) => ({
+    isoDate: item.isoDate || state.uploadContext?.isoDate || '',
+    capturedAt: buildUploadCapturedAt(item.isoDate || state.uploadContext?.isoDate || '', uploadTimeValue(item), item.capturedAt)
+  }))));
   files.forEach((file) => form.append('files', file));
 
   state.uploadProgressRatio = 0;
@@ -1704,11 +2818,13 @@ function uploadMediaFiles() {
   xhr.addEventListener('load', async () => {
     state.uploadXhr = null;
     state.uploadProgressRatio = 100;
+    state.uploadProcessing = true;
     dom.uploadSubmit.disabled = false;
     dom.uploadCancel?.classList.add('hidden');
     let payload = {};
     try { payload = JSON.parse(xhr.responseText || '{}'); } catch (error) {}
     if (xhr.status < 200 || xhr.status >= 300) {
+      state.uploadProcessing = false;
       updateUploadUiState();
       if (dom.uploadSubmitLabel) dom.uploadSubmitLabel.textContent = payload.error || 'Upload failed';
       renderUploadFolderTree();
@@ -1716,8 +2832,9 @@ function uploadMediaFiles() {
       return;
     }
     dom.uploadSubmit.style.setProperty('--upload-progress', '100%');
-    if (dom.uploadSubmitLabel) dom.uploadSubmitLabel.textContent = `Uploaded ${payload.count || files.length} file${(payload.count || files.length) === 1 ? '' : 's'}`;
-    clearUploadSelection();
+    if (dom.uploadSubmitLabel) dom.uploadSubmitLabel.textContent = 'Finishing upload...';
+    clearUploadSelection({ preserveProcessing: true });
+    setUploadPreparing(true);
     updateUploadUiState();
     renderUploadFolderTree();
     renderUploadPreviews();
@@ -1727,6 +2844,7 @@ function uploadMediaFiles() {
   xhr.addEventListener('abort', () => {
     state.uploadXhr = null;
     state.uploadProgressRatio = 0;
+    state.uploadProcessing = false;
     dom.uploadSubmit.disabled = false;
     dom.uploadCancel?.classList.add('hidden');
     dom.uploadSubmit.style.setProperty('--upload-progress', '0%');
@@ -1739,6 +2857,7 @@ function uploadMediaFiles() {
   xhr.addEventListener('error', () => {
     state.uploadXhr = null;
     state.uploadProgressRatio = 0;
+    state.uploadProcessing = false;
     dom.uploadSubmit.disabled = false;
     dom.uploadCancel?.classList.add('hidden');
     if (dom.uploadSubmitLabel) dom.uploadSubmitLabel.textContent = 'Upload failed';
@@ -1754,11 +2873,17 @@ function uploadMediaFiles() {
   const files = state.uploadSelectedFiles.length ? state.uploadSelectedFiles.map((item) => item.file) : Array.from(dom.uploadFileInput.files || []);
   if (!files.length) return;
   const fileDates = state.uploadSelectedFiles.map((item) => item.isoDate || state.uploadContext?.isoDate || '');
+  const fileDateTimes = state.uploadSelectedFiles.map((item) => ({
+    isoDate: item.isoDate || state.uploadContext?.isoDate || '',
+    capturedAt: buildUploadCapturedAt(item.isoDate || state.uploadContext?.isoDate || '', uploadTimeValue(item), item.capturedAt)
+  }));
   const form = new FormData();
   form.append('rootId', state.uploadTarget.rootId || '0');
   form.append('relativePath', state.uploadTarget.relativePath || '');
   form.append('targetIsoDate', state.uploadContext.isoDate);
+  form.append('setExifDate', dom.uploadSetExifDate.checked ? '1' : '0');
   form.append('fileDates', JSON.stringify(fileDates));
+  form.append('fileDateTimes', JSON.stringify(fileDateTimes));
   files.forEach((file) => form.append('files', file));
 
   state.uploadProgressRatio = 0;
@@ -1784,11 +2909,13 @@ function uploadMediaFiles() {
   xhr.addEventListener('load', async () => {
     state.uploadXhr = null;
     state.uploadProgressRatio = 100;
+    state.uploadProcessing = true;
     dom.uploadSubmit.disabled = false;
     dom.uploadCancel?.classList.add('hidden');
     let payload = {};
     try { payload = JSON.parse(xhr.responseText || '{}'); } catch (error) {}
     if (xhr.status < 200 || xhr.status >= 300) {
+      state.uploadProcessing = false;
       updateUploadUiState();
       if (dom.uploadSubmitLabel) dom.uploadSubmitLabel.textContent = payload.error || 'Upload failed';
       renderUploadFolderTree();
@@ -1796,8 +2923,9 @@ function uploadMediaFiles() {
       return;
     }
     dom.uploadSubmit.style.setProperty('--upload-progress', '100%');
-    if (dom.uploadSubmitLabel) dom.uploadSubmitLabel.textContent = `Uploaded ${payload.count || files.length} file${(payload.count || files.length) === 1 ? '' : 's'}`;
-    clearUploadSelection();
+    if (dom.uploadSubmitLabel) dom.uploadSubmitLabel.textContent = 'Finishing upload...';
+    clearUploadSelection({ preserveProcessing: true });
+    setUploadPreparing(true);
     updateUploadUiState();
     renderUploadFolderTree();
     renderUploadPreviews();
@@ -1807,6 +2935,7 @@ function uploadMediaFiles() {
   xhr.addEventListener('abort', () => {
     state.uploadXhr = null;
     state.uploadProgressRatio = 0;
+    state.uploadProcessing = false;
     dom.uploadSubmit.disabled = false;
     dom.uploadCancel?.classList.add('hidden');
     dom.uploadSubmit.style.setProperty('--upload-progress', '0%');
@@ -1819,6 +2948,7 @@ function uploadMediaFiles() {
   xhr.addEventListener('error', () => {
     state.uploadXhr = null;
     state.uploadProgressRatio = 0;
+    state.uploadProcessing = false;
     dom.uploadSubmit.disabled = false;
     dom.uploadCancel?.classList.add('hidden');
     if (dom.uploadSubmitLabel) dom.uploadSubmitLabel.textContent = 'Upload failed';
@@ -1870,7 +3000,7 @@ function buildJournalHtml(day) {
   const previewLines = buildPreviewLines(journal, 300, 3);
   const previewHtml = previewLines.map((line, index) => {
     const safeLine = highlightPlainText(line || '', highlightQuery);
-    const tail = index === previewLines.length - 1 ? `<button class="expand-inline" type="button" data-journal-toggle="${day.isoDate}">Read more</button>` : '';
+    const tail = !state.searchMode && index === previewLines.length - 1 ? `<button class="expand-inline" type="button" data-journal-toggle="${day.isoDate}">Read more</button>` : '';
     return `<span class="journal-preview-line">${safeLine}${tail}</span>`;
   }).join('');
 
@@ -1880,6 +3010,11 @@ function buildJournalHtml(day) {
       ${expanded ? `<div class="journal-body">${highlightJournalHtml(journal.fullHtml, highlightQuery)}</div><div class="expand-row"><button class="collapse-link" type="button" data-journal-toggle="${day.isoDate}">Show less</button></div>` : ''}
     </section>
   `;
+}
+
+function searchMatchLabel(day) {
+  const count = Number(day?.matchCount || 0);
+  return `${count} match${count === 1 ? '' : 'es'} found`;
 }
 
 function buildEntryAction(day) {
@@ -1951,28 +3086,28 @@ function buildNewestGapCard(day, globalIndex = null) {
 }
 
 function buildDayHtml(day) {
-  const media = day.photos || [];
-  let mediaHtml = '';
   const searchCompact = state.searchMode;
-  const entryActionHtml = buildEntryAction(day);
-  const uploadActionHtml = buildUploadAction(day);
+  const media = searchCompact ? (day.matchedMedia || []) : (day.photos || []);
+  let mediaHtml = '';
+  const entryActionHtml = searchCompact
+    ? `<button class="journal-edit-button icon-button" type="button" data-open-search-detail="${day.isoDate}" aria-label="Open search result">${renderPhIcon('arrow-right', { variant: 'bold' })}</button>`
+    : buildEntryAction(day);
+  const uploadActionHtml = searchCompact ? '' : buildUploadAction(day);
 
   if (media.length) {
-    const stripItems = searchCompact ? media.slice(0, Math.min(media.length, 4)) : media;
-    if (searchCompact) {
-      mediaHtml = buildSearchPhotoStack(stripItems);
-    } else {
-      mediaHtml = `<div class="photo-grid">${media.map((item) => buildMediaTile(item, 'photo-grid-button')).join('')}</div>`;
-    }
+    mediaHtml = `<div class="photo-grid">${media.map((item) => buildMediaTile(item, 'photo-grid-button', { badge: item.searchMatch ? '<span class="media-badge-dot"></span>' : '' })).join('')}</div>`;
   }
 
-  const muted = day.photoCount
-    ? `${day.photoCount} media`
-    : (day.journal ? formatWordCount(day.journal.wordCount ?? 0) : '');
+  const muted = searchCompact
+    ? searchMatchLabel(day)
+    : (day.photoCount ? `${day.photoCount} media` : (day.journal ? formatWordCount(day.journal.wordCount ?? 0) : ''));
+  const cardAttrs = searchCompact
+    ? ` role="button" tabindex="0" data-open-search-detail="${day.isoDate}" aria-label="${escapeHtml(`Open search result for ${day.dateLabel}`)}"`
+    : '';
 
   return `
     <article class="day-block" data-day-date="${day.isoDate}" data-day-index="${state.dateIndexMap[day.isoDate] ?? ''}" data-month-label="${escapeHtml(day.monthLabel)}">
-      <section class="entry-card">
+      <section class="entry-card ${searchCompact ? 'is-search-result' : ''}"${cardAttrs}>
         <div class="entry-card-head">
           <span class="entry-card-icon" aria-hidden="true">${renderPhIcon('calendar-dots', { variant: 'duotone' })}</span>
           <div class="entry-card-copy">
@@ -1988,8 +3123,28 @@ function buildDayHtml(day) {
   `;
 }
 
-function rebuildViewerSequence() {
-  state.viewerSequence = state.loadedDays.flatMap((day) => day.photos.map((photo) => photo));
+function viewerSourceDays() {
+  if (state.searchMode) return state.loadedDays;
+  if (state.fullTimelineLoaded && state.fullTimelineDays.length) return state.fullTimelineDays;
+  return state.loadedDays;
+}
+
+function rebuildViewerSequence({ preferredMediaId = null, refreshOpenViewer = false, forceDateToast = false } = {}) {
+  const fallbackMediaId = preferredMediaId || mediaViewer.getCurrentItem()?.id || null;
+  state.viewerSequence = viewerSourceDays().flatMap((day) => (state.searchMode ? (day.matchedMedia || []) : (day.photos || [])).map((photo) => photo));
+  if (!refreshOpenViewer || !mediaViewer.isOpen()) return;
+  if (!state.viewerSequence.length) {
+    mediaViewer.close({ animate: false });
+    return;
+  }
+  const currentIndex = mediaViewer.getCurrentIndex();
+  const preferredIndex = fallbackMediaId
+    ? state.viewerSequence.findIndex((photo) => photo.id === fallbackMediaId)
+    : currentIndex;
+  mediaViewer.refresh({
+    preferredIndex: preferredIndex >= 0 ? preferredIndex : Math.min(currentIndex, state.viewerSequence.length - 1),
+    forceDateToast
+  });
 }
 
 function shouldShowMonthDivider(localIndex) {
@@ -1999,6 +3154,22 @@ function shouldShowMonthDivider(localIndex) {
   return Boolean(day && (!newerDay || day.monthKey !== newerDay.monthKey));
 }
 
+function buildTimelineUnitHeaderHtml(day, localIndex, globalIndex) {
+  const newestGap = !state.searchMode && localIndex === 0 ? buildNewestGapCard(day, globalIndex) : null;
+  const monthDividerHtml = shouldShowMonthDivider(localIndex)
+    ? `<div class="month-divider"><span class="month-divider-label">${escapeHtml(day.monthLabel)}</span></div>`
+    : '';
+  const newestGapOwnDividerHtml = newestGap?.html && newestGap.monthKey !== day.monthKey
+    ? `<div class="month-divider"><span class="month-divider-label">${escapeHtml(newestGap.monthLabel)}</span></div>`
+    : '';
+  const newestGapCardHtml = newestGap?.html || '';
+
+  return {
+    newestGapHtml: newestGapOwnDividerHtml ? `${newestGapOwnDividerHtml}${newestGapCardHtml}` : newestGapCardHtml,
+    monthDividerHtml
+  };
+}
+
 function buildTimelineUnitHtml(localIndex) {
   const source = activeSourceDays();
   const day = source[localIndex];
@@ -2006,20 +3177,14 @@ function buildTimelineUnitHtml(localIndex) {
   const hydrated = state.searchMode || (isLoadedLocalIndex(localIndex) && isHydratedHomeDay(localIndex));
 
   const globalIndex = getGlobalIndexForLocal(localIndex);
-  const newestGap = !state.searchMode && localIndex === 0 ? buildNewestGapCard(day, globalIndex) : null;
-  const newestGapHtml = newestGap?.html
-    ? `${newestGap.monthKey !== day.monthKey ? `<div class="month-divider"><span class="month-divider-label">${escapeHtml(newestGap.monthLabel)}</span></div>` : ''}${newestGap.html}`
-    : '';
-  const monthDividerHtml = shouldShowMonthDivider(localIndex)
-    ? `<div class="month-divider"><span class="month-divider-label">${escapeHtml(day.monthLabel)}</span></div>`
-    : '';
+  const { newestGapHtml, monthDividerHtml } = buildTimelineUnitHeaderHtml(day, localIndex, globalIndex);
   const gapHtml = !state.searchMode && localIndex < source.length - 1
     ? buildGapCardHtml(day, source[localIndex + 1])
     : '';
   return `
     <section class="timeline-unit ${hydrated ? 'is-hydrated' : 'is-placeholder'}" data-source-index="${localIndex}" data-day-date="${day.isoDate}">
-      <div class="timeline-unit-newest-gap">${newestGapHtml}</div>
       <div class="timeline-unit-month-divider">${monthDividerHtml}</div>
+      <div class="timeline-unit-newest-gap">${newestGapHtml}</div>
       <div class="timeline-unit-day">${timelineUnitBodyHtml(localIndex)}</div>
       <div class="timeline-unit-gap">${gapHtml}</div>
     </section>
@@ -2047,13 +3212,7 @@ function refreshTimelineUnitDecorations(localIndex) {
   if (!unit) return;
 
   const globalIndex = getGlobalIndexForLocal(localIndex);
-  const newestGap = !state.searchMode && localIndex === 0 ? buildNewestGapCard(day, globalIndex) : null;
-  const newestGapHtml = newestGap?.html
-    ? `${newestGap.monthKey !== day.monthKey ? `<div class="month-divider"><span class="month-divider-label">${escapeHtml(newestGap.monthLabel)}</span></div>` : ''}${newestGap.html}`
-    : '';
-  const monthDividerHtml = shouldShowMonthDivider(localIndex)
-    ? `<div class="month-divider"><span class="month-divider-label">${escapeHtml(day.monthLabel)}</span></div>`
-    : '';
+  const { newestGapHtml, monthDividerHtml } = buildTimelineUnitHeaderHtml(day, localIndex, globalIndex);
   const gapHtml = !state.searchMode && localIndex < source.length - 1
     ? buildGapCardHtml(day, source[localIndex + 1])
     : '';
@@ -2085,7 +3244,7 @@ function estimateTimelineUnitHeight() {
 }
 
 function timelineHydrationWindowSize() {
-  return 20;
+  return 10;
 }
 
 function estimateHeightForDay(day) {
@@ -2102,16 +3261,6 @@ function estimateHeightForDayFromSnapshot(day, measuredHeights) {
   return measuredHeights.get(day.isoDate) || estimateTimelineUnitHeight();
 }
 
-function getVirtualTopForLocalIndexFromSnapshot(localIndex, measuredHeights) {
-  if (localIndex === null || localIndex === undefined || localIndex <= 0) return 0;
-  const source = activeSourceDays();
-  let total = 0;
-  for (let index = 0; index < localIndex; index += 1) {
-    total += estimateHeightForDayFromSnapshot(source[index], measuredHeights);
-  }
-  return total;
-}
-
 function refreshTimelineHeightMetrics({ anchor = null } = {}) {
   const units = Array.from(document.querySelectorAll('#timelineFeed .timeline-unit.is-hydrated'));
   if (!units.length) return;
@@ -2121,19 +3270,20 @@ function refreshTimelineHeightMetrics({ anchor = null } = {}) {
   let compensationDelta = 0;
   const anchorDocumentY = timelineMarkerDocumentY();
   const nextMeasuredHeights = [];
+  let virtualTop = 0;
   units.forEach((node) => {
     const localIndex = Number(node.dataset.sourceIndex);
     const day = activeSourceDays()[localIndex];
     const height = Math.max(1, Math.round(node.getBoundingClientRect().height));
     const previousHeight = estimateHeightForDayFromSnapshot(day, previousMeasuredHeights);
     if (day?.isoDate) nextMeasuredHeights.push([day.isoDate, height]);
-    const virtualTop = getVirtualTopForLocalIndexFromSnapshot(localIndex, previousMeasuredHeights);
     const documentTop = (window.scrollY + dom.timelinePane.getBoundingClientRect().top + Number(dom.timelineTopSpacer.style.height.replace('px', '') || 0)) + virtualTop;
     if (!isTimelineCorrectionSuppressed() && documentTop < anchorDocumentY && previousHeight !== height) {
       compensationDelta += (height - previousHeight);
     }
     totalHeight += height;
     count += 1;
+    virtualTop += previousHeight;
   });
   nextMeasuredHeights.forEach(([isoDate, height]) => state.timelineMeasuredHeights.set(isoDate, height));
   if (count) state.timelineAverageHeight = totalHeight / count;
@@ -2281,6 +3431,14 @@ function setVisibleWindow(start, end) {
     return;
   }
 
+  if (state.searchMode) {
+    state.loadedStart = 0;
+    state.loadedEnd = source.length - 1;
+    syncLoadedDaysFromWindow();
+    renderTimelineWindow();
+    return;
+  }
+
   const safeStart = clamp(start, 0, source.length - 1);
   const safeEnd = clamp(end, safeStart, source.length - 1);
   const previousStart = state.loadedStart;
@@ -2404,7 +3562,7 @@ function predictHomeGlobalIndexFromScroll() {
 }
 
 async function recoverIfOutrun() {
-  if (!state.searchMode) return false;
+  if (state.searchMode) return false;
   if (state.route.view !== 'home' || !activeSourceDays().length) return false;
   const units = Array.from(document.querySelectorAll('#timelineFeed .timeline-unit'));
   if (!units.length) return false;
@@ -2446,6 +3604,7 @@ async function recoverIfOutrun() {
 }
 
 function reconcileWindowAroundActiveDate() {
+  if (state.searchMode) return;
   if (state.route.view !== 'home' || !state.loadedDays.length) return;
   const localIndex = findVisibleLocalIndexFromDom() ?? getLocalIndexForDate(state.activeDate);
   if (localIndex === undefined) return;
@@ -2527,16 +3686,21 @@ function processMediaQueue() {
 }
 
 function setupMediaObserver() {
-  if (state.mediaObserver) state.mediaObserver.disconnect();
-  state.mediaObserver = new IntersectionObserver((entries, observer) => {
-    entries.forEach((entry) => {
-      if (!entry.isIntersecting) return;
-      enqueueMediaLoad(entry.target);
-      observer.unobserve(entry.target);
-    });
-  }, { rootMargin: '120px 0px 120px 0px' });
+  if (!state.mediaObserver) {
+    state.mediaObserver = new IntersectionObserver((entries, observer) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        enqueueMediaLoad(entry.target);
+        observer.unobserve(entry.target);
+      });
+    }, { rootMargin: '120px 0px 120px 0px' });
+  }
 
-  document.querySelectorAll('#timelineFeed .lazy-media').forEach((node) => state.mediaObserver.observe(node));
+  document.querySelectorAll('#timelineFeed .lazy-media').forEach((node) => {
+    if (node.dataset.mediaObserved === '1') return;
+    state.mediaObserver.observe(node);
+    node.dataset.mediaObserved = '1';
+  });
 }
 
 function captureScrollAnchor() {
@@ -2709,22 +3873,27 @@ function showScrollHandle() {
 }
 
 function updateScrollThumbLabel(indexOverride = null) {
-  const isoDate = indexOverride !== null ? state.indexToDate[indexOverride] : state.activeDate;
+  const isoDate = state.searchMode
+    ? (indexOverride !== null ? activeSourceDays()[indexOverride]?.isoDate : state.activeDate)
+    : (indexOverride !== null ? state.indexToDate[indexOverride] : state.activeDate);
   dom.scrollThumbLabel.textContent = monthChipLabel(isoDate);
 }
 
 function syncScrollThumbPosition(indexOverride = null) {
   const activeIndex = indexOverride !== null
     ? indexOverride
-    : (state.activeDate && state.dateIndexMap[state.activeDate] !== undefined ? state.dateIndexMap[state.activeDate] : null);
-  if (activeIndex === null || activeIndex === undefined || state.totalDays <= 1) {
+    : (state.searchMode
+      ? getLocalIndexForDate(state.activeDate)
+      : (state.activeDate && state.dateIndexMap[state.activeDate] !== undefined ? state.dateIndexMap[state.activeDate] : null));
+  const total = activeScrollTotal();
+  if (activeIndex === null || activeIndex === undefined || total <= 1) {
     dom.scrollHandle.style.top = '50%';
     return;
   }
   const minY = Math.max(topOffset() + 18, 88);
   const maxY = window.innerHeight - 88;
   const span = Math.max(140, maxY - minY);
-  const ratio = 1 - (activeIndex / Math.max(1, state.totalDays - 1));
+  const ratio = 1 - (activeIndex / Math.max(1, total - 1));
   const y = minY + (ratio * span);
   dom.scrollHandle.style.top = `${Math.round(y)}px`;
 }
@@ -2737,11 +3906,27 @@ function syncScrollThumb() {
 function indexFromHandleDrag(clientY) {
   const minY = Math.max(topOffset() + 18, 88);
   const maxY = window.innerHeight - 88;
-  const ratio = 1 - clamp((clientY - minY) / Math.max(1, maxY - minY), 0, 1);
-  return clamp(Math.round(ratio * Math.max(0, state.totalDays - 1)), 0, Math.max(0, state.totalDays - 1));
+  const positionRatio = clamp((clientY - minY) / Math.max(1, maxY - minY), 0, 1);
+  const ratio = 1 - positionRatio;
+  const total = activeScrollTotal();
+  return clamp(Math.round(ratio * Math.max(0, total - 1)), 0, Math.max(0, total - 1));
 }
 
 async function jumpToIndex(index, behavior = 'auto') {
+  if (state.searchMode) {
+    const localIndex = clamp(index, 0, Math.max(0, activeSourceTotal() - 1));
+    const range = buildWindowRangeAroundIndex(localIndex, 'center');
+    setVisibleWindow(range.start, range.end);
+    requestAnimationFrame(() => {
+      const unit = dom.timelineFeed.querySelector(`.timeline-unit[data-source-index="${localIndex}"]`);
+      if (!unit) return;
+      const top = Math.max(0, window.scrollY + unit.getBoundingClientRect().top - topOffset());
+      window.scrollTo({ top, behavior });
+      state.activeDate = unit.dataset.dayDate || state.activeDate;
+      syncScrollThumb();
+    });
+    return;
+  }
   const isoDate = state.indexToDate[index];
   if (!isoDate) return;
   await goHome({ push: false });
@@ -2749,7 +3934,25 @@ async function jumpToIndex(index, behavior = 'auto') {
 }
 
 function scrollToTimelineUnitIndex(index, behavior = 'auto') {
-  if (state.route.view !== 'home' || state.searchMode) return false;
+  if (state.route.view !== 'home') return false;
+  if (state.searchMode) {
+    const localIndex = clamp(index, 0, Math.max(0, activeSourceTotal() - 1));
+    let unit = dom.timelineFeed.querySelector(`.timeline-unit[data-source-index="${localIndex}"]`);
+    const range = buildWindowRangeAroundIndex(localIndex, 'center');
+    if (range.start !== state.loadedStart || range.end !== state.loadedEnd) {
+      setVisibleWindow(range.start, range.end);
+      unit = dom.timelineFeed.querySelector(`.timeline-unit[data-source-index="${localIndex}"]`);
+    }
+    if (!unit) return false;
+    suppressTimelineCorrection(280);
+    const top = Math.max(0, window.scrollY + unit.getBoundingClientRect().top - topOffset());
+    window.scrollTo({ top, behavior });
+    const isoDate = unit.dataset.dayDate;
+    if (isoDate) state.activeDate = isoDate;
+    syncScrollThumb();
+    updateTopbarDateLabel();
+    return true;
+  }
   const localIndex = getLocalIndexForGlobalIndex(index);
   if (localIndex === undefined) return false;
 
@@ -2949,12 +4152,76 @@ function renderViewerDetails(item) {
 }
 
 function syncViewerMediaMutation(photoId, mutator) {
-  state.loadedDays.forEach((day) => day.photos.forEach((photo) => {
-    if (photo.id === photoId) mutator(photo);
-  }));
+  state.loadedDays.forEach((day) => {
+    (day.photos || []).forEach((photo) => {
+      if (photo.id === photoId) mutator(photo);
+    });
+    (day.matchedMedia || []).forEach((photo) => {
+      if (photo.id === photoId) mutator(photo);
+    });
+  });
   state.viewerSequence.forEach((photo) => {
     if (photo.id === photoId) mutator(photo);
   });
+}
+
+function sortClientDayPhotos(photos) {
+  return photos.slice().sort((a, b) => String(b.capturedAt || '').localeCompare(String(a.capturedAt || '')) || String(a.fileName || '').localeCompare(String(b.fileName || '')));
+}
+
+function rebuildViewerSequenceFromLoadedDays() {
+  rebuildViewerSequence();
+}
+
+function movePhotoWithinLoadedDays(previousPhoto, nextPhoto) {
+  if (!previousPhoto?.id || !nextPhoto?.id) return false;
+  const sourceDay = state.loadedDays.find((day) => day.isoDate === previousPhoto.isoDate);
+  const targetDay = state.loadedDays.find((day) => day.isoDate === nextPhoto.isoDate);
+
+  if (!sourceDay && !targetDay) return false;
+  if (sourceDay && !targetDay && previousPhoto.isoDate !== nextPhoto.isoDate) return false;
+
+  if (sourceDay) {
+    sourceDay.photos = sourceDay.photos.filter((photo) => photo.id !== previousPhoto.id);
+    sourceDay.photoCount = sourceDay.photos.length;
+  }
+
+  const destinationDay = targetDay || sourceDay;
+  if (!destinationDay) return false;
+  destinationDay.photos = sortClientDayPhotos([
+    ...destinationDay.photos.filter((photo) => photo.id !== nextPhoto.id),
+    nextPhoto
+  ]);
+  destinationDay.photoCount = destinationDay.photos.length;
+
+  rebuildViewerSequenceFromLoadedDays();
+  return true;
+}
+
+function buildClientPhotoFromPayload(currentPhoto, payloadPhoto) {
+  if (!payloadPhoto) return null;
+  return {
+    ...currentPhoto,
+    ...payloadPhoto,
+    thumbUrl: payloadPhoto.thumbUrl || `/media/thumb/${payloadPhoto.id}`,
+    previewUrl: payloadPhoto.previewUrl || (payloadPhoto.type === 'video' ? `/media/preview/${payloadPhoto.id}` : ''),
+    fullUrl: payloadPhoto.fullUrl || `/media/full/${payloadPhoto.id}`,
+    dateLabel: payloadPhoto.dateLabel || dateRailLabel(payloadPhoto.isoDate)
+  };
+}
+
+function applyClientMediaDateMutation(previousPhoto, payloadPhoto) {
+  const currentPhoto = state.viewerSequence.find((photo) => photo.id === previousPhoto?.id) || previousPhoto;
+  const nextPhoto = buildClientPhotoFromPayload(currentPhoto, payloadPhoto);
+  if (!nextPhoto) return null;
+
+  const movedWithinLoadedDays = movePhotoWithinLoadedDays(currentPhoto, nextPhoto);
+  if (!movedWithinLoadedDays) {
+    syncViewerMediaMutation(currentPhoto.id, (photo) => Object.assign(photo, nextPhoto));
+    state.viewerSequence = state.viewerSequence.map((photo) => (photo.id === currentPhoto.id ? { ...photo, ...nextPhoto } : photo));
+  }
+
+  return nextPhoto;
 }
 
 function syncMediaTileLikedState(photoId, liked) {
@@ -2968,6 +4235,39 @@ function syncMediaTileLikedState(photoId, liked) {
       return;
     }
     existing?.remove();
+  });
+}
+
+function queueMediaLikeSave(photoId, liked) {
+  const existing = pendingMediaLikeSaves.get(photoId);
+  if (existing) window.clearTimeout(existing.timerId);
+  const version = (mediaLikeSaveVersions.get(photoId) || 0) + 1;
+  mediaLikeSaveVersions.set(photoId, version);
+
+  const timerId = window.setTimeout(async () => {
+    const pending = pendingMediaLikeSaves.get(photoId);
+    if (!pending || pending.timerId !== timerId) return;
+
+    pendingMediaLikeSaves.delete(photoId);
+    try {
+      const payload = await fetchJson(`/api/media/${photoId}/like`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ liked: pending.liked })
+      });
+      if (mediaLikeSaveVersions.get(photoId) !== pending.version) return;
+      const persistedLiked = Boolean(payload?.liked);
+      syncViewerMediaMutation(photoId, (photo) => { photo.liked = persistedLiked; });
+      syncMediaTileLikedState(photoId, persistedLiked);
+    } catch (error) {
+      console.error('Failed to persist like state.', error);
+    }
+  }, MEDIA_LIKE_SAVE_DELAY_MS);
+
+  pendingMediaLikeSaves.set(photoId, {
+    liked: Boolean(liked),
+    version,
+    timerId
   });
 }
 
@@ -3021,6 +4321,11 @@ function openViewerById(mediaId, { pushHistory = true } = {}) {
   const index = state.viewerSequence.findIndex((item) => item.id === mediaId);
   if (index === -1) return;
   mediaViewer.open(index, { forceDateToast: true });
+  if (!state.searchMode && !state.fullTimelineLoaded && state.totalDays > 0) {
+    void ensureFullTimelineLoaded()
+      .then(() => rebuildViewerSequence({ preferredMediaId: mediaId, refreshOpenViewer: mediaViewer.isOpen() }))
+      .catch(() => {});
+  }
   if (pushHistory) {
     const base = history.state && !history.state.viewer ? history.state : { ...state.route };
     history.pushState({ ...base, viewer: true, viewerMediaId: mediaId }, '', location.href);
@@ -3123,7 +4428,18 @@ function handleJournalToggle(isoDate) {
   const previousToggleTop = collapseButton ? collapseButton.getBoundingClientRect().top : null;
   if (wasExpanded) state.expandedDates.delete(isoDate);
   else state.expandedDates.add(isoDate);
-  renderTimeline();
+
+  const localIndex = activeSourceIndexByDate()[isoDate];
+  if (
+    !state.searchMode
+    && Number.isInteger(localIndex)
+    && dom.timelineFeed.querySelector('.timeline-unit')
+  ) {
+    refreshHomeTimelineWindow({ indexes: [localIndex] });
+  } else {
+    renderTimeline();
+  }
+
   requestAnimationFrame(() => {
     const nextBlock = document.querySelector(`[data-day-date="${isoDate}"]`);
     if (!nextBlock) return;
@@ -3138,19 +4454,6 @@ function handleJournalToggle(isoDate) {
   });
 }
 
-function getGapPickerInput() {
-  let input = document.getElementById('timelineGapDatePicker');
-  if (input) return input;
-  input = document.createElement('input');
-  input.type = 'date';
-  input.id = 'timelineGapDatePicker';
-  input.tabIndex = -1;
-  input.setAttribute('aria-hidden', 'true');
-  input.className = 'timeline-gap-picker-native';
-  document.body.appendChild(input);
-  return input;
-}
-
 function handleGapCardClick(card) {
   const startIso = card?.dataset.gapRangeStart || '';
   const endIso = card?.dataset.gapRangeEnd || '';
@@ -3160,48 +4463,49 @@ function handleGapCardClick(card) {
     openEditorForDate(startIso, { create: true });
     return;
   }
-  const input = getGapPickerInput();
-  input.min = startIso;
-  input.max = endIso;
-  input.value = startIso;
-  input.onchange = () => {
-    const selected = input.value;
-    if (!selected) return;
-    if (selected < startIso || selected > endIso) {
-      input.value = startIso;
-      return;
+  const todayIso = state.bootstrap?.today?.isoDate || '';
+  openCalendarModal({
+    context: 'create-entry',
+    title: 'Choose an entry date',
+    subtitle: `Gap from ${monthDayLabel(startIso)} to ${monthDayLabel(endIso)}`,
+    confirmLabel: 'Create entry',
+    helperText: 'Pick one of the missing days to start a journal entry.',
+    initialDate: isWithinCalendarRange(todayIso, startIso, endIso) ? todayIso : startIso,
+    minDate: startIso,
+    maxDate: endIso,
+    isDateEnabled: (isoDate) => isWithinCalendarRange(isoDate, startIso, endIso),
+    onConfirm: async (selectedDate) => {
+      openEditorForDate(selectedDate, { create: true });
     }
-    openEditorForDate(selected, { create: true });
-  };
-  input.focus();
-  if (typeof input.showPicker === 'function') {
-    try {
-      input.showPicker();
-      return;
-    } catch (error) {}
-  }
-  input.click();
+  });
 }
 
 async function runSearch(query) {
   const term = String(query || '').trim();
+  const previousDetailDate = state.route.view === 'search-detail' ? state.searchDetailDate : '';
+  const previousDetailIndex = state.route.view === 'search-detail' ? state.searchDetailResultIndex : 0;
   const requestId = ++state.searchRequestSeq;
   state.activeSearchRequest = requestId;
   state.searchQuery = term;
+  state.searchLoading = Boolean(term);
+  syncTopbarSearchState();
   state.scrollPreviewIndex = null;
   state.scrollHandleQueuedIndex = null;
   state.scrollHandleBusy = false;
   dom.clearSearch.classList.toggle('hidden', !term);
+  renderSearchStatus();
   if (state.searchAbortController) {
     state.searchAbortController.abort();
     state.searchAbortController = null;
   }
   if (!term) {
+    state.searchLoading = false;
     restoreHomeTimelineState();
-    setSearchSource([]);
+    syncTopbarSearchState();
     dom.yearCarouselShell?.classList.remove('hidden');
     if (dom.yearSectionTitle) dom.yearSectionTitle.textContent = 'Browse your years';
     renderDefaultYearSubtitle();
+    renderSearchStatus();
     await goHome({ push: false, restoreScroll: false });
     await ensureTimelineLoaded(state.bootstrap?.lastDate);
     if (requestId !== state.activeSearchRequest) return;
@@ -3219,6 +4523,9 @@ async function runSearch(query) {
     response = await fetchJson(`/api/search?q=${encodeURIComponent(term)}`, { cache: 'no-store', signal: controller.signal });
   } catch (error) {
     if (controller.signal.aborted) return;
+    state.searchLoading = false;
+    syncTopbarSearchState();
+    renderSearchStatus();
     throw error;
   } finally {
     if (state.searchAbortController === controller) state.searchAbortController = null;
@@ -3226,18 +4533,26 @@ async function runSearch(query) {
 
   if (requestId !== state.activeSearchRequest || state.searchQuery !== term) return;
 
-  await goHome({ push: false, restoreScroll: false });
-  if (requestId !== state.activeSearchRequest || state.searchQuery !== term) return;
+  state.searchLoading = false;
   state.searchMode = true;
-  setSearchSource(response.days);
+  syncTopbarSearchState();
+  state.searchRawDays = Array.isArray(response.days) ? [...response.days] : [];
+  state.searchFolders = Array.isArray(response.folders) ? [...response.folders] : [];
+  state.searchActiveFolderKeys.clear();
+  applySearchFilters({ preserveWindow: Boolean(previousDetailDate) });
   dom.yearCarouselShell?.classList.add('hidden');
-  if (dom.yearSectionTitle) dom.yearSectionTitle.textContent = `Search results for ${term}`;
-  if (dom.yearSectionSubtitle) dom.yearSectionSubtitle.textContent = `${response.total} matching days`;
-  state.activeDate = response.days[0]?.isoDate || null;
-  if (response.days.length) {
-    const range = buildWindowRangeAroundIndex(0, 'top');
-    setVisibleWindow(range.start, range.end);
+  if (dom.yearSectionTitle) dom.yearSectionTitle.textContent = 'Book of Life';
+  renderDefaultYearSubtitle();
+  if (previousDetailDate && getSearchDayByDate(previousDetailDate)) {
+    state.activeDate = previousDetailDate;
+    openSearchDetail(previousDetailDate, { push: false, resultIndex: previousDetailIndex });
+  } else if (state.searchResultDays.length) {
+    await goHome({ push: false, restoreScroll: false });
+    if (requestId !== state.activeSearchRequest || state.searchQuery !== term) return;
+    state.activeDate = state.searchResultDays[0]?.isoDate || null;
+    setVisibleWindow(0, state.searchResultDays.length - 1);
   } else {
+    await goHome({ push: false, restoreScroll: false });
     state.loadedDays = [];
     state.loadedStart = null;
     state.loadedEnd = null;
@@ -3254,6 +4569,7 @@ async function runSearch(query) {
     state.mobileTopbarAnchorY = window.scrollY;
     showScrollHandle();
   });
+  renderSearchStatus();
 }
 
 async function getYearData(year) {
@@ -3312,16 +4628,229 @@ function dayCardHtml(day, monthKey, year) {
 
 function showHomeView() {
   dom.homeView.classList.remove('hidden');
+  dom.searchDetailView.classList.add('hidden');
   dom.explorerView.classList.add('hidden');
   dom.body.classList.remove('explorer-open');
   if (!state.searchMode) dom.yearCarouselShell?.classList.remove('hidden');
 }
 
+function showSearchDetailView() {
+  dom.searchDetailView.classList.remove('hidden');
+  dom.homeView.classList.add('hidden');
+  dom.explorerView.classList.add('hidden');
+  dom.body.classList.add('explorer-open');
+  window.scrollTo({ top: 0, behavior: 'auto' });
+}
+
 function showExplorerView() {
   dom.explorerView.classList.remove('hidden');
+  dom.searchDetailView.classList.add('hidden');
   dom.homeView.classList.add('hidden');
   dom.body.classList.add('explorer-open');
   window.scrollTo({ top: 0, behavior: 'auto' });
+}
+
+function getSearchDayByDate(isoDate) {
+  const localIndex = state.searchResultIndexByDate[isoDate];
+  return localIndex === undefined ? null : state.searchResultDays[localIndex];
+}
+
+function getSearchDetailHits() {
+  return Array.from(dom.searchDetailBody?.querySelectorAll('.search-hit') || []);
+}
+
+function focusSearchDetailResult(index = state.searchDetailResultIndex) {
+  const day = getSearchDayByDate(state.searchDetailDate);
+  const targets = getSearchDetailTargets(day);
+  if (!targets.length) return;
+  state.searchDetailResultIndex = clamp(index, 0, targets.length - 1);
+  dom.searchDetailSubtitle.textContent = `${searchMatchLabel(day || { matchCount: 0 })} • result ${state.searchDetailResultIndex + 1} of ${targets.length}`;
+  dom.searchDetailPrevResult.disabled = state.searchDetailResultIndex <= 0;
+  dom.searchDetailNextResult.disabled = state.searchDetailResultIndex >= targets.length - 1;
+  document.querySelectorAll('[data-search-result-target]').forEach((node, nodeIndex) => {
+    node.classList.toggle('is-active-search-target', nodeIndex === state.searchDetailResultIndex);
+  });
+  const target = document.querySelector(`[data-search-result-target="${targets[state.searchDetailResultIndex].key}"]`);
+  target?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+function buildSearchDetailBody(day) {
+  if (!day) return '<div class="empty-state"><h2>Search result not found</h2><p>Return to the search results and try again.</p></div>';
+  const mediaGrid = (day.matchedMedia || []).length
+    ? `<div class="photo-grid">${day.matchedMedia.map((item) => `<div class="search-detail-media-card" data-search-result-target="${item.id}">${buildMediaTile(item, 'photo-grid-button', { badge: '<span class="media-badge-dot"></span>' })}<p class="search-detail-media-caption">${highlightPlainText(item.description || item.fileName || '', state.searchQuery)}</p></div>`).join('')}</div>`
+    : '<p class="search-detail-empty">No matching media descriptions in this entry.</p>';
+  const journalHtml = day.journal
+    ? `<section class="search-detail-section ${day.journalMatch ? 'is-result-section' : ''}" ${day.journalMatch ? 'data-search-result-target="journal"' : ''}>
+        <div class="search-detail-section-head">
+          <h3>Journal</h3>
+          ${day.journalMatch ? `<span class="search-detail-pill">Match</span>` : ''}
+        </div>
+        <div class="journal-wrap"><div class="journal-body">${highlightJournalHtml(day.journal.fullHtml, state.searchQuery)}</div></div>
+      </section>`
+    : '';
+  return `
+    <article class="search-detail-entry">
+      ${journalHtml}
+      <section class="search-detail-section">
+        <div class="search-detail-section-head">
+          <h3>Matched media</h3>
+          <span class="search-detail-pill">${day.matchedMediaCount || 0}</span>
+        </div>
+        ${mediaGrid}
+      </section>
+    </article>
+  `;
+}
+
+function renderSearchDetail() {
+  const day = getSearchDayByDate(state.searchDetailDate);
+  const targets = getSearchDetailTargets(day);
+  dom.searchDetailTitle.textContent = day?.dateLabel || 'Search result';
+  dom.searchDetailSubtitle.textContent = `${searchMatchLabel(day || { matchCount: 0 })}${targets.length ? ` • result ${Math.min(state.searchDetailResultIndex + 1, targets.length)} of ${targets.length}` : ''}`;
+  dom.searchDetailBody.innerHTML = buildSearchDetailBody(day);
+  dom.searchDetailPrevResult.disabled = targets.length <= 1 || state.searchDetailResultIndex <= 0;
+  dom.searchDetailNextResult.disabled = targets.length <= 1 || state.searchDetailResultIndex >= Math.max(0, targets.length - 1);
+  focusSearchDetailResult(state.searchDetailResultIndex);
+}
+
+function openSearchDetail(isoDate, { push = true, resultIndex = 0 } = {}) {
+  const day = getSearchDayByDate(isoDate);
+  if (!day) return;
+  state.searchResultsScrollY = window.scrollY;
+  state.searchDetailDate = isoDate;
+  state.searchDetailResultIndex = resultIndex;
+  renderSearchDetail();
+  showSearchDetailView();
+  syncTopbarSearchState();
+  state.route = { view: 'search-detail', entryDate: isoDate, resultIndex, scrollY: state.searchResultsScrollY };
+  if (push) history.pushState({ view: 'search-detail', entryDate: isoDate, resultIndex, scrollY: state.searchResultsScrollY }, '', `#search-${isoDate}`);
+}
+
+function buildSearchDetailBody(day) {
+  if (!day) return '<div class="empty-state"><h2>Search result not found</h2><p>Return to the search results and try again.</p></div>';
+  const mediaGrid = (day.matchedMedia || []).length
+    ? `<div class="photo-grid">${day.matchedMedia.map((item) => `<div class="search-detail-media-card">${buildMediaTile(item, 'photo-grid-button', { badge: '<span class="media-badge-dot"></span>' })}<p class="search-detail-media-caption">${highlightPlainText(item.description || item.fileName || '', state.searchQuery)}</p></div>`).join('')}</div>`
+    : '<p class="search-detail-empty">No matching media descriptions in this entry.</p>';
+  const journalHtml = day.journal
+    ? `<section class="search-detail-section">
+        <div class="search-detail-section-head">
+          <h3>Journal</h3>
+        </div>
+        <div class="journal-wrap"><div class="journal-body">${highlightJournalHtml(day.journal.fullHtml, state.searchQuery)}</div></div>
+      </section>`
+    : '';
+  return `
+    <article class="search-detail-entry">
+      ${journalHtml}
+      <section class="search-detail-section">
+        <div class="search-detail-section-head">
+          <h3>Matched media</h3>
+        </div>
+        ${mediaGrid}
+      </section>
+    </article>
+  `;
+}
+
+function focusSearchDetailResult(index = state.searchDetailResultIndex) {
+  const day = getSearchDayByDate(state.searchDetailDate);
+  const hits = Array.from(dom.searchDetailBody?.querySelectorAll('.search-hit') || []);
+  if (!hits.length) {
+    dom.searchDetailSubtitle.textContent = searchMatchLabel(day || { matchCount: 0 });
+    dom.searchDetailPrevResult.disabled = true;
+    dom.searchDetailNextResult.disabled = true;
+    return;
+  }
+  state.searchDetailResultIndex = clamp(index, 0, hits.length - 1);
+  dom.searchDetailSubtitle.textContent = `${state.searchDetailResultIndex + 1} of ${hits.length} matches`;
+  dom.searchDetailPrevResult.disabled = state.searchDetailResultIndex <= 0;
+  dom.searchDetailNextResult.disabled = state.searchDetailResultIndex >= hits.length - 1;
+  hits.forEach((node, nodeIndex) => {
+    node.classList.toggle('is-active-search-hit', nodeIndex === state.searchDetailResultIndex);
+  });
+  hits[state.searchDetailResultIndex]?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+function renderSearchDetail() {
+  const day = getSearchDayByDate(state.searchDetailDate);
+  dom.searchDetailTitle.textContent = day?.dateLabel || 'Search result';
+  dom.searchDetailSubtitle.textContent = searchMatchLabel(day || { matchCount: 0 });
+  dom.searchDetailBody.innerHTML = buildSearchDetailBody(day);
+  focusSearchDetailResult(state.searchDetailResultIndex);
+}
+
+function buildSearchDetailBody(day) {
+  if (!day) return '<div class="empty-state"><h2>Search result not found</h2><p>Return to the search results and try again.</p></div>';
+  const mediaGrid = (day.matchedMedia || []).length
+    ? `<div class="photo-grid search-detail-grid">${day.matchedMedia.map((item) => `<div class="search-detail-media-card">${buildMediaTile(item, 'photo-grid-button', { badge: '<span class="media-badge-dot"></span>' })}<p class="search-detail-media-caption">${highlightPlainText(item.description || item.fileName || '', state.searchQuery)}</p></div>`).join('')}</div>`
+    : '<p class="search-detail-empty">No matching media descriptions in this entry.</p>';
+  const journalHtml = day.journal
+    ? `<section class="search-detail-section">
+        <div class="search-detail-section-head">
+          <h3>Journal</h3>
+        </div>
+        <div class="journal-wrap"><div class="journal-body">${highlightJournalHtml(day.journal.fullHtml, state.searchQuery)}</div></div>
+      </section>`
+    : '';
+  return `
+    <article class="search-detail-entry">
+      ${journalHtml}
+      <section class="search-detail-section">
+        <div class="search-detail-section-head">
+          <h3>Matched media</h3>
+        </div>
+        ${mediaGrid}
+      </section>
+    </article>
+  `;
+}
+
+function focusSearchDetailResult(index = state.searchDetailResultIndex) {
+  const hits = getSearchDetailHits();
+  if (!hits.length) {
+    dom.searchDetailPrevResult.disabled = true;
+    dom.searchDetailNextResult.disabled = true;
+    updateTopbarDateLabel();
+    return;
+  }
+  state.searchDetailResultIndex = clamp(index, 0, hits.length - 1);
+  dom.searchDetailPrevResult.disabled = state.searchDetailResultIndex <= 0;
+  dom.searchDetailNextResult.disabled = state.searchDetailResultIndex >= hits.length - 1;
+  hits.forEach((node, nodeIndex) => {
+    node.classList.toggle('is-active-search-hit', nodeIndex === state.searchDetailResultIndex);
+  });
+  updateTopbarDateLabel();
+  hits[state.searchDetailResultIndex]?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+function renderSearchDetail() {
+  dom.searchDetailBody.innerHTML = buildSearchDetailBody(getSearchDayByDate(state.searchDetailDate));
+  focusSearchDetailResult(state.searchDetailResultIndex);
+}
+
+function closeSearchDetail({ restoreScroll = true } = {}) {
+  showHomeView();
+  state.route = { view: 'home', scrollY: state.searchResultsScrollY || 0 };
+  syncTopbarSearchState();
+  if (!restoreScroll) return;
+  window.scrollTo({ top: state.searchResultsScrollY || 0, behavior: 'auto' });
+  requestAnimationFrame(() => {
+    updateActiveFromScroll();
+    syncScrollThumb();
+  });
+}
+
+function openSearchDetail(isoDate, { push = true, resultIndex = 0 } = {}) {
+  const day = getSearchDayByDate(isoDate);
+  if (!day) return;
+  if (state.route.view !== 'search-detail') state.searchResultsScrollY = window.scrollY;
+  state.searchDetailDate = isoDate;
+  state.searchDetailResultIndex = resultIndex;
+  state.route = { view: 'search-detail', entryDate: isoDate, resultIndex, scrollY: state.searchResultsScrollY };
+  renderSearchDetail();
+  showSearchDetailView();
+  syncTopbarSearchState();
+  if (push) history.pushState({ view: 'search-detail', entryDate: isoDate, resultIndex, scrollY: state.searchResultsScrollY }, '', `#search-${isoDate}`);
 }
 
 async function openYearView(year, { push = true } = {}) {
@@ -3356,7 +4885,7 @@ async function goHome({ push = false, focusDate = null, restoreScroll = true, sc
   if (focusDate) {
     await scrollToDate(focusDate, 'auto');
   } else if (restoreScroll) {
-    if (nextScrollY <= 8 && state.bootstrap?.lastDate) {
+    if (!state.searchMode && nextScrollY <= 8 && state.bootstrap?.lastDate) {
       await ensureTimelineContainsDate(state.bootstrap.lastDate, 'top');
     }
     window.scrollTo({ top: nextScrollY, behavior: 'auto' });
@@ -3366,6 +4895,10 @@ async function goHome({ push = false, focusDate = null, restoreScroll = true, sc
 async function routeToState(route, { fromPop = false } = {}) {
   if (!route || route.view === 'home') {
     await goHome({ push: false, focusDate: route?.focusDate || null, restoreScroll: !route?.focusDate, scrollY: route?.scrollY || 0 });
+    return;
+  }
+  if (route.view === 'search-detail') {
+    openSearchDetail(route.entryDate, { push: false, resultIndex: Number(route.resultIndex || 0) });
     return;
   }
   if (route.view === 'year') {
@@ -3404,6 +4937,11 @@ function attachEvents() {
   }
 
   function updateMobileTopbar(forceEvaluate = false) {
+    if (state.searchUiOpen) {
+      state.topbarHidden = false;
+      dom.body.classList.remove('topbar-hidden');
+      return;
+    }
     if (!isMobileViewport()) {
       state.topbarHidden = false;
       dom.body.classList.remove('topbar-hidden');
@@ -3426,14 +4964,36 @@ function attachEvents() {
   }
 
   dom.homeButton.addEventListener('click', () => {
+    if (state.searchUiOpen) {
+      if (state.route.view === 'search-detail') {
+        closeSearchDetail();
+        return;
+      }
+      closeSearchBar({ clear: true }).catch(console.error);
+      return;
+    }
     goToNewestTop().catch(console.error);
   });
 
   dom.uploadTopbarButton?.addEventListener('click', triggerTopbarUpload);
+  dom.topbarDateLabel?.addEventListener('click', () => {
+    if (state.searchUiOpen) return;
+    openJumpDateModal({ returnFocus: dom.topbarDateLabel });
+  });
   dom.searchToggleButton?.addEventListener('click', openSearchBar);
-  dom.searchCloseButton?.addEventListener('click', () => {
+  dom.searchBackButton?.addEventListener('click', () => {
+    if (state.route.view === 'search-detail') return closeSearchDetail();
     closeSearchBar({ clear: true }).catch(console.error);
   });
+  dom.searchCloseButton?.addEventListener('click', () => {
+    if (!dom.searchInput?.value.trim()) return;
+    dom.searchInput.value = '';
+    syncTopbarSearchState();
+    runSearch('').catch(console.error);
+    dom.searchInput?.focus();
+  });
+  dom.searchDetailPrevResult?.addEventListener('click', () => focusSearchDetailResult(state.searchDetailResultIndex - 1));
+  dom.searchDetailNextResult?.addEventListener('click', () => focusSearchDetailResult(state.searchDetailResultIndex + 1));
   dom.settingsButton.addEventListener('click', openSettings);
   dom.settingsCloseButton.addEventListener('click', closeSettings);
   dom.settingsModal.querySelector('.settings-backdrop').addEventListener('click', closeSettings);
@@ -3445,12 +5005,17 @@ function attachEvents() {
     closeSettings();
     openTodayEditor();
   });
+  dom.settingsJumpButton?.addEventListener('click', () => {
+    closeSettings();
+    openJumpDateModal({ returnFocus: dom.settingsButton });
+  });
   dom.settingsUploadButton?.addEventListener('click', () => {
     closeSettings();
-    triggerTopbarUpload();
+    openUploadForDateModal({ returnFocus: dom.settingsButton });
   });
-  dom.themeLight.addEventListener('click', () => setThemeChoice('light'));
-  dom.themeDark.addEventListener('click', () => setThemeChoice('dark'));
+  dom.themeChoices.forEach((button) => {
+    button.addEventListener('click', () => setThemeChoice(button.dataset.themeChoice));
+  });
   dom.logoutButton?.addEventListener('click', async () => {
     try {
       await fetchJson('/auth/logout', { method: 'POST' });
@@ -3508,7 +5073,7 @@ function attachEvents() {
     runSearch(dom.searchInput.value).catch(console.error);
   });
   dom.searchInput.addEventListener('input', () => {
-    dom.clearSearch.classList.toggle('hidden', !dom.searchInput.value.trim());
+    syncTopbarSearchState();
     window.clearTimeout(state.searchInputTimer);
     state.searchInputTimer = window.setTimeout(() => {
       runSearch(dom.searchInput.value).catch(console.error);
@@ -3517,6 +5082,7 @@ function attachEvents() {
   dom.searchInput.addEventListener('search', () => runSearch(dom.searchInput.value).catch(console.error));
   dom.clearSearch.addEventListener('click', () => {
     dom.searchInput.value = '';
+    syncTopbarSearchState();
     runSearch('').catch(console.error);
     dom.searchInput.focus();
   });
@@ -3530,10 +5096,19 @@ function attachEvents() {
     promptNewUploadFolder();
   });
   dom.uploadSetExifDate?.addEventListener('change', handleUploadSharedDateToggle);
+  dom.uploadDateModeToggle?.addEventListener('click', () => {
+    if (!dom.uploadSetExifDate) return;
+    dom.uploadSetExifDate.checked = !dom.uploadSetExifDate.checked;
+    handleUploadSharedDateToggle();
+  });
+  dom.uploadContextDateTrigger?.addEventListener('click', () => {
+    if (!dom.uploadSharedDate) return;
+    if (typeof dom.uploadSharedDate.showPicker === 'function') dom.uploadSharedDate.showPicker();
+    else dom.uploadSharedDate.click();
+  });
   dom.uploadSharedDate?.addEventListener('change', () => {
-    if (!dom.uploadSetExifDate?.checked || !isValidIsoDate(dom.uploadSharedDate?.value)) return;
-    applySharedUploadDate(dom.uploadSharedDate.value);
-    renderUploadPreviews();
+    if (!isValidIsoDate(dom.uploadSharedDate?.value)) return;
+    setUploadContextDate(dom.uploadSharedDate.value);
   });
   dom.uploadCancel?.addEventListener('click', cancelUploadMedia);
   dom.uploadAddFiles?.addEventListener('click', () => {
@@ -3577,14 +5152,151 @@ function attachEvents() {
       removeUploadFile(removeButton.dataset.uploadRemove);
       return;
     }
+    const resetButton = event.target.closest('[data-upload-reset]');
+    if (resetButton) {
+      resetUploadFileDateTime(resetButton.dataset.uploadReset);
+      renderUploadPreviews();
+      updateUploadUiState();
+      return;
+    }
     const dateTrigger = event.target.closest('[data-upload-date-trigger]');
-    if (dateTrigger) openUploadDatePicker(dateTrigger.dataset.uploadDateTrigger);
+    if (dateTrigger) {
+      openNativeUploadPicker(`[data-upload-date-input="${dateTrigger.dataset.uploadDateTrigger}"]`);
+      return;
+    }
+    const timeTrigger = event.target.closest('[data-upload-time-trigger]');
+    if (timeTrigger) {
+      openNativeUploadPicker(`[data-upload-time-input="${timeTrigger.dataset.uploadTimeTrigger}"]`);
+    }
   });
   dom.uploadPreviewList?.addEventListener('change', (event) => {
     const dateInput = event.target.closest('[data-upload-date-input]');
-    if (!dateInput || !isValidIsoDate(dateInput.value)) return;
-    setUploadFileDate(dateInput.dataset.uploadDateInput, dateInput.value);
-    renderUploadPreviews();
+    if (dateInput && isValidIsoDate(dateInput.value)) {
+      setUploadFileDate(dateInput.dataset.uploadDateInput, dateInput.value);
+      renderUploadPreviews();
+      updateUploadUiState();
+      return;
+    }
+    const timeInput = event.target.closest('[data-upload-time-input]');
+    if (timeInput) {
+      setUploadFileTime(timeInput.dataset.uploadTimeInput, timeInput.value);
+      renderUploadPreviews();
+      updateUploadUiState();
+    }
+  });
+  dom.calendarCloseButton?.addEventListener('click', () => closeCalendarModal());
+  dom.calendarCancelButton?.addEventListener('click', () => closeCalendarModal());
+  dom.calendarBackdrop?.addEventListener('click', () => closeCalendarModal());
+  dom.calendarPrevMonth?.addEventListener('click', () => navigateCalendarMonth(-1));
+  dom.calendarNextMonth?.addEventListener('click', () => navigateCalendarMonth(1));
+  dom.calendarConfirmButton?.addEventListener('click', () => {
+    confirmCalendarModal().catch(console.error);
+  });
+  dom.calendarGrid?.addEventListener('click', (event) => {
+    const dateButton = event.target.closest('[data-calendar-date]');
+    if (!dateButton || dateButton.disabled) return;
+    state.calendarModal.selectedDate = dateButton.dataset.calendarDate || '';
+    if (monthKeyFromIso(state.calendarModal.selectedDate) !== state.calendarModal.visibleMonth) {
+      state.calendarModal.visibleMonth = monthKeyFromIso(state.calendarModal.selectedDate);
+    }
+    renderCalendarModal();
+    if (state.calendarModal.context === 'jump-date') {
+      confirmCalendarModal().catch(console.error);
+      return;
+    }
+    focusCalendarDate(state.calendarModal.selectedDate);
+  });
+  dom.calendarWindow?.addEventListener('keydown', (event) => {
+    if (!state.calendarModal.isOpen) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeCalendarModal();
+      return;
+    }
+    const activeDateButton = document.activeElement?.closest?.('[data-calendar-date]');
+    if (!activeDateButton) return;
+    const currentDate = activeDateButton.dataset.calendarDate || state.calendarModal.selectedDate;
+    let nextDate = '';
+    if (event.key === 'ArrowLeft') nextDate = addDaysToIso(currentDate, -1);
+    if (event.key === 'ArrowRight') nextDate = addDaysToIso(currentDate, 1);
+    if (event.key === 'ArrowUp') nextDate = addDaysToIso(currentDate, -7);
+    if (event.key === 'ArrowDown') nextDate = addDaysToIso(currentDate, 7);
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      if (isCalendarDateEnabled(currentDate)) {
+        state.calendarModal.selectedDate = currentDate;
+        renderCalendarModal();
+        if (state.calendarModal.context === 'jump-date') {
+          confirmCalendarModal().catch(console.error);
+        }
+      }
+      return;
+    }
+    if (!nextDate) return;
+    event.preventDefault();
+    state.calendarModal.visibleMonth = monthKeyFromIso(nextDate) || state.calendarModal.visibleMonth;
+    if (isCalendarDateEnabled(nextDate)) state.calendarModal.selectedDate = nextDate;
+    renderCalendarModal();
+    focusCalendarDate(nextDate);
+  });
+  dom.timeCloseButton?.addEventListener('click', () => closeTimeModal());
+  dom.timeCancelButton?.addEventListener('click', () => closeTimeModal());
+  dom.timeBackdrop?.addEventListener('click', () => closeTimeModal());
+  dom.timeConfirmButton?.addEventListener('click', () => {
+    confirmTimeModal().catch(console.error);
+  });
+  [dom.timeHourLane, dom.timeMinuteLane, dom.timePeriodLane].forEach((lane) => {
+    lane?.addEventListener('scroll', () => {
+      if (!state.timeModal.isOpen || state.timeModal.busy) return;
+      const suppressedUntil = timeSpinnerSuppressUntil.get(lane) || 0;
+      if (performance.now() < suppressedUntil) return;
+      scheduleTimeLaneSnap(lane, lane.dataset.timeLane || '');
+    });
+    lane?.addEventListener('click', (event) => {
+      const option = event.target.closest('[data-time-option]');
+      if (!option || state.timeModal.busy) return;
+      const part = option.dataset.timeOption || lane.dataset.timeLane || '';
+      updateSelectedTimeForLaneValue(part, option.dataset.timeValue || '');
+      centerTimeLaneOnValue(part, option.dataset.timeValue || '', { behavior: 'smooth' });
+      lane.focus({ preventScroll: true });
+    });
+  });
+  dom.timeWindow?.addEventListener('keydown', (event) => {
+    if (!state.timeModal.isOpen) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeTimeModal();
+      return;
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      confirmTimeModal().catch(console.error);
+      return;
+    }
+    const activeLane = document.activeElement?.closest?.('[data-time-lane]');
+    if (!activeLane) return;
+    const activePart = activeLane.dataset.timeLane || 'hour';
+    const laneOrder = [dom.timeHourLane, dom.timeMinuteLane, dom.timePeriodLane].filter(Boolean);
+    const laneIndex = laneOrder.indexOf(activeLane);
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      shiftTimePart(activePart, -1);
+      return;
+    }
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      shiftTimePart(activePart, 1);
+      return;
+    }
+    if (event.key === 'ArrowRight' && laneIndex >= 0) {
+      event.preventDefault();
+      laneOrder[(laneIndex + 1) % laneOrder.length]?.focus({ preventScroll: true });
+      return;
+    }
+    if (event.key === 'ArrowLeft' && laneIndex >= 0) {
+      event.preventDefault();
+      laneOrder[(laneIndex - 1 + laneOrder.length) % laneOrder.length]?.focus({ preventScroll: true });
+    }
   });
   dom.uploadFolderTree?.addEventListener('input', (event) => {
     if (event.target?.id === 'uploadNewFolderInput' && state.uploadCreatingFolder) {
@@ -3605,9 +5317,21 @@ function attachEvents() {
 
 
   document.addEventListener('click', (event) => {
+    const searchFolder = event.target.closest('[data-search-folder]');
+    if (searchFolder) {
+      event.preventDefault();
+      toggleSearchFolder(searchFolder.dataset.searchFolder);
+      return;
+    }
     const mediaButton = event.target.closest('.open-media');
     if (mediaButton) {
       openViewerById(mediaButton.dataset.mediaId);
+      return;
+    }
+    const searchDetail = event.target.closest('[data-open-search-detail]');
+    if (searchDetail) {
+      event.preventDefault();
+      openSearchDetail(searchDetail.dataset.openSearchDetail);
       return;
     }
     const gapCard = event.target.closest('[data-gap-range-start][data-gap-range-end]');
@@ -3638,11 +5362,28 @@ function attachEvents() {
     }
   });
 
+  document.addEventListener('keydown', (event) => {
+    const entryCard = event.target.closest?.('[data-open-search-detail]');
+    if (!entryCard) return;
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      openSearchDetail(entryCard.dataset.openSearchDetail);
+    }
+  });
+  dom.searchDetailBody?.addEventListener('click', (event) => {
+    const target = event.target.closest('.search-hit');
+    if (!target) return;
+    const targets = Array.from(dom.searchDetailBody.querySelectorAll('.search-hit'));
+    const index = targets.indexOf(target);
+    if (index >= 0) focusSearchDetailResult(index);
+  });
+
   let scrollRaf = 0;
   window.addEventListener('scroll', () => {
     showScrollHandle();
     showScrollTopButton();
     updateMobileTopbar();
+    if (state.searchMode && state.route.view === 'home') state.searchResultsScrollY = window.scrollY;
     if (scrollRaf) return;
     scrollRaf = requestAnimationFrame(() => {
       scrollRaf = 0;
@@ -3702,6 +5443,14 @@ function attachEvents() {
 
   document.addEventListener('keydown', (event) => {
     if (mediaViewer.isOpen()) return;
+    if (event.key === 'Escape' && state.timeModal.isOpen) {
+      closeTimeModal();
+      return;
+    }
+    if (event.key === 'Escape' && state.calendarModal.isOpen) {
+      closeCalendarModal();
+      return;
+    }
     if (event.key === 'Escape' && state.settingsOpen) { closeSettings(); return; }
     if (event.key === 'Escape' && state.searchUiOpen) {
       closeSearchBar({ clear: true }).catch(console.error);

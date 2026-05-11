@@ -207,9 +207,11 @@ async function writeJson(filePath, value) {
   await fs.promises.writeFile(filePath, JSON.stringify(value, null, 2), 'utf8');
 }
 
-async function mapLimit(items, limit, worker) {
+async function mapLimit(items, limit, worker, options = {}) {
+  const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
   const results = new Array(items.length);
   let index = 0;
+  let completed = 0;
 
   async function runner() {
     while (true) {
@@ -217,6 +219,8 @@ async function mapLimit(items, limit, worker) {
       index += 1;
       if (currentIndex >= items.length) return;
       results[currentIndex] = await worker(items[currentIndex], currentIndex);
+      completed += 1;
+      if (onProgress) onProgress(completed, items.length, currentIndex);
     }
   }
 

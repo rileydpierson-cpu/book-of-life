@@ -79,7 +79,7 @@ class TimelineIndexer {
       this.mediaInventory = cachedInventory.entries;
       this.mediaInventorySignature = String(cachedInventory.signature || '');
     }
-    await this.rebuild('startup');
+    return this.rebuild('startup');
   }
 
   scheduleRebuild(reason = 'scheduled') {
@@ -106,14 +106,28 @@ class TimelineIndexer {
     }
 
     this.isBuilding = true;
+    const progress = this.createRebuildProgress(reason);
+    const startedAt = Date.now();
     try {
-      const inventory = await this.scanMediaInventory();
-      const nextState = await this.buildState({ inventory });
+      progress?.setStage('Scanning media folders', Math.max(this.photoRoots.length, 1));
+      const inventory = await this.scanMediaInventory({ progress });
+      const nextState = await this.buildState({ inventory, progress });
+      progress?.setStage('Writing cache files', 2);
       this.state = nextState;
       await writeJson(this.indexCachePath, this.serializeState(nextState));
+      progress?.increment();
       await this.persistMediaInventory(inventory);
-      console.log(`LifeServer index rebuilt (${reason}) with ${nextState.dayKeys.length} days.`);
+      progress?.increment();
+      progress?.complete();
+      const durationMs = Date.now() - startedAt;
+      console.log(`LifeServer index rebuilt (${reason}) with ${nextState.dayKeys.length} days in ${formatDuration(durationMs)}.`);
+      return {
+        reason,
+        dayCount: nextState.dayKeys.length,
+        durationMs
+      };
     } finally {
+      progress?.clear();
       this.isBuilding = false;
       if (this.rebuildQueued) {
         this.rebuildQueued = false;
@@ -139,7 +153,7 @@ class TimelineIndexer {
     return photo ? this.thumbUrlForPhoto(photo) : `/media/thumb/${photoId}`;
   }
 
-  async buildState({ inventory = null } = {}) {
+  async buildState({ inventory = null, progress = null } = {}) {
     const dayMap = new Map();
     const photosById = new Map();
     const journalImages = await this.indexJournalImages();
@@ -158,7 +172,7 @@ class TimelineIndexer {
     });
     const nextMediaMetaCache = {};
 
-    await this.indexJournals(dayMap, journalImages);
+    await this.indexJournals(dayMap, journalImages, progress);
     await this.indexMedia(
       dayMap,
       photosById,
@@ -169,7 +183,8 @@ class TimelineIndexer {
       mediaLikes,
       mediaDateOverrides,
       portableMetadata,
-      inventory?.records || null
+      inventory?.records || null,
+      progress
     );
 
     const derivedTags = {};
@@ -213,7 +228,7 @@ class TimelineIndexer {
     return built;
   }
 
-  async scanMediaInventory() {
+  async scanMediaInventory({ progress = null } = {}) {
     const records = [];
     const entries = {};
 
@@ -230,6 +245,7 @@ class TimelineIndexer {
           // Ignore files that disappear during scan.
         }
       }
+      progress?.increment();
     }
 
     return {
@@ -269,25 +285,31 @@ class TimelineIndexer {
     return imageMap;
   }
 
-  async indexJournals(dayMap, journalImages) {
+  async indexJournals(dayMap, journalImages, progress = null) {
     const journalRoot = path.join(this.config.paths.journalVault, this.config.paths.journalFolderName);
     const files = await walkFiles(journalRoot);
     const journalFiles = files.filter((filePath) => path.extname(filePath).toLowerCase() === '.md');
+    progress?.setStage('Indexing journal entries', Math.max(journalFiles.length, 1));
 
     for (const filePath of journalFiles) {
       const isoDate = parseJournalFilenameDate(path.basename(filePath));
-      if (!isoDate) continue;
+      if (!isoDate) {
+        progress?.increment();
+        continue;
+      }
 
       const raw = await fs.promises.readFile(filePath, 'utf8');
       const day = this.getOrCreateDay(dayMap, isoDate);
       day.journal = this.createJournalRecord(filePath, raw, journalImages);
+      progress?.increment();
     }
   }
 
-  async indexMedia(dayMap, photosById, mediaMetaCache, nextMediaMetaCache, mediaTags = {}, mediaDescriptions = {}, mediaLikes = {}, mediaDateOverrides = {}, portableMetadata = {}, inventoryRecords = null) {
+  async indexMedia(dayMap, photosById, mediaMetaCache, nextMediaMetaCache, mediaTags = {}, mediaDescriptions = {}, mediaLikes = {}, mediaDateOverrides = {}, portableMetadata = {}, inventoryRecords = null, progress = null) {
     const validStats = Array.isArray(inventoryRecords)
       ? inventoryRecords
       : (await this.scanMediaInventory()).records;
+    progress?.setStage('Indexing media library', Math.max(validStats.length, 1));
     const mediaRecords = await mapLimit(validStats, 6, async ({ filePath, stat, signature }) => {
       const record = await this.buildPhotoRecord({
         filePath,
@@ -306,9 +328,16 @@ class TimelineIndexer {
       const day = this.getOrCreateDay(dayMap, record.isoDate);
       day.photos.push(record);
       return record;
+    }, {
+      onProgress: () => progress?.increment()
     });
 
     return mediaRecords.filter(Boolean);
+  }
+
+  createRebuildProgress(reason) {
+    if (reason !== 'startup' || !process.stdout.isTTY) return null;
+    return new StartupProgressRenderer('LifeServer startup');
   }
 
   async buildPhotoRecord({
@@ -682,55 +711,118 @@ class TimelineIndexer {
   search(query) {
     const rawQuery = String(query || '').trim();
     const term = rawQuery.toLowerCase();
-    if (!term) return { query: '', total: 0, days: [] };
+    if (!term) return { query: '', total: 0, days: [], folders: [] };
 
     const matches = [];
+    const folderCounts = new Map();
     for (let index = this.state.dayKeys.length - 1; index >= 0; index -= 1) {
       const isoDate = this.state.dayKeys[index];
       const day = this.state.days.get(isoDate);
-      if (day?.searchText?.includes(term)) matches.push(this.serializeDay(isoDate, { searchTerm: rawQuery }));
+      if (!day) continue;
+      const journalMatchCount = this.countSearchOccurrences(day.journalSearchText || '', term);
+      const journalMatch = journalMatchCount > 0;
+      const matchedMedia = (day.photos || [])
+        .filter((photo) => String(photo.description || '').toLowerCase().includes(term))
+        .sort((a, b) => b.capturedAt.localeCompare(a.capturedAt) || a.filePath.localeCompare(b.filePath))
+        .map((photo) => {
+          const serialized = this.serializePhoto(photo);
+          serialized.searchMatch = true;
+          serialized.searchMatchCount = this.countSearchOccurrences(serialized.description || '', term);
+          const folderKey = `${serialized.folderRootId || ''}::${serialized.folder || '.'}`;
+          if (!folderCounts.has(folderKey)) {
+            folderCounts.set(folderKey, {
+              key: folderKey,
+              rootId: serialized.folderRootId || '',
+              rootLabel: serialized.folderRootLabel || '',
+              folder: serialized.folder || '.',
+              label: `${serialized.folderRootLabel || ''}${serialized.folder && serialized.folder !== '.' ? ` / ${serialized.folder}` : ''}`.trim() || '(root)',
+              count: 0
+            });
+          }
+          folderCounts.get(folderKey).count += 1;
+          return serialized;
+        });
+      if (journalMatch || matchedMedia.length) {
+        matches.push(this.serializeDay(isoDate, {
+          searchTerm: rawQuery,
+          journalMatch,
+          journalMatchCount,
+          matchedMedia
+        }));
+      }
       if (matches.length >= 200) break;
     }
 
-    return { query, total: matches.length, days: matches };
+    return {
+      query: rawQuery,
+      total: matches.length,
+      days: matches,
+      folders: [...folderCounts.values()].sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
+    };
   }
 
-  serializeDay(isoDate, { searchTerm = '' } = {}) {
+  countSearchOccurrences(text, term) {
+    const haystack = String(text || '').toLowerCase();
+    const needle = String(term || '').toLowerCase().trim();
+    if (!needle) return 0;
+    let count = 0;
+    let start = 0;
+    while (start < haystack.length) {
+      const index = haystack.indexOf(needle, start);
+      if (index < 0) break;
+      count += 1;
+      start = index + needle.length;
+    }
+    return count;
+  }
+
+  serializePhoto(photo) {
+    return {
+      id: photo.id,
+      type: photo.type,
+      fileName: photo.fileName,
+      baseName: photo.baseName,
+      thumbUrl: this.thumbUrlForPhoto(photo),
+      previewUrl: this.previewUrlForPhoto(photo),
+      fullUrl: `/media/full/${photo.id}`,
+      isoDate: photo.isoDate,
+      dateLabel: longDateLabel(photo.isoDate),
+      capturedAt: photo.capturedAt,
+      dateSource: photo.dateSource,
+      size: photo.size,
+      ext: photo.ext,
+      width: photo.width || 0,
+      height: photo.height || 0,
+      folder: photo.folder || '.',
+      folderRootLabel: photo.folderRootLabel || '',
+      folderRootId: photo.folderRootId || '',
+      relativePath: photo.relativePath || photo.fileName,
+      tags: Array.isArray(photo.tags) ? photo.tags : [],
+      description: typeof photo.description === 'string' ? photo.description : '',
+      liked: Boolean(photo.liked)
+    };
+  }
+
+  serializeDay(isoDate, { searchTerm = '', journalMatch = false, journalMatchCount = 0, matchedMedia = null } = {}) {
     const day = this.state.days.get(isoDate);
     const preview = day.journal ? this.buildJournalPreview(day.journal.raw, { searchTerm }) : null;
+    const orderedPhotos = day.photos
+      .slice()
+      .sort((a, b) => b.capturedAt.localeCompare(a.capturedAt) || a.filePath.localeCompare(b.filePath))
+      .map((photo) => this.serializePhoto(photo));
+    const matched = Array.isArray(matchedMedia) ? matchedMedia : [];
     return {
       isoDate: day.isoDate,
       dateLabel: day.dateLabel,
       monthKey: day.monthKey,
       monthLabel: day.monthLabel,
       photoCount: day.photos.length,
-      photos: day.photos
-        .slice()
-        .sort((a, b) => b.capturedAt.localeCompare(a.capturedAt) || a.filePath.localeCompare(b.filePath))
-        .map((photo) => ({
-          id: photo.id,
-          type: photo.type,
-          fileName: photo.fileName,
-          baseName: photo.baseName,
-          thumbUrl: this.thumbUrlForPhoto(photo),
-          previewUrl: this.previewUrlForPhoto(photo),
-          fullUrl: `/media/full/${photo.id}`,
-          isoDate: photo.isoDate,
-          dateLabel: longDateLabel(photo.isoDate),
-          capturedAt: photo.capturedAt,
-          dateSource: photo.dateSource,
-          size: photo.size,
-          ext: photo.ext,
-          width: photo.width || 0,
-          height: photo.height || 0,
-          folder: photo.folder || '.',
-          folderRootLabel: photo.folderRootLabel || '',
-          folderRootId: photo.folderRootId || '',
-          relativePath: photo.relativePath || photo.fileName,
-          tags: Array.isArray(photo.tags) ? photo.tags : [],
-          description: typeof photo.description === 'string' ? photo.description : '',
-          liked: Boolean(photo.liked)
-        })),
+      photos: orderedPhotos,
+      journalMatch: Boolean(journalMatch),
+      journalMatchCount,
+      matchedMediaCount: matched.length,
+      matchedMedia: matched,
+      matchCount: journalMatchCount + matched.reduce((sum, item) => sum + Math.max(1, Number(item.searchMatchCount || 0)), 0),
       journal: day.journal
         ? {
             title: day.journal.title,
@@ -792,11 +884,15 @@ class TimelineIndexer {
       }
       day.photos = (day.photos || []).slice().sort((a, b) => a.capturedAt.localeCompare(b.capturedAt) || a.filePath.localeCompare(b.filePath));
       day.photoIds = day.photos.map((photo) => photo.id);
-      day.searchText = [
+      day.journalSearchText = [
         day.dateLabel,
         shortDateLabel(isoDate),
         day.journal?.title || '',
         day.journal?.raw || ''
+      ].join('\n').toLowerCase();
+      day.searchText = [
+        day.journalSearchText,
+        ...day.photos.map((photo) => String(photo.description || ''))
       ].join('\n').toLowerCase();
       const year = Number(isoDate.slice(0, 4));
       const monthKey = slugMonth(new Date(`${isoDate}T12:00:00Z`));
@@ -841,7 +937,9 @@ class TimelineIndexer {
         index,
         isoDate,
         label: shortDateLabel(isoDate),
-        longLabel: longDateLabel(isoDate)
+        longLabel: longDateLabel(isoDate),
+        hasJournal: Boolean(day.journal),
+        photoCount: day.photos.length
       });
     });
 
@@ -1308,9 +1406,49 @@ class TimelineIndexer {
     }
 
     await writeJson(this.mediaDateOverridesCachePath, this.state.mediaDateOverrides);
-    await this.rebuild(wroteToFile ? 'media-date-time-write' : 'media-date-time-sidecar');
-    const nextPhoto = this.getPhoto(hash(photo.filePath)) || this.getPhoto(photoId);
+    const nextPhoto = await this.reindexPhotoRecord(photoId);
     return nextPhoto ? { ...nextPhoto } : null;
+  }
+
+  async reindexPhotoRecord(photoId) {
+    const previousPhoto = this.getPhoto(photoId);
+    if (!previousPhoto) return null;
+
+    const stat = await fs.promises.stat(previousPhoto.filePath);
+    const mediaMetaCache = await readJson(this.mediaMetaCachePath, {});
+    this.prunePhotoMetaCache(mediaMetaCache, previousPhoto.filePath, previousPhoto);
+
+    const nextMediaMetaCache = { ...mediaMetaCache };
+    const portableMetadata = await this.portableMediaStore.loadAll();
+    const record = await this.buildPhotoRecord({
+      filePath: previousPhoto.filePath,
+      stat,
+      signature: hash(`${previousPhoto.filePath}|${stat.size}|${stat.mtimeMs}`),
+      mediaMetaCache,
+      nextMediaMetaCache,
+      mediaTags: this.state.mediaTags || {},
+      mediaDescriptions: this.state.mediaDescriptions || {},
+      mediaLikes: this.state.mediaLikes || {},
+      mediaDateOverrides: this.state.mediaDateOverrides || {},
+      portableMetadata
+    });
+    if (!record) return null;
+
+    this.removePhotoFromState(photoId, { removeMetadata: false });
+    this.insertPhotoIntoState(record);
+    this.recomputeDerivedState();
+
+    await writeJson(this.mediaMetaCachePath, nextMediaMetaCache);
+    await this.persistState();
+
+    const inventoryEntries = { ...(this.mediaInventory || {}) };
+    inventoryEntries[record.filePath] = `${stat.size}:${Math.trunc(stat.mtimeMs)}`;
+    await this.persistMediaInventory({
+      entries: inventoryEntries,
+      signature: this.computeInventorySignature(inventoryEntries)
+    });
+
+    return record;
   }
 
   async setMediaDateOverridesByPath(overrides) {
@@ -1432,6 +1570,141 @@ class TimelineIndexer {
       mediaLikes: payload.mediaLikes || {},
       mediaDateOverrides: payload.mediaDateOverrides || {}
     };
+  }
+}
+
+function formatDuration(durationMs) {
+  const ms = Math.max(0, Number(durationMs) || 0);
+  if (ms < 1000) return `${ms}ms`;
+  const totalSeconds = ms / 1000;
+  if (totalSeconds < 10) return `${totalSeconds.toFixed(1)}s`;
+  if (totalSeconds < 60) return `${Math.round(totalSeconds)}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = Math.round(totalSeconds % 60);
+  return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+}
+
+class StartupProgressRenderer {
+  constructor(label) {
+    this.label = label;
+    this.activeStageLabel = '';
+    this.linesRendered = 0;
+    this.tasks = [];
+    this.tasksByLabel = new Map();
+  }
+
+  setStage(stageLabel, total = 0) {
+    if (this.activeStageLabel && this.activeStageLabel !== stageLabel) {
+      this.finishTask(this.activeStageLabel);
+    }
+
+    this.activeStageLabel = stageLabel;
+    let task = this.tasksByLabel.get(stageLabel);
+    if (!task) {
+      task = {
+        stageLabel,
+        total: Math.max(0, Number(total) || 0),
+        current: 0,
+        startedAt: Date.now(),
+        completedAt: 0,
+        done: false
+      };
+      this.tasks.push(task);
+      this.tasksByLabel.set(stageLabel, task);
+    } else {
+      task.total = Math.max(0, Number(total) || 0);
+      task.current = 0;
+      task.startedAt = Date.now();
+      task.completedAt = 0;
+      task.done = false;
+    }
+
+    this.render();
+  }
+
+  increment(amount = 1) {
+    if (!this.activeStageLabel) return;
+    const task = this.tasksByLabel.get(this.activeStageLabel);
+    if (!task || task.done) return;
+    const next = task.current + Math.max(1, Number(amount) || 1);
+    task.current = task.total > 0 ? Math.min(task.total, next) : next;
+    this.render();
+  }
+
+  complete() {
+    if (this.activeStageLabel) this.finishTask(this.activeStageLabel);
+    this.render();
+    process.stdout.write('\n');
+    this.linesRendered = 0;
+  }
+
+  clear() {
+    if (!this.linesRendered) return;
+    if (this.linesRendered > 1) {
+      process.stdout.write(`\x1b[${this.linesRendered - 1}A`);
+    }
+    for (let index = 0; index < this.linesRendered; index += 1) {
+      process.stdout.write('\r\x1b[2K');
+      if (index < this.linesRendered - 1) process.stdout.write('\x1b[1B');
+    }
+    if (this.linesRendered > 1) {
+      process.stdout.write(`\x1b[${this.linesRendered - 1}A`);
+    }
+    process.stdout.write('\r');
+    this.linesRendered = 0;
+  }
+
+  finishTask(stageLabel) {
+    const task = this.tasksByLabel.get(stageLabel);
+    if (!task || task.done) return;
+    task.done = true;
+    task.current = task.total > 0 ? task.total : task.current;
+    task.completedAt = Date.now();
+    if (this.activeStageLabel === stageLabel) this.activeStageLabel = '';
+  }
+
+  render() {
+    const lines = [
+      `${this.label}:`
+    ];
+    for (const task of this.tasks) {
+      lines.push(this.renderTask(task));
+    }
+
+      if (this.linesRendered > 1) {
+        process.stdout.write(`\x1b[${this.linesRendered - 1}A`);
+      }
+
+    lines.forEach((line, index) => {
+      process.stdout.write(`\r\x1b[2K${line}`);
+      if (index < lines.length - 1) process.stdout.write('\n');
+    });
+
+    this.linesRendered = lines.length;
+  }
+
+  renderTask(task) {
+    const width = 24;
+    const ratio = task.total > 0
+      ? Math.max(0, Math.min(1, task.current / task.total))
+      : (task.done ? 1 : 0);
+    const filled = Math.round(ratio * width);
+    const bar = `${'='.repeat(filled)}${'-'.repeat(width - filled)}`;
+    const percent = `${String(Math.round(ratio * 100)).padStart(3, ' ')}%`;
+    const detail = task.total > 0 ? `${task.current}/${task.total}` : `${task.current}`;
+    const eta = task.done
+      ? `done in ${formatDuration(task.completedAt - task.startedAt)}`
+      : this.renderEta(task);
+    return `  [${bar}] ${percent} ${task.stageLabel} ${detail} | ${eta}`;
+  }
+
+  renderEta(task) {
+    if (task.current <= 0 || task.total <= 0) return 'ETA --';
+    const elapsedMs = Date.now() - task.startedAt;
+    if (elapsedMs < 250) return 'ETA --';
+    const remainingUnits = Math.max(0, task.total - task.current);
+    const msPerUnit = elapsedMs / Math.max(1, task.current);
+    return `ETA ${formatDuration(Math.round(remainingUnits * msPerUnit))}`;
   }
 }
 

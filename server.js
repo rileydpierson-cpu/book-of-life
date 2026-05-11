@@ -170,7 +170,8 @@ async function copyUploadedFileWithOptionalDate({
   file,
   destination,
   setExifDate,
-  targetIsoDate
+  targetIsoDate,
+  targetCapturedAt
 }) {
   if (!setExifDate) {
     await copyUploadedFilePreservingOriginal(file, destination);
@@ -179,14 +180,14 @@ async function copyUploadedFileWithOptionalDate({
 
   if (isExifWritableImage(destination)) {
     try {
-      await writeExifDatedImage(file.path, destination, targetIsoDate);
+      await writeExifDatedImage(file.path, destination, targetIsoDate, { capturedAt: targetCapturedAt });
       return true;
     } catch (error) {
       console.warn(`Upload metadata write skipped for ${destination}: ${error.message}`);
     }
   } else if (isVideoMetadataWritable(destination)) {
     try {
-      await writeVideoCreatedDate(file.path, destination, targetIsoDate);
+      await writeVideoCreatedDate(file.path, destination, targetIsoDate, { capturedAt: targetCapturedAt });
       return true;
     } catch (error) {
       console.warn(`Upload metadata write skipped for ${destination}: ${error.message}`);
@@ -198,6 +199,7 @@ async function copyUploadedFileWithOptionalDate({
 }
 
 async function main() {
+  const startupStartedAt = Date.now();
   const projectRoot = __dirname;
   const publicDir = path.join(projectRoot, 'public');
   const config = loadConfig(projectRoot);
@@ -211,7 +213,7 @@ async function main() {
   app.use(express.json({ limit: '8mb' }));
   app.use(express.urlencoded({ extended: false, limit: '8mb' }));
 
-  await indexer.init();
+  const initialBuild = await indexer.init();
   setInterval(() => indexer.scheduleRefresh('interval'), config.indexing.rebuildIntervalMs).unref();
 
   app.use('/vendor/phosphor/regular', express.static(path.join(projectRoot, 'node_modules', '@phosphor-icons', 'web', 'src', 'regular'), {
@@ -423,11 +425,27 @@ async function main() {
       const relativePath = String(req.body?.relativePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
       const targetIsoDate = typeof req.body?.targetIsoDate === 'string' ? req.body.targetIsoDate : '';
       let fileDates = [];
+      let fileDateTimes = [];
       try {
         const parsed = JSON.parse(typeof req.body?.fileDates === 'string' ? req.body.fileDates : '[]');
         fileDates = Array.isArray(parsed) ? parsed.map((value) => (isValidIsoDate(value) ? value : '')) : [];
       } catch (error) {
         fileDates = [];
+      }
+      try {
+        const parsed = JSON.parse(typeof req.body?.fileDateTimes === 'string' ? req.body.fileDateTimes : '[]');
+        fileDateTimes = Array.isArray(parsed)
+          ? parsed.map((value) => {
+              if (!value || typeof value !== 'object') return null;
+              const isoDate = isValidIsoDate(value.isoDate) ? value.isoDate : '';
+              const capturedAt = typeof value.capturedAt === 'string' && /T\d{2}:\d{2}:\d{2}/.test(value.capturedAt)
+                ? value.capturedAt
+                : (isoDate ? `${isoDate}T12:00:00.000Z` : '');
+              return isoDate ? { isoDate, capturedAt } : null;
+            })
+          : [];
+      } catch (error) {
+        fileDateTimes = [];
       }
       const selectedRoot = config.paths.photoFolders[Number(rootId)];
       if (!selectedRoot) {
@@ -447,18 +465,22 @@ async function main() {
       for (const [index, file] of files.entries()) {
         const original = sanitizeFileName(file.originalname || path.basename(file.path));
         const destination = uniqueDestinationPath(destinationDir, original);
-        const perFileIsoDate = fileDates[index] || targetIsoDate || '';
+        const perFileDateTime = fileDateTimes[index] || null;
+        const perFileIsoDate = perFileDateTime?.isoDate || fileDates[index] || targetIsoDate || '';
+        const perFileCapturedAt = perFileDateTime?.capturedAt || (isValidIsoDate(perFileIsoDate) ? `${perFileIsoDate}T12:00:00.000Z` : '');
         try {
           const createdDateApplied = await copyUploadedFileWithOptionalDate({
             file,
             destination,
             setExifDate: req.body?.setExifDate === '1' && isValidIsoDate(perFileIsoDate),
-            targetIsoDate: perFileIsoDate
+            targetIsoDate: perFileIsoDate,
+            targetCapturedAt: perFileCapturedAt
           });
           uploadedPaths.push(destination);
           if (isValidIsoDate(perFileIsoDate)) {
             dateOverrides[destination] = {
               isoDate: perFileIsoDate,
+              capturedAt: perFileCapturedAt,
               source: 'upload'
             };
           }
@@ -703,9 +725,27 @@ async function main() {
     sendNoStoreFile(res, path.join(publicDir, 'index.html'));
   });
 
-  app.listen(config.server.port, () => {
-    console.log(`LifeServer running on port ${config.server.port}`);
+  await new Promise((resolve, reject) => {
+    const server = app.listen(config.server.port, () => {
+      const startupDurationMs = Date.now() - startupStartedAt;
+      const indexBuildDurationMs = initialBuild?.durationMs || 0;
+      console.log(`LifeServer running on port ${config.server.port} after ${formatStartupDuration(startupDurationMs)} total startup.`);
+      console.log(`LifeServer startup summary: index build ${formatStartupDuration(indexBuildDurationMs)}, server ready ${formatStartupDuration(startupDurationMs)}.`);
+      resolve(server);
+    });
+    server.on('error', reject);
   });
+}
+
+function formatStartupDuration(durationMs) {
+  const ms = Math.max(0, Number(durationMs) || 0);
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 10) return `${seconds.toFixed(1)}s`;
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainderSeconds = Math.round(seconds % 60);
+  return `${minutes}m ${String(remainderSeconds).padStart(2, '0')}s`;
 }
 
 main().catch((error) => {

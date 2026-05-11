@@ -210,10 +210,6 @@ body.viewer-open {
   border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
 }
 
-.viewer-like-button.is-saving {
-  opacity: 0.72;
-}
-
 .viewer-nav {
   position: absolute;
   top: 50%;
@@ -444,7 +440,6 @@ body.viewer-open {
   outline: none;
   text-align: left;
   background: linear-gradient(45deg, color-mix(in srgb, var(--paper-strong) 100%, transparent), color-mix(in srgb, var(--paper-strong) 75%, transparent));
-  border: solid 1px white;
 }
 
 .viewer-toolbar {
@@ -567,6 +562,14 @@ body.viewer-open {
   backdrop-filter: blur(18px);
 }
 
+.viewer-details-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 1;
+  display: none;
+}
+
 .viewer-details.open {
   box-shadow: var(--shadow);
   transform: translate3d(0, var(--viewer-details-offset), 0);
@@ -680,6 +683,10 @@ body.viewer-open {
   text-align: left;
   cursor: pointer;
   gap: 10px;
+}
+.viewer-picker-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .viewer-field-suffix {
@@ -845,6 +852,14 @@ body.viewer-open {
       opacity 220ms ease;
   }
 
+  .viewer-details-close {
+    display: inline-flex;
+  }
+
+  .viewer-details-grid {
+    padding-top: 34px;
+  }
+
   .viewer-details.open {
     transform: translate3d(calc(-1 * var(--viewer-details-desktop-shift)), 0, 0);
   }
@@ -899,6 +914,10 @@ body.viewer-open {
     border-left: 0;
     border-radius: 0;
     box-shadow: none;
+  }
+
+  .viewer-details-close {
+    display: none;
   }
 
   .viewer-description-summary {

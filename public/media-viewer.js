@@ -41,6 +41,13 @@
     return `${value >= 10 || unitIndex === 0 ? Math.round(value) : value.toFixed(1)} ${units[unitIndex]}`;
   }
 
+  function formatIsoDateLabel(isoDate) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(isoDate || ''))) return 'Choose a date';
+    const [year, month, day] = String(isoDate).split('-').map(Number);
+    const date = new Date(Date.UTC(year, (month || 1) - 1, day || 1));
+    return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' }).format(date);
+  }
+
   function isTextEntryField(node) {
     return node instanceof Element
       && Boolean(node.closest('input:not([type="button"]):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="date"]), textarea, select, option'));
@@ -162,13 +169,25 @@
       return serviceWorkerRegistrationPromise;
     };
 
+    const cloneResponse = (response) => {
+      if (!response) return null;
+      try {
+        return response.clone();
+      } catch (error) {
+        return null;
+      }
+    };
+
     const fetchCachedResponse = async (value, { fallbackFetch = false } = {}) => {
       const url = normalizeUrl(value);
       const route = getMediaRouteConfigForUrl(url);
       if (!url || !route) return null;
 
       const cacheKey = `${route.cacheName}:${url}`;
-      if (inflight.has(cacheKey)) return inflight.get(cacheKey);
+      if (inflight.has(cacheKey)) {
+        const shared = await inflight.get(cacheKey);
+        return cloneResponse(shared);
+      }
 
       const pending = (async () => {
         if (!canUseCacheStorage()) {
@@ -200,7 +219,8 @@
       });
 
       inflight.set(cacheKey, pending);
-      return pending;
+      const response = await pending;
+      return cloneResponse(response);
     };
 
     return {
@@ -284,7 +304,6 @@
         descriptionDirty: false,
         descriptionSaving: false,
         descriptionSaveTimer: 0,
-        likeSaving: false,
         fieldSaving: '',
         folderRoots: [],
         folderModalOpen: false,
@@ -402,6 +421,9 @@
           </section>
 
           <aside class="viewer-details" data-role="details">
+            <button class="viewer-close viewer-details-close" data-role="details-close" type="button" aria-label="Close details">
+              ${renderPhIcon('x', { variant: 'bold' })}
+            </button>
             <div class="viewer-details-handle" data-role="details-handle"></div>
             <div class="viewer-details-grid">
               <label class="viewer-field viewer-field-filename">
@@ -426,14 +448,16 @@
               <label class="viewer-field">
                 <span class="viewer-field-label">Date</span>
                 <span class="viewer-field-control viewer-field-control-inline">
-                  <input class="viewer-date-input" data-role="date-input" type="date" />
+                  <button class="viewer-picker-button" data-role="date-trigger" type="button">${renderPhIcon('calendar-dots', { variant: 'duotone' })}<span data-role="date-label">Choose a date</span></button>
+                  <input class="viewer-date-input hidden" data-role="date-input" type="date" tabindex="-1" aria-hidden="true" />
                 </span>
               </label>
 
               <label class="viewer-field">
                 <span class="viewer-field-label">Time</span>
                 <span class="viewer-field-control viewer-field-control-inline">
-                  <input class="viewer-date-input" data-role="time-input" type="time" />
+                  <button class="viewer-picker-button" data-role="time-trigger" type="button">${renderPhIcon('clock', { variant: 'duotone' })}<span data-role="time-label">12:00</span></button>
+                  <input class="viewer-date-input hidden" data-role="time-input" type="time" tabindex="-1" aria-hidden="true" />
                 </span>
               </label>
 
@@ -482,6 +506,7 @@
         image: this.root.querySelector('[data-role="image"]'),
         video: this.root.querySelector('[data-role="video"]'),
         details: this.root.querySelector('[data-role="details"]'),
+        detailsClose: this.root.querySelector('[data-role="details-close"]'),
         detailsHandle: this.root.querySelector('[data-role="details-handle"]'),
         detailsMeta: this.root.querySelector('[data-role="details-meta"]'),
         fileName: this.root.querySelector('[data-role="file-name"]'),
@@ -489,7 +514,11 @@
         description: this.root.querySelector('[data-role="description"]'),
         folderTrigger: this.root.querySelector('[data-role="folder-trigger"]'),
         folderLabel: this.root.querySelector('[data-role="folder-label"]'),
+        dateTrigger: this.root.querySelector('[data-role="date-trigger"]'),
+        dateLabel: this.root.querySelector('[data-role="date-label"]'),
         dateInput: this.root.querySelector('[data-role="date-input"]'),
+        timeTrigger: this.root.querySelector('[data-role="time-trigger"]'),
+        timeLabel: this.root.querySelector('[data-role="time-label"]'),
         timeInput: this.root.querySelector('[data-role="time-input"]'),
         zoomIn: this.root.querySelector('[data-role="zoom-in"]'),
         zoomOut: this.root.querySelector('[data-role="zoom-out"]'),
@@ -509,7 +538,15 @@
       }
       this.updateShareButtonVisibility();
       if (typeof this.options.onMove !== 'function') this.dom.folderTrigger.disabled = true;
+      if (typeof this.options.onPickDate !== 'function') {
+        this.dom.dateTrigger.disabled = true;
+      }
+      if (typeof this.options.onPickTime !== 'function') {
+        this.dom.timeTrigger.disabled = true;
+      }
       if (typeof this.options.onSaveDateTime !== 'function') {
+        this.dom.dateTrigger.disabled = true;
+        this.dom.timeTrigger.disabled = true;
         this.dom.dateInput.disabled = true;
         this.dom.timeInput.disabled = true;
       }
@@ -534,8 +571,13 @@
         this.downloadCurrent().catch((error) => this.handleError(error));
       });
       this.dom.info.addEventListener('click', () => this.commitDetails(!this.state.detailsOpen));
+      this.dom.detailsClose.addEventListener('click', () => this.commitDetails(false));
       this.dom.like.addEventListener('click', () => {
-        this.toggleLike().catch((error) => this.handleError(error));
+        try {
+          this.toggleLike();
+        } catch (error) {
+          this.handleError(error);
+        }
       });
       this.dom.share.addEventListener('click', () => {
         this.shareCurrent().catch((error) => this.handleError(error));
@@ -560,6 +602,12 @@
       this.dom.fileName.addEventListener('input', () => this.handleFileNameInput());
       this.dom.folderTrigger.addEventListener('click', () => {
         this.openFolderModal().catch((error) => this.handleError(error));
+      });
+      this.dom.dateTrigger.addEventListener('click', () => {
+        this.pickDate().catch((error) => this.handleError(error));
+      });
+      this.dom.timeTrigger.addEventListener('click', () => {
+        this.pickTime().catch((error) => this.handleError(error));
       });
       this.dom.description.addEventListener('keydown', (event) => {
         if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
@@ -673,6 +721,11 @@
         this.step(1).catch((error) => this.handleError(error));
         return;
       }
+      if (event.key.toLowerCase() === 'i') {
+        event.preventDefault();
+        this.commitDetails(!this.state.detailsOpen);
+        return;
+      }
       if (event.key === 'ArrowUp') {
         if (this.isDesktopSidePanel()) return;
         event.preventDefault();
@@ -701,9 +754,18 @@
         this.resetTransform();
         return;
       }
+      if (event.key === 'Delete') {
+        event.preventDefault();
+        this.requestDeleteCurrent();
+        return;
+      }
       if (event.key.toLowerCase() === 'l') {
         event.preventDefault();
-        this.toggleLike().catch((error) => this.handleError(error));
+        try {
+          this.toggleLike();
+        } catch (error) {
+          this.handleError(error);
+        }
       }
     }
 
@@ -1058,9 +1120,27 @@
       if (document.activeElement === field) field.blur();
     }
 
+    blurFocusedDetailsField() {
+      const activeElement = document.activeElement;
+      if (activeElement instanceof HTMLElement && activeElement.closest('.viewer-details')) {
+        activeElement.blur();
+      }
+    }
+
+    getVerticalScrollMetrics(node) {
+      if (!(node instanceof HTMLElement)) return null;
+      return {
+        scrollTop: node.scrollTop || 0,
+        maxScrollTop: Math.max((node.scrollHeight || 0) - (node.clientHeight || 0), 0)
+      };
+    }
+
     canStartDetailsDismiss(target, scrollable = this.findScrollableDetailsAncestor(target), scrollTop = scrollable?.scrollTop || 0) {
       if (target?.closest?.('.viewer-details-handle')) return true;
-      if (isTextEntryField(target)) return false;
+      if (isTextEntryField(target)) {
+        const fieldMetrics = this.getVerticalScrollMetrics(target);
+        if (fieldMetrics && fieldMetrics.maxScrollTop > 2) return fieldMetrics.scrollTop <= 2;
+      }
       return !scrollable || scrollTop <= 2;
     }
 
@@ -1123,7 +1203,11 @@
 
     updateDescriptionSummary(item) {
       const descriptionText = this.state.descriptionDirty ? this.readDescriptionValue() : (item?.description || '');
-      this.dom.descriptionSummary.textContent = descriptionText;
+      const summaryHtml = !this.state.descriptionDirty && typeof this.options.renderDescriptionSummary === 'function'
+        ? this.options.renderDescriptionSummary(item, descriptionText, this)
+        : '';
+      if (summaryHtml) this.dom.descriptionSummary.innerHTML = summaryHtml;
+      else this.dom.descriptionSummary.textContent = descriptionText;
       this.dom.descriptionSummary.classList.toggle('hidden', !descriptionText);
     }
 
@@ -1215,9 +1299,53 @@
       if (this.dom.folderLabel) this.dom.folderLabel.textContent = this.currentDraftFolderLabel();
     }
 
+    updateDateTriggerLabel(item = this.getCurrentItem()) {
+      if (!this.dom.dateLabel) return;
+      const value = this.dom.dateInput?.value || item?.isoDate || '';
+      this.dom.dateLabel.textContent = formatIsoDateLabel(value);
+    }
+
+    setDraftDate(isoDate) {
+      if (this.dom.dateInput) this.dom.dateInput.value = isoDate || '';
+      this.updateDateTriggerLabel();
+    }
+
+    updateTimeTriggerLabel(item = this.getCurrentItem()) {
+      if (!this.dom.timeLabel) return;
+      const value = this.dom.timeInput?.value || this.extractTimeValue(item);
+      this.dom.timeLabel.textContent = value || '12:00';
+    }
+
+    setDraftTime(time) {
+      if (this.dom.timeInput) this.dom.timeInput.value = time || '';
+      this.updateTimeTriggerLabel();
+    }
+
     extractTimeValue(item = this.getCurrentItem()) {
       const match = String(item?.capturedAt || '').match(/T(\d{2}:\d{2})/);
       return match?.[1] || '12:00';
+    }
+
+    async pickDate() {
+      const item = this.getCurrentItem();
+      if (!item || typeof this.options.onPickDate !== 'function') return;
+      await this.options.onPickDate(
+        item,
+        this.dom.dateInput?.value || item.isoDate || '',
+        this.dom.timeInput?.value || this.extractTimeValue(item),
+        this
+      );
+    }
+
+    async pickTime() {
+      const item = this.getCurrentItem();
+      if (!item || typeof this.options.onPickTime !== 'function') return;
+      await this.options.onPickTime(
+        item,
+        this.dom.dateInput?.value || item.isoDate || '',
+        this.dom.timeInput?.value || this.extractTimeValue(item),
+        this
+      );
     }
 
     async openFolderModal() {
@@ -2066,6 +2194,10 @@
     async step(direction, { dragOffsetX = 0 } = {}) {
       const normalizedDirection = direction > 0 ? 1 : -1;
       if (!this.canNavigateDirection(normalizedDirection)) {
+        const recovered = await this.recoverNavigation(normalizedDirection);
+        if (recovered && this.canNavigateDirection(normalizedDirection)) {
+          return this.step(normalizedDirection, { dragOffsetX });
+        }
         this.animateCarouselToCurrent(dragOffsetX);
         return;
       }
@@ -2082,6 +2214,16 @@
         detailIndex: this.state.index,
         mountIndex: previousIndex
       });
+    }
+
+    requestDeleteCurrent() {
+      if (typeof this.options.onDelete !== 'function') return;
+      Promise.resolve(this.options.onDelete(this.getCurrentItem(), this.state.index, this)).catch((error) => this.handleError(error));
+    }
+
+    async recoverNavigation(direction) {
+      if (typeof this.options.onStepUnavailable !== 'function') return false;
+      return Boolean(await this.options.onStepUnavailable(direction, this));
     }
 
     stopMomentum() {
@@ -2215,6 +2357,7 @@
     commitDetails(open, { immediate = false } = {}) {
       const nextOpen = Boolean(open);
       if (this.state.detailsOpen && !nextOpen) {
+        this.blurFocusedDetailsField();
         this.flushPendingChanges({ reason: 'details-close' }).catch((error) => this.handleError(error));
       }
       this.state.detailsOpen = nextOpen;
@@ -2227,7 +2370,7 @@
 
     setChromeVisible(visible, { immediate = false } = {}) {
       const nextVisible = Boolean(visible);
-      if (!nextVisible && this.state.detailsProgress > 0.02 && this.isMobileSheet()) return;
+      if (!nextVisible && this.state.detailsProgress > 0.02) return;
       this.state.chromeVisible = nextVisible;
       this.applyChromeState({ immediate });
     }
@@ -2400,7 +2543,6 @@
     updateLikeButton(item = this.getCurrentItem()) {
       const liked = Boolean(item?.liked);
       this.dom.like.classList.toggle('is-active', liked);
-      this.dom.like.classList.toggle('is-saving', this.state.likeSaving);
       this.dom.like.setAttribute('aria-label', liked ? 'Unlike media' : 'Like media');
       this.dom.like.innerHTML = liked
         ? renderPhIcon('heart', { variant: 'fill' })
@@ -2421,7 +2563,9 @@
       this.state.selectedFolderPath = item?.folder === '.' ? '' : (item?.folder || '');
       this.updateFolderDraftLabel();
       this.dom.dateInput.value = item?.isoDate || '';
+      this.updateDateTriggerLabel(item);
       this.dom.timeInput.value = this.extractTimeValue(item);
+      this.updateTimeTriggerLabel(item);
       this.setDescriptionValue(typeof this.options.getDescriptionValue === 'function'
         ? this.options.getDescriptionValue(item) || ''
         : (item?.description || ''));
@@ -2618,29 +2762,26 @@
       };
     }
 
-    async toggleLike() {
+    toggleLike() {
       const item = this.getCurrentItem();
-      if (!item || this.state.likeSaving) return;
+      if (!item) return;
 
-      const previous = Boolean(item.liked);
-      const nextLiked = !previous;
-      item.liked = nextLiked;
-      this.state.likeSaving = true;
+      item.liked = !Boolean(item.liked);
       this.updateLikeButton(item);
 
       try {
         if (typeof this.options.onToggleLike === 'function') {
-          const result = await this.options.onToggleLike(item, nextLiked, this);
+          const result = this.options.onToggleLike(item, Boolean(item.liked), this);
           if (typeof result === 'boolean') item.liked = result;
           else if (result && Object.prototype.hasOwnProperty.call(result, 'liked')) item.liked = Boolean(result.liked);
         }
       } catch (error) {
-        item.liked = previous;
-        throw error;
-      } finally {
-        this.state.likeSaving = false;
+        item.liked = !Boolean(item.liked);
         this.updateLikeButton(this.getCurrentItem());
+        throw error;
       }
+
+      this.updateLikeButton(this.getCurrentItem());
     }
 
     async downloadCurrent() {
