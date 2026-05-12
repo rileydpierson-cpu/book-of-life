@@ -1,6 +1,6 @@
 # Book of Life
 
-Book of Life is a local-first web app for browsing a personal journal and photo timeline.
+Book of Life is a server/app for browsing a personal journal and photo timeline.
 
 ## Architecture
 
