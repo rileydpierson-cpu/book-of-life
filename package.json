@@ -1,5 +1,5 @@
 {
-  "name": "lifeserver",
+  "name": "book-of-life",
   "version": "1.0.0",
   "description": "Local-first journal and photo timeline viewer",
   "main": "server.js",

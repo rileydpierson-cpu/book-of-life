@@ -69,7 +69,7 @@ function countMediaInDirectory(currentPath) {
   }
 
   for (const entry of entries) {
-    if (entry.name === '.trash' || entry.name === '.LifeServerTrash' || entry.name === '.LifeServer') continue;
+    if (entry.name === '.trash' || entry.name === '.LifeServerTrash' || entry.name === '.BookOfLifeTrash' || entry.name === '.LifeServer' || entry.name === '.BookOfLife') continue;
     const absoluteChild = path.join(currentPath, entry.name);
     if (entry.isDirectory()) {
       const nested = countMediaInDirectory(absoluteChild);
@@ -101,7 +101,7 @@ function folderNodeFromAbsolute(rootPath, currentPath, relativePath = '') {
   } catch (error) {}
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    if (entry.name === '.trash' || entry.name === '.LifeServerTrash' || entry.name === '.LifeServer') continue;
+    if (entry.name === '.trash' || entry.name === '.LifeServerTrash' || entry.name === '.BookOfLifeTrash' || entry.name === '.LifeServer' || entry.name === '.BookOfLife') continue;
     const absoluteChild = path.join(currentPath, entry.name);
     const childRelative = relativePath ? path.posix.join(relativePath, entry.name) : entry.name;
     children.push(folderNodeFromAbsolute(rootPath, absoluteChild, childRelative));
@@ -945,8 +945,8 @@ async function main() {
     const server = app.listen(config.server.port, () => {
       const startupDurationMs = Date.now() - startupStartedAt;
       const indexBuildDurationMs = initialBuild?.durationMs || 0;
-      console.log(`LifeServer running on port ${config.server.port} after ${formatStartupDuration(startupDurationMs)} total startup.`);
-      console.log(`LifeServer startup summary: index build ${formatStartupDuration(indexBuildDurationMs)}, server ready ${formatStartupDuration(startupDurationMs)}.`);
+      console.log(`Book of Life running on port ${config.server.port} after ${formatStartupDuration(startupDurationMs)} total startup.`);
+      console.log(`Book of Life startup summary: index build ${formatStartupDuration(indexBuildDurationMs)}, server ready ${formatStartupDuration(startupDurationMs)}.`);
       resolve(server);
     });
     server.on('error', reject);

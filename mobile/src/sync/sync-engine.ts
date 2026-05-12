@@ -9,7 +9,7 @@ import type { SyncBootstrapPayload, SyncChangesPayload, SyncConnection, SyncMuta
 
 export function createSyncEngine() {
   return {
-    async connect(serverUrl: string, secret: string, deviceName = 'LifeServer Mobile', platform = 'expo') {
+    async connect(serverUrl: string, secret: string, deviceName = 'Book of Life Mobile', platform = 'expo') {
       const payload = await mobileFetchJson<{ deviceId: string; authToken: string; syncRoot?: SyncConnection['syncRoot'] }>(
         { serverUrl },
         '/api/sync/connect',

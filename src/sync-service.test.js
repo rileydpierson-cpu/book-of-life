@@ -133,6 +133,7 @@ describe('sync service', () => {
     expect(device.deviceName).toBe('Phone');
     const bootstrap = service.buildBootstrapPayload();
     expect(bootstrap.folders).toHaveLength(1);
+    expect(bootstrap.serverSummary.syncedMedia).toBe(1);
   });
 
   it('applies entry mutations and records changes', async () => {
@@ -157,5 +158,6 @@ describe('sync service', () => {
     expect(result.results[0].accepted).toBe(true);
     const changes = await service.listChangesSince(0);
     expect(changes.changes.length).toBeGreaterThan(0);
+    expect(changes.serverSummary.entries).toBe(1);
   });
 });

@@ -565,8 +565,8 @@ function formatTimeSelectionText(value) {
 function uploadDateSourceLabel(item) {
   if (item?.dateSource === 'exif') return 'Date taken metadata';
   if (item?.dateSource === 'last-modified') return 'File modified date';
-  if (item?.dateSource === 'shared') return 'Shared LifeServer datestamp';
-  if (item?.dateSource === 'manual') return 'Custom LifeServer date';
+  if (item?.dateSource === 'shared') return 'Shared Book of Life datestamp';
+  if (item?.dateSource === 'manual') return 'Custom Book of Life date';
   return 'Entry date';
 }
 

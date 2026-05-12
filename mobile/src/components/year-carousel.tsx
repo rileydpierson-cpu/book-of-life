@@ -1,61 +1,47 @@
 import React from 'react';
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ScrollView, Text, View, Pressable } from 'react-native';
+import { useAppTheme } from '../theme/theme-provider';
 
 export function YearCarousel(props: {
   years: number[];
   activeYear: number | null;
   onSelectYear: (year: number | null) => void;
 }) {
+  const { theme } = useAppTheme();
   return (
-    <View style={styles.shell}>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.row}>
-        <TouchableOpacity
-          style={[styles.chip, props.activeYear === null ? styles.chipActive : null]}
-          onPress={() => props.onSelectYear(null)}
-        >
-          <Text style={[styles.chipText, props.activeYear === null ? styles.chipTextActive : null]}>All</Text>
-        </TouchableOpacity>
+    <View>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: theme.spacing.sm, paddingHorizontal: 2 }}>
+        <YearChip label="All Years" active={props.activeYear === null} onPress={() => props.onSelectYear(null)} />
         {props.years.map((year) => (
-          <TouchableOpacity
+          <YearChip
             key={year}
-            style={[styles.chip, props.activeYear === year ? styles.chipActive : null]}
+            label={String(year)}
+            active={props.activeYear === year}
             onPress={() => props.onSelectYear(year)}
-          >
-            <Text style={[styles.chipText, props.activeYear === year ? styles.chipTextActive : null]}>{year}</Text>
-          </TouchableOpacity>
+          />
         ))}
       </ScrollView>
     </View>
   );
-}
 
-const styles = StyleSheet.create({
-  shell: {
-    marginTop: 4
-  },
-  row: {
-    gap: 12,
-    paddingHorizontal: 2
-  },
-  chip: {
-    minWidth: 90,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255,252,247,0.86)',
-    borderWidth: 1,
-    borderColor: 'rgba(65,47,28,0.08)',
-    alignItems: 'center'
-  },
-  chipActive: {
-    backgroundColor: '#7d5f43',
-    borderColor: '#7d5f43'
-  },
-  chipText: {
-    color: '#1f1a16',
-    fontWeight: '700'
-  },
-  chipTextActive: {
-    color: '#fffdfa'
+  function YearChip({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+    return (
+      <Pressable
+        onPress={onPress}
+        style={({ pressed }) => ({
+          minWidth: 104,
+          paddingHorizontal: 18,
+          paddingVertical: 14,
+          borderRadius: theme.radius.lg,
+          backgroundColor: active ? theme.colors.accent : theme.colors.surface,
+          borderWidth: 1,
+          borderColor: active ? theme.colors.accent : theme.colors.border,
+          opacity: pressed ? 0.85 : 1,
+          alignItems: 'center'
+        })}
+      >
+        <Text style={{ color: active ? theme.colors.onAccent : theme.colors.text, fontWeight: '700' }}>{label}</Text>
+      </Pressable>
+    );
   }
-});
+}

@@ -120,7 +120,7 @@ class TimelineIndexer {
       progress?.increment();
       progress?.complete();
       const durationMs = Date.now() - startedAt;
-      console.log(`LifeServer index rebuilt (${reason}) with ${nextState.dayKeys.length} days in ${formatDuration(durationMs)}.`);
+      console.log(`Book of Life index rebuilt (${reason}) with ${nextState.dayKeys.length} days in ${formatDuration(durationMs)}.`);
       return {
         reason,
         dayCount: nextState.dayKeys.length,
@@ -337,7 +337,7 @@ class TimelineIndexer {
 
   createRebuildProgress(reason) {
     if (reason !== 'startup' || !process.stdout.isTTY) return null;
-    return new StartupProgressRenderer('LifeServer startup');
+    return new StartupProgressRenderer('Book of Life startup');
   }
 
   async buildPhotoRecord({
@@ -1360,7 +1360,7 @@ class TimelineIndexer {
     this.recomputeDerivedState();
     await this.persistState();
     await this.persistMediaInventory(inventory);
-    console.log(`LifeServer index refreshed (${reason}) with ${changedPaths.length} changed and ${removedPaths.length} removed files.`);
+    console.log(`Book of Life index refreshed (${reason}) with ${changedPaths.length} changed and ${removedPaths.length} removed files.`);
     return {
       changed: true,
       changedPaths: changedPaths.length,

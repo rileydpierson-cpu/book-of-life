@@ -20,9 +20,17 @@ export type FolderTreeNode = {
   children?: FolderTreeNode[];
 };
 
+export type SyncServerSummary = {
+  entries: number;
+  words: number;
+  syncedMedia: number;
+  generatedAt?: string;
+};
+
 export type SyncBootstrapPayload = {
   checkpoint: number;
   bootstrap: Record<string, unknown>;
+  serverSummary?: SyncServerSummary;
   entries: Array<{
     isoDate: string;
     raw: string;
@@ -48,6 +56,7 @@ export type SyncChange = {
 
 export type SyncChangesPayload = {
   checkpoint: number;
+  serverSummary?: SyncServerSummary;
   changes: SyncChange[];
 };
 

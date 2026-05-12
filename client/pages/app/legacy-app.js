@@ -1269,8 +1269,8 @@ function formatFileSize(bytes) {
 function uploadDateSourceLabel(item) {
   if (item?.dateSource === 'exif') return 'Date taken metadata';
   if (item?.dateSource === 'last-modified') return 'File modified date';
-  if (item?.dateSource === 'shared') return 'Shared LifeServer datestamp';
-  if (item?.dateSource === 'manual') return 'Custom LifeServer date';
+  if (item?.dateSource === 'shared') return 'Shared Book of Life datestamp';
+  if (item?.dateSource === 'manual') return 'Custom Book of Life date';
   return 'Upload context date';
 }
 
@@ -1649,7 +1649,7 @@ function setTopbarHomeButton({ searchUiOpen = state.searchUiOpen, searchDetailOp
   }
   dom.homeButton.classList.remove('is-search-back');
   dom.homeButton.setAttribute('aria-label', 'Go to newest entry');
-  dom.homeButton.innerHTML = `<span class="topbar-brand-mark" aria-hidden="true">${renderPhIcon('book-open', { variant: 'fill' })}<span class="topbar-brand-name">LifeServer</span></span>`;
+  dom.homeButton.innerHTML = `<span class="topbar-brand-mark" aria-hidden="true">${renderPhIcon('book-open', { variant: 'fill' })}<span class="topbar-brand-name">Book of Life</span></span>`;
 }
 
 function searchTopbarMetaLabel() {
@@ -5579,7 +5579,7 @@ bootstrapApp().catch((error) => {
   console.error(error);
   dom.timelineFeed.innerHTML = `
     <div class="empty-state">
-      <h2>LifeServer could not start</h2>
+      <h2>Book of Life could not start</h2>
       <p>${escapeHtml(error.message || 'Unknown startup error')}</p>
     </div>
   `;

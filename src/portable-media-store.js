@@ -2,7 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const { readJson, writeJson } = require('./utils');
 
-const STORE_DIR_NAME = '.LifeServer';
+const STORE_DIR_NAME = '.BookOfLife';
+const LEGACY_STORE_DIR_NAMES = ['.LifeServer'];
 const STORE_FILE_NAME = 'media-metadata.json';
 
 function isValidIsoDate(value) {
@@ -58,6 +59,10 @@ class PortableMediaStore {
     return path.join(rootPath, STORE_DIR_NAME);
   }
 
+  legacyStorePaths(rootPath) {
+    return LEGACY_STORE_DIR_NAMES.map((dirName) => path.join(rootPath, dirName, STORE_FILE_NAME));
+  }
+
   storePath(rootPath) {
     return path.join(this.storeDir(rootPath), STORE_FILE_NAME);
   }
@@ -78,7 +83,13 @@ class PortableMediaStore {
   }
 
   async loadRoot(rootPath) {
-    const payload = await readJson(this.storePath(rootPath), null);
+    let payload = await readJson(this.storePath(rootPath), null);
+    if (!payload) {
+      for (const legacyPath of this.legacyStorePaths(rootPath)) {
+        payload = await readJson(legacyPath, null);
+        if (payload) break;
+      }
+    }
     const entries = {};
     if (payload && typeof payload.entries === 'object') {
       for (const [relativePath, entry] of Object.entries(payload.entries)) {

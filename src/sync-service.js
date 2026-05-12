@@ -150,6 +150,31 @@ class SyncService {
     };
   }
 
+  buildServerSummary() {
+    const days = Array.from(this.indexer.state.days.values() || []);
+    const journalDays = days.filter((day) => String(day?.journal?.raw || '').trim());
+    const words = journalDays.reduce((sum, day) => {
+      const raw = String(day?.journal?.raw || '');
+      return sum + this.countWords(raw);
+    }, 0);
+    return {
+      entries: journalDays.length,
+      words,
+      syncedMedia: this.indexer.state.photosById.size,
+      generatedAt: this.indexer.state.generatedAt || new Date().toISOString()
+    };
+  }
+
+  countWords(raw) {
+    return String(raw || '')
+      .replace(/!\[\[[^\]]+\]\]/g, ' ')
+      .replace(/[`*_>#-]/g, ' ')
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .length;
+  }
+
   buildBootstrapPayload() {
     const entries = this.indexer.state.dayKeys.map((isoDate) => this.serializeEntryRecord(isoDate));
     const media = Array.from(this.indexer.state.photosById.values()).map((photo) => this.serializeMediaRecord(photo));
@@ -157,6 +182,7 @@ class SyncService {
     return {
       checkpoint: this.currentSequence(),
       bootstrap: this.indexer.getBootstrap(),
+      serverSummary: this.buildServerSummary(),
       entries,
       media,
       folders: roots.map(({ rootId, rootLabel, tree }) => ({ rootId, rootLabel, tree }))
@@ -168,6 +194,7 @@ class SyncService {
     const since = Math.max(0, Number(sequence || 0));
     return {
       checkpoint: this.currentSequence(),
+      serverSummary: this.buildServerSummary(),
       changes: this.state.changes.filter((change) => Number(change.sequence || 0) > since)
     };
   }

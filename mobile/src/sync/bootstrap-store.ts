@@ -1,5 +1,5 @@
-import { upsertEntryRecords, upsertFolderRecords, upsertMediaRecords } from '../storage/database';
-import type { FolderTreeNode, SyncBootstrapPayload, SyncChange, SyncChangesPayload } from './types';
+import { setSyncStateValue, upsertEntryRecords, upsertFolderRecords, upsertMediaRecords } from '../storage/database';
+import type { FolderTreeNode, SyncBootstrapPayload, SyncChange, SyncChangesPayload, SyncServerSummary } from './types';
 
 function folderId(rootId: string, relativePath: string) {
   return `${rootId}:${relativePath || '.'}`;
@@ -26,6 +26,7 @@ function flattenFolderTree(
 }
 
 export async function applyBootstrapPayload(payload: SyncBootstrapPayload) {
+  await persistServerSummary(payload.serverSummary);
   await upsertEntryRecords(
     (payload.entries || []).map((entry) => ({
       isoDate: entry.isoDate,
@@ -56,6 +57,7 @@ export async function applyBootstrapPayload(payload: SyncBootstrapPayload) {
 }
 
 export async function applyIncrementalChanges(payload: SyncChangesPayload) {
+  await persistServerSummary(payload.serverSummary);
   const entryUpdates: Array<{ isoDate: string; raw: string; updatedAt?: string; serverVersion?: number; deleted?: boolean }> = [];
   const mediaUpdates: Array<Record<string, unknown> & { id: string }> = [];
   const folderUpdates: Array<Record<string, unknown> & { id: string; rootId: string; relativePath: string; label: string }> = [];
@@ -67,6 +69,11 @@ export async function applyIncrementalChanges(payload: SyncChangesPayload) {
   await upsertEntryRecords(entryUpdates);
   await upsertMediaRecords(mediaUpdates);
   await upsertFolderRecords(folderUpdates);
+}
+
+async function persistServerSummary(summary?: SyncServerSummary) {
+  if (!summary) return;
+  await setSyncStateValue('serverSummary', JSON.stringify(summary));
 }
 
 function collectChange(

@@ -1,6 +1,6 @@
-# LifeServer
+# Book of Life
 
-LifeServer is a local-first web app for browsing a personal journal and photo timeline.
+Book of Life is a local-first web app for browsing a personal journal and photo timeline.
 
 ## Architecture
 
@@ -90,7 +90,7 @@ Useful commands:
 
 ## Authentication
 
-If `auth.enabled` is `true`, LifeServer requires a pasted access secret before loading the app.
+If `auth.enabled` is `true`, Book of Life requires a pasted access secret before loading the app.
 
 Recommended config:
 
@@ -113,7 +113,7 @@ Notes:
 
 ## Entry editing
 
-LifeServer now includes a Markdown editor for journal entries.
+Book of Life now includes a Markdown editor for journal entries.
 
 - Edit an existing entry using the edit button on a journal card.
 - Use the calendar icon to jump to **today's entry**.
