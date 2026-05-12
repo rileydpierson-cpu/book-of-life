@@ -120,6 +120,18 @@ function loadConfig(projectRoot) {
     .map((folder) => String(folder || '').trim())
     .filter(Boolean)
     .map((folder) => resolvePath(projectRoot, folder));
+  const deviceSyncRoot = resolvePath(
+    projectRoot,
+    getConfigValue(config.paths?.deviceSyncRoot, 'LIFESERVER_DEVICE_SYNC_ROOT', './storage/device-sync')
+  );
+  const includeDeviceSyncRoot = parseBoolean(
+    getConfigValue(config.paths?.includeDeviceSyncRoot, 'LIFESERVER_INCLUDE_DEVICE_SYNC_ROOT', true),
+    true
+  );
+  const allPhotoFolders = includeDeviceSyncRoot
+    ? [...photoFolders, deviceSyncRoot].filter((folder, index, list) => list.indexOf(folder) === index)
+    : photoFolders.slice();
+  const deviceSyncRootId = includeDeviceSyncRoot ? String(allPhotoFolders.indexOf(deviceSyncRoot)) : '';
   const cacheDir = resolvePath(
     projectRoot,
     getConfigValue(config.paths?.cacheDir, 'LIFESERVER_CACHE_DIR', './.cache')
@@ -128,7 +140,7 @@ function loadConfig(projectRoot) {
   ensureDirSync(journalVault);
   ensureDirSync(path.join(journalVault, journalFolderName));
   ensureDirSync(path.join(journalVault, journalImagesFolderName));
-  for (const folder of photoFolders) ensureDirSync(folder);
+  for (const folder of allPhotoFolders) ensureDirSync(folder);
   ensureDirSync(cacheDir);
   ensureDirSync(path.join(cacheDir, 'thumbs'));
   ensureDirSync(path.join(cacheDir, 'converted'));
@@ -147,7 +159,10 @@ function loadConfig(projectRoot) {
       journalVault,
       journalFolderName,
       journalImagesFolderName,
-      photoFolders,
+      photoFolders: allPhotoFolders,
+      serverPhotoFolders: photoFolders,
+      deviceSyncRoot,
+      deviceSyncRootId,
       cacheDir
     },
     indexing: {

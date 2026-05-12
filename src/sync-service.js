@@ -1,0 +1,321 @@
+const crypto = require('crypto');
+const path = require('path');
+const { readJson, writeJson } = require('./utils');
+const { CHANGE_TYPES, MUTATION_TYPES, validateMutationEnvelope } = require('../shared/sync-contracts');
+
+class SyncService {
+  constructor({
+    cacheDir,
+    indexer,
+    authenticate,
+    getFolderTree,
+    createFolder,
+    deletePhoto,
+    resolveDeviceSyncRoot
+  }) {
+    this.cachePath = path.join(cacheDir, 'sync-state.json');
+    this.indexer = indexer;
+    this.authenticate = authenticate;
+    this.getFolderTree = getFolderTree;
+    this.createFolder = createFolder;
+    this.deletePhoto = deletePhoto;
+    this.resolveDeviceSyncRoot = resolveDeviceSyncRoot;
+    this.state = {
+      nextSequence: 1,
+      changes: [],
+      appliedMutations: {},
+      devices: {}
+    };
+    this.loaded = false;
+  }
+
+  async init() {
+    const cached = await readJson(this.cachePath, null);
+    if (cached && typeof cached === 'object') {
+      this.state = {
+        nextSequence: Number(cached.nextSequence || 1),
+        changes: Array.isArray(cached.changes) ? cached.changes : [],
+        appliedMutations: cached.appliedMutations && typeof cached.appliedMutations === 'object' ? cached.appliedMutations : {},
+        devices: cached.devices && typeof cached.devices === 'object' ? cached.devices : {}
+      };
+    }
+    this.loaded = true;
+    return this.state;
+  }
+
+  async persist() {
+    await writeJson(this.cachePath, this.state);
+  }
+
+  async ensureLoaded() {
+    if (!this.loaded) await this.init();
+  }
+
+  issueToken() {
+    return crypto.randomBytes(24).toString('hex');
+  }
+
+  sanitizeDeviceSegment(value, fallbackValue = 'device') {
+    return String(value || '')
+      .replace(/[\\/:*?"<>|]+/g, '-')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 80) || fallbackValue;
+  }
+
+  async connect({ secret, deviceName = '', platform = '' }) {
+    await this.ensureLoaded();
+    if (!this.authenticate(secret)) throw new Error('That secret was not accepted.');
+    const token = this.issueToken();
+    const deviceId = crypto.randomBytes(12).toString('hex');
+    const safeDeviceName = this.sanitizeDeviceSegment(deviceName, `device-${deviceId.slice(0, 6)}`);
+    const syncRoot = typeof this.resolveDeviceSyncRoot === 'function'
+      ? await this.resolveDeviceSyncRoot({ deviceId, deviceName: safeDeviceName, platform })
+      : null;
+    this.state.devices[token] = {
+      deviceId,
+      deviceName: safeDeviceName,
+      platform: String(platform || '').trim() || 'unknown',
+      syncRoot,
+      connectedAt: new Date().toISOString(),
+      lastSeenAt: new Date().toISOString()
+    };
+    await this.persist();
+    return {
+      ok: true,
+      deviceId,
+      authToken: token,
+      syncRoot
+    };
+  }
+
+  async authenticateToken(token) {
+    await this.ensureLoaded();
+    const record = this.state.devices[String(token || '')];
+    if (!record) return null;
+    record.lastSeenAt = new Date().toISOString();
+    await this.persist();
+    return record;
+  }
+
+  currentSequence() {
+    return Math.max(0, this.state.nextSequence - 1);
+  }
+
+  async appendChange(type, entityId, payload) {
+    await this.ensureLoaded();
+    const sequence = this.state.nextSequence++;
+    this.state.changes.push({
+      sequence,
+      type,
+      entityId: String(entityId || ''),
+      payload,
+      changedAt: new Date().toISOString()
+    });
+    if (this.state.changes.length > 5000) {
+      this.state.changes = this.state.changes.slice(-5000);
+    }
+    await this.persist();
+    return sequence;
+  }
+
+  serializeEntryRecord(isoDate) {
+    const day = this.indexer.state.days.get(isoDate);
+    if (!day) {
+      return {
+        isoDate,
+        deleted: true
+      };
+    }
+    const entry = this.indexer.serializeDay(isoDate);
+    return {
+      isoDate,
+      deleted: false,
+      serverVersion: this.currentSequence(),
+      title: entry.journal?.title || '',
+      raw: day.journal?.raw || '',
+      wordCount: entry.journal?.wordCount || 0,
+      updatedAt: this.indexer.state.generatedAt || '',
+      hasJournal: Boolean(day.journal)
+    };
+  }
+
+  serializeMediaRecord(photo) {
+    const serialized = this.indexer.serializePhoto(photo);
+    return {
+      ...serialized,
+      deleted: false,
+      serverVersion: this.currentSequence(),
+      updatedAt: this.indexer.state.generatedAt || ''
+    };
+  }
+
+  buildBootstrapPayload() {
+    const entries = this.indexer.state.dayKeys.map((isoDate) => this.serializeEntryRecord(isoDate));
+    const media = Array.from(this.indexer.state.photosById.values()).map((photo) => this.serializeMediaRecord(photo));
+    const roots = this.getFolderTree();
+    return {
+      checkpoint: this.currentSequence(),
+      bootstrap: this.indexer.getBootstrap(),
+      entries,
+      media,
+      folders: roots.map(({ rootId, rootLabel, tree }) => ({ rootId, rootLabel, tree }))
+    };
+  }
+
+  async listChangesSince(sequence) {
+    await this.ensureLoaded();
+    const since = Math.max(0, Number(sequence || 0));
+    return {
+      checkpoint: this.currentSequence(),
+      changes: this.state.changes.filter((change) => Number(change.sequence || 0) > since)
+    };
+  }
+
+  async applyMutationEnvelope(envelope) {
+    await this.ensureLoaded();
+    if (this.state.appliedMutations[envelope.id]) {
+      return {
+        accepted: true,
+        mutationId: envelope.id,
+        duplicate: true,
+        sequence: this.state.appliedMutations[envelope.id]
+      };
+    }
+
+    let sequence = 0;
+    let result = null;
+    switch (envelope.type) {
+      case MUTATION_TYPES.ENTRY_SAVE: {
+        result = await this.indexer.saveEntry(envelope.payload.isoDate, envelope.payload.raw);
+        sequence = await this.appendChange(CHANGE_TYPES.ENTRY_UPSERT, envelope.payload.isoDate, {
+          entry: this.serializeEntryRecord(envelope.payload.isoDate),
+          day: result
+        });
+        break;
+      }
+      case MUTATION_TYPES.ENTRY_DELETE: {
+        result = await this.indexer.saveEntry(envelope.payload.isoDate, '');
+        sequence = await this.appendChange(CHANGE_TYPES.ENTRY_DELETE, envelope.payload.isoDate, {
+          isoDate: envelope.payload.isoDate,
+          deleted: true
+        });
+        break;
+      }
+      case MUTATION_TYPES.FOLDER_CREATE: {
+        result = await this.createFolder(envelope.payload.rootId, envelope.payload.relativePath, envelope.payload.folderName);
+        sequence = await this.appendChange(CHANGE_TYPES.FOLDER_UPSERT, `${envelope.payload.rootId}:${result.relativePath}`, {
+          rootId: envelope.payload.rootId,
+          relativePath: result.relativePath
+        });
+        break;
+      }
+      case MUTATION_TYPES.MEDIA_TAGS_SET: {
+        const photo = await this.indexer.setPhotoTags(envelope.payload.photoId, envelope.payload.tags);
+        result = photo;
+        sequence = await this.appendChange(CHANGE_TYPES.MEDIA_UPSERT, envelope.payload.photoId, {
+          media: this.serializeMediaRecord(photo)
+        });
+        break;
+      }
+      case MUTATION_TYPES.MEDIA_DESCRIPTION_SET: {
+        const photo = await this.indexer.setPhotoDescription(envelope.payload.photoId, envelope.payload.description);
+        result = photo;
+        sequence = await this.appendChange(CHANGE_TYPES.MEDIA_UPSERT, envelope.payload.photoId, {
+          media: this.serializeMediaRecord(photo)
+        });
+        break;
+      }
+      case MUTATION_TYPES.MEDIA_LIKE_SET: {
+        const photo = await this.indexer.setPhotoLiked(envelope.payload.photoId, envelope.payload.liked);
+        result = photo;
+        sequence = await this.appendChange(CHANGE_TYPES.MEDIA_UPSERT, envelope.payload.photoId, {
+          media: this.serializeMediaRecord(photo)
+        });
+        break;
+      }
+      case MUTATION_TYPES.MEDIA_DATE_TIME_SET: {
+        const photo = await this.indexer.setPhotoDateTime(envelope.payload.photoId, {
+          isoDate: envelope.payload.isoDate || null,
+          time: envelope.payload.time || null
+        });
+        result = photo;
+        sequence = await this.appendChange(CHANGE_TYPES.MEDIA_UPSERT, envelope.payload.photoId, {
+          media: this.serializeMediaRecord(photo)
+        });
+        break;
+      }
+      case MUTATION_TYPES.MEDIA_RENAME: {
+        const renamed = await this.indexer.renamePhoto(envelope.payload.photoId, envelope.payload.baseName);
+        result = renamed;
+        sequence = await this.appendChange(CHANGE_TYPES.MEDIA_UPSERT, envelope.payload.photoId, {
+          media: this.serializeMediaRecord(renamed)
+        });
+        break;
+      }
+      case MUTATION_TYPES.MEDIA_MOVE: {
+        const moved = await this.indexer.movePhoto(envelope.payload.photoId, envelope.payload.rootId, envelope.payload.relativePath);
+        result = moved;
+        sequence = await this.appendChange(CHANGE_TYPES.MEDIA_UPSERT, envelope.payload.photoId, {
+          media: this.serializeMediaRecord(moved)
+        });
+        break;
+      }
+      case MUTATION_TYPES.MEDIA_DELETE: {
+        const deleted = await this.deletePhoto(envelope.payload.photoId);
+        result = deleted;
+        sequence = await this.appendChange(CHANGE_TYPES.MEDIA_DELETE, envelope.payload.photoId, {
+          photoId: envelope.payload.photoId,
+          deleted: true,
+          isoDate: deleted?.isoDate || null
+        });
+        break;
+      }
+      default:
+        throw new Error(`Unsupported mutation type: ${envelope.type}`);
+    }
+
+    this.state.appliedMutations[envelope.id] = sequence;
+    await this.persist();
+    return {
+      accepted: true,
+      mutationId: envelope.id,
+      sequence,
+      result
+    };
+  }
+
+  async applyMutations(batch) {
+    await this.ensureLoaded();
+    const mutations = Array.isArray(batch) ? batch : [];
+    const results = [];
+    for (const raw of mutations) {
+      const validated = validateMutationEnvelope(raw);
+      if (!validated.ok) {
+        results.push({
+          accepted: false,
+          mutationId: raw?.id || '',
+          error: validated.error
+        });
+        continue;
+      }
+      try {
+        results.push(await this.applyMutationEnvelope(validated.mutation));
+      } catch (error) {
+        results.push({
+          accepted: false,
+          mutationId: validated.mutation.id,
+          error: error.message || 'Mutation failed.'
+        });
+      }
+    }
+    return {
+      checkpoint: this.currentSequence(),
+      results
+    };
+  }
+}
+
+module.exports = {
+  SyncService
+};

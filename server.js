@@ -13,6 +13,7 @@ const {
 } = require('./src/media-metadata');
 const { AuthService } = require('./src/auth');
 const { dateToIsoLocal } = require('./src/utils');
+const { SyncService } = require('./src/sync-service');
 
 function sendNoStoreFile(res, filePath) {
   res.setHeader('Cache-Control', 'no-store');
@@ -202,18 +203,61 @@ async function main() {
   const startupStartedAt = Date.now();
   const projectRoot = __dirname;
   const publicDir = path.join(projectRoot, 'public');
+  const distDir = path.join(projectRoot, 'dist');
   const config = loadConfig(projectRoot);
   const app = express();
   const indexer = new TimelineIndexer(config);
   const imageService = new ImageService(config, indexer);
   const auth = new AuthService(config);
   const uploader = createUploader(config.paths.cacheDir);
+  const syncService = new SyncService({
+    cacheDir: config.paths.cacheDir,
+    indexer,
+    authenticate: (secret) => auth.authenticate(secret),
+    getFolderTree: () => buildFolderTree(config.paths.photoFolders || []),
+    createFolder: async (rootId, relativePath, folderName) => {
+      const selectedRoot = config.paths.photoFolders[Number(rootId)];
+      if (!selectedRoot) throw new Error('Invalid upload root.');
+      const safeRelative = String(relativePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+      const baseDir = path.resolve(selectedRoot, safeRelative || '.');
+      if (!ensurePathInside(selectedRoot, baseDir)) throw new Error('Invalid upload folder.');
+      const targetDir = uniqueFolderPath(baseDir, sanitizeFileName(folderName || 'New Folder'));
+      await fs.promises.mkdir(targetDir, { recursive: true });
+      return { rootId, relativePath: path.relative(selectedRoot, targetDir).replace(/\\/g, '/') || '.' };
+    },
+    deletePhoto: async (photoId) => {
+      const photo = indexer.getPhoto(photoId);
+      if (!photo) throw new Error('Media not found.');
+      const root = (config.paths.photoFolders || []).find((item) => ensurePathInside(item, photo.filePath));
+      if (!root) throw new Error('That file is outside the configured photo folders.');
+      const trashPath = moveToTrash(root, photo.filePath);
+      await fs.promises.mkdir(path.dirname(trashPath), { recursive: true });
+      await fs.promises.rename(photo.filePath, trashPath);
+      await indexer.removeMediaFile(photoId);
+      return { photoId, isoDate: photo.isoDate, trashedTo: trashPath };
+    },
+    resolveDeviceSyncRoot: async ({ deviceId, deviceName }) => {
+      const rootId = String(config.paths.deviceSyncRootId || '');
+      if (!rootId) return null;
+      const syncRootPath = config.paths.deviceSyncRoot;
+      const baseName = deviceName || `device-${deviceId.slice(0, 6)}`;
+      const deviceRootPath = path.join(syncRootPath, baseName);
+      await fs.promises.mkdir(deviceRootPath, { recursive: true });
+      return {
+        rootId,
+        rootLabel: path.basename(syncRootPath) || syncRootPath,
+        deviceFolderName: baseName,
+        baseRelativePath: baseName
+      };
+    }
+  });
 
   app.disable('x-powered-by');
   app.use(express.json({ limit: '8mb' }));
   app.use(express.urlencoded({ extended: false, limit: '8mb' }));
 
   const initialBuild = await indexer.init();
+  await syncService.init();
   setInterval(() => indexer.scheduleRefresh('interval'), config.indexing.rebuildIntervalMs).unref();
 
   app.use('/vendor/phosphor/regular', express.static(path.join(projectRoot, 'node_modules', '@phosphor-icons', 'web', 'src', 'regular'), {
@@ -250,15 +294,9 @@ async function main() {
       res.redirect('/');
       return;
     }
-    sendNoStoreFile(res, path.join(publicDir, 'login.html'));
+    sendNoStoreFile(res, path.join(distDir, 'login.html'));
   });
 
-  app.get('/login.css', (req, res) => sendNoStoreFile(res, path.join(publicDir, 'login.css')));
-  app.get('/login.js', (req, res) => sendNoStoreFile(res, path.join(publicDir, 'login.js')));
-  app.get('/editor.css', (req, res) => sendNoStoreFile(res, path.join(publicDir, 'editor.css')));
-  app.get('/media-viewer.css', (req, res) => sendNoStoreFile(res, path.join(publicDir, 'media-viewer.css')));
-  app.get('/editor.js', (req, res) => sendNoStoreFile(res, path.join(publicDir, 'editor.js')));
-  app.get('/media-viewer.js', (req, res) => sendNoStoreFile(res, path.join(publicDir, 'media-viewer.js')));
   app.get('/service-worker.js', (req, res) => sendNoStoreFile(res, path.join(publicDir, 'service-worker.js')));
 
   app.post('/auth/login', (req, res) => {
@@ -292,13 +330,38 @@ async function main() {
     res.json({ ok: true, redirectTo: auth.enabled ? '/login' : '/' });
   });
 
+  app.post('/api/sync/connect', async (req, res) => {
+    try {
+      const payload = await syncService.connect({
+        secret: typeof req.body?.secret === 'string' ? req.body.secret : '',
+        deviceName: typeof req.body?.deviceName === 'string' ? req.body.deviceName : '',
+        platform: typeof req.body?.platform === 'string' ? req.body.platform : ''
+      });
+      res.json(payload);
+    } catch (error) {
+      res.status(401).json({ error: error.message || 'Sync connection failed.' });
+    }
+  });
+
+  async function requireSyncAuth(req, res, next) {
+    const header = String(req.headers.authorization || '');
+    const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+    const device = await syncService.authenticateToken(token);
+    if (!device) {
+      res.status(401).json({ error: 'Unauthorized sync client.' });
+      return;
+    }
+    req.syncDevice = device;
+    next();
+  }
+
   app.use(auth.middleware());
   app.use('/api', (req, res, next) => {
     res.setHeader('Cache-Control', 'no-store');
     next();
   });
 
-  app.use(express.static(publicDir, {
+  app.use(express.static(distDir, {
     index: false,
     etag: true,
     maxAge: '10m'
@@ -310,6 +373,122 @@ async function main() {
 
   app.get('/api/bootstrap', (req, res) => {
     res.json(indexer.getBootstrap());
+  });
+
+  app.get('/api/sync/bootstrap', requireSyncAuth, (req, res) => {
+    res.json(syncService.buildBootstrapPayload());
+  });
+
+  app.get('/api/sync/changes', requireSyncAuth, async (req, res) => {
+    const since = req.query.since !== undefined ? Number(req.query.since) : 0;
+    res.json(await syncService.listChangesSince(since));
+  });
+
+  app.post('/api/sync/mutations', requireSyncAuth, async (req, res) => {
+    try {
+      const mutations = Array.isArray(req.body?.mutations) ? req.body.mutations : [];
+      res.json(await syncService.applyMutations(mutations));
+    } catch (error) {
+      res.status(500).json({ error: error.message || 'Failed to apply mutations.' });
+    }
+  });
+
+  app.post('/api/sync/media/upload', requireSyncAuth, async (req, res) => {
+    let uploadedDestination = '';
+    try {
+      await runMulter(req, res, uploader.single('file'));
+      const file = req.file;
+      if (!file) {
+        res.status(400).json({ error: 'No media file was uploaded.' });
+        return;
+      }
+
+      const deviceSyncRoot = req.syncDevice?.syncRoot;
+      if (!deviceSyncRoot?.rootId || !deviceSyncRoot?.baseRelativePath) {
+        res.status(400).json({ error: 'This device is not configured for media sync uploads.' });
+        return;
+      }
+
+      const requestedRootId = String(req.body?.rootId || '');
+      if (requestedRootId !== String(deviceSyncRoot.rootId)) {
+        res.status(400).json({ error: 'Upload root does not match the connected device namespace.' });
+        return;
+      }
+
+      const selectedRoot = config.paths.photoFolders[Number(deviceSyncRoot.rootId)];
+      if (!selectedRoot) {
+        res.status(400).json({ error: 'Invalid sync upload root.' });
+        return;
+      }
+
+      const baseRelativePath = String(deviceSyncRoot.baseRelativePath || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+      const requestedRelativePath = String(req.body?.relativePath || '')
+        .replace(/\\/g, '/')
+        .replace(/^\/+/, '')
+        .replace(/\/+$/, '');
+      if (!requestedRelativePath || (requestedRelativePath !== baseRelativePath && !requestedRelativePath.startsWith(`${baseRelativePath}/`))) {
+        res.status(400).json({ error: 'Upload path must stay inside the device sync namespace.' });
+        return;
+      }
+
+      const destinationDir = path.resolve(selectedRoot, requestedRelativePath || '.');
+      if (!ensurePathInside(selectedRoot, destinationDir)) {
+        res.status(400).json({ error: 'Invalid sync upload folder.' });
+        return;
+      }
+
+      await fs.promises.mkdir(destinationDir, { recursive: true });
+      const safeFileName = sanitizeFileName(req.body?.fileName || file.originalname || path.basename(file.path));
+      uploadedDestination = uniqueDestinationPath(destinationDir, safeFileName);
+      await copyUploadedFilePreservingOriginal(file, uploadedDestination);
+
+      const addedPhotos = await indexer.addMediaFiles([uploadedDestination]);
+      const photo = addedPhotos[0] || null;
+      if (!photo) {
+        throw new Error('Upload completed, but the server could not index the media file.');
+      }
+
+      await syncService.appendChange('media.upsert', photo.id, {
+        media: syncService.serializeMediaRecord(photo)
+      });
+
+      res.json({
+        ok: true,
+        localAssetId: String(req.body?.localAssetId || ''),
+        photo: syncService.serializeMediaRecord(photo),
+        relativePath: requestedRelativePath || '.'
+      });
+    } catch (error) {
+      if (uploadedDestination) {
+        await fs.promises.rm(uploadedDestination, { force: true }).catch(() => {});
+      }
+      res.status(500).json({ error: error.message || 'Mobile media upload failed.' });
+    } finally {
+      if (req.file?.path) {
+        await fs.promises.rm(req.file.path, { force: true }).catch(() => {});
+      }
+    }
+  });
+
+  app.get('/api/sync/media/:variant/:photoId', requireSyncAuth, async (req, res) => {
+    try {
+      const variant = String(req.params.variant || '');
+      if (variant === 'thumb') {
+        await imageService.sendThumb(res, req.params.photoId);
+        return;
+      }
+      if (variant === 'preview') {
+        await imageService.sendPreview(res, req.params.photoId);
+        return;
+      }
+      if (variant === 'full') {
+        await imageService.sendFull(res, req.params.photoId);
+        return;
+      }
+      res.status(400).json({ error: 'Unsupported media variant.' });
+    } catch (error) {
+      res.status(500).json({ error: error.message || 'Failed to stream synced media.' });
+    }
   });
 
   app.get('/api/timeline', (req, res) => {
@@ -377,6 +556,10 @@ async function main() {
 
       const raw = typeof req.body?.raw === 'string' ? req.body.raw : '';
       const day = await indexer.saveEntry(isoDate, raw);
+      await syncService.appendChange(day ? 'entry.upsert' : 'entry.delete', isoDate, {
+        entry: syncService.serializeEntryRecord(isoDate),
+        day
+      });
       res.json({ ok: true, day, isoDate, removed: !day });
     } catch (error) {
       res.status(500).json({ error: error.message || 'Failed to save entry.' });
@@ -405,7 +588,12 @@ async function main() {
       }
       const targetDir = uniqueFolderPath(baseDir, folderName);
       await fs.promises.mkdir(targetDir, { recursive: true });
-      res.json({ ok: true, relativePath: path.relative(selectedRoot, targetDir).replace(/\\/g, '/') || '.' });
+      const createdRelativePath = path.relative(selectedRoot, targetDir).replace(/\\/g, '/') || '.';
+      await syncService.appendChange('folder.upsert', `${rootId}:${createdRelativePath}`, {
+        rootId,
+        relativePath: createdRelativePath
+      });
+      res.json({ ok: true, relativePath: createdRelativePath });
     } catch (error) {
       res.status(500).json({ error: error.message || 'Failed to create folder.' });
     }
@@ -502,7 +690,12 @@ async function main() {
       if (Object.keys(dateOverrides).length) {
         await indexer.setMediaDateOverridesByPath(dateOverrides);
       }
-      await indexer.addMediaFiles(uploadedPaths);
+      const addedPhotos = await indexer.addMediaFiles(uploadedPaths);
+      for (const photo of addedPhotos) {
+        await syncService.appendChange('media.upsert', photo.id, {
+          media: syncService.serializeMediaRecord(photo)
+        });
+      }
       const distinctDates = new Set(copied.map((item) => item.isoDate).filter(Boolean));
       res.json({
         ok: true,
@@ -528,6 +721,9 @@ async function main() {
         res.status(404).json({ error: 'Media not found.' });
         return;
       }
+      await syncService.appendChange('media.upsert', req.params.photoId, {
+        media: syncService.serializeMediaRecord(photo)
+      });
       res.json({ ok: true, photoId: req.params.photoId, tags: photo.tags || [] });
     } catch (error) {
       res.status(500).json({ error: error.message || 'Failed to save tags.' });
@@ -541,6 +737,9 @@ async function main() {
         res.status(404).json({ error: 'Media not found.' });
         return;
       }
+      await syncService.appendChange('media.upsert', req.params.photoId, {
+        media: syncService.serializeMediaRecord(photo)
+      });
       res.json({ ok: true, photoId: req.params.photoId, description: photo.description || '' });
     } catch (error) {
       res.status(500).json({ error: error.message || 'Failed to save description.' });
@@ -559,6 +758,9 @@ async function main() {
         res.status(404).json({ error: 'Media not found.' });
         return;
       }
+      await syncService.appendChange('media.upsert', req.params.photoId, {
+        media: syncService.serializeMediaRecord(photo)
+      });
       res.json({ ok: true, photo });
     } catch (error) {
       res.status(500).json({ error: error.message || 'Failed to rename media.' });
@@ -603,6 +805,9 @@ async function main() {
         res.status(404).json({ error: 'Media not found.' });
         return;
       }
+      await syncService.appendChange('media.upsert', req.params.photoId, {
+        media: syncService.serializeMediaRecord(photo)
+      });
       res.json({ ok: true, photo });
     } catch (error) {
       res.status(500).json({ error: error.message || 'Failed to move media.' });
@@ -616,6 +821,9 @@ async function main() {
         res.status(404).json({ error: 'Media not found.' });
         return;
       }
+      await syncService.appendChange('media.upsert', req.params.photoId, {
+        media: syncService.serializeMediaRecord(photo)
+      });
       res.json({ ok: true, photoId: req.params.photoId, liked: Boolean(photo.liked) });
     } catch (error) {
       res.status(500).json({ error: error.message || 'Failed to save like state.' });
@@ -634,6 +842,9 @@ async function main() {
         res.status(404).json({ error: 'Media not found.' });
         return;
       }
+      await syncService.appendChange('media.upsert', req.params.photoId, {
+        media: syncService.serializeMediaRecord(photo)
+      });
       res.json({
         ok: true,
         photoId: req.params.photoId,
@@ -663,6 +874,9 @@ async function main() {
         res.status(404).json({ error: 'Media not found.' });
         return;
       }
+      await syncService.appendChange('media.upsert', req.params.photoId, {
+        media: syncService.serializeMediaRecord(photo)
+      });
       res.json({ ok: true, photo });
     } catch (error) {
       res.status(500).json({ error: error.message || 'Failed to save media date/time.' });
@@ -681,11 +895,13 @@ async function main() {
         res.status(400).json({ error: 'That file is outside the configured photo folders.' });
         return;
       }
-      const trashPath = moveToTrash(root, photo.filePath);
-      await fs.promises.mkdir(path.dirname(trashPath), { recursive: true });
-      await fs.promises.rename(photo.filePath, trashPath);
-      await indexer.removeMediaFile(req.params.photoId);
-      res.json({ ok: true, photoId: req.params.photoId, isoDate: photo.isoDate, trashedTo: trashPath });
+      const deleted = await syncService.deletePhoto(req.params.photoId);
+      await syncService.appendChange('media.delete', req.params.photoId, {
+        photoId: req.params.photoId,
+        deleted: true,
+        isoDate: deleted.isoDate
+      });
+      res.json({ ok: true, photoId: req.params.photoId, isoDate: deleted.isoDate, trashedTo: deleted.trashedTo });
     } catch (error) {
       res.status(500).json({ error: error.message || 'Delete failed.' });
     }
@@ -702,7 +918,7 @@ async function main() {
       res.status(400).send('Invalid entry date.');
       return;
     }
-    sendNoStoreFile(res, path.join(publicDir, 'editor.html'));
+    sendNoStoreFile(res, path.join(distDir, 'editor.html'));
   });
 
   app.get('/media/thumb/:photoId', async (req, res) => {
@@ -722,7 +938,7 @@ async function main() {
   });
 
   app.get('*', (req, res) => {
-    sendNoStoreFile(res, path.join(publicDir, 'index.html'));
+    sendNoStoreFile(res, path.join(distDir, 'index.html'));
   });
 
   await new Promise((resolve, reject) => {

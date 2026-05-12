@@ -47,6 +47,14 @@ class AuthService {
     return req.path.startsWith('/api/') || req.path.startsWith('/media/');
   }
 
+  isPublicAssetPath(req) {
+    return req.path.startsWith('/assets/');
+  }
+
+  isPublicSyncPath(req) {
+    return req.path.startsWith('/api/sync/');
+  }
+
   setSessionCookie(res, token) {
     const maxAgeSeconds = Math.floor(this.sessionTtlMs / 1000);
     const parts = [
@@ -108,7 +116,16 @@ class AuthService {
       }
 
       if (this.isProtectedApiPath(req)) {
+        if (this.isPublicSyncPath(req)) {
+          next();
+          return;
+        }
         res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
+      if (this.isPublicAssetPath(req)) {
+        next();
         return;
       }
 

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LifeServer Login</title>
+    <link rel="stylesheet" href="/vendor/phosphor/regular/style.css" />
+    <link rel="stylesheet" href="/vendor/phosphor/fill/style.css" />
+    <link rel="stylesheet" href="/vendor/phosphor/bold/style.css" />
+  </head>
+  <body>
+    <main class="login-shell">
+      <section class="login-card" aria-label="Login">
+        <div class="login-brand"><i class="ph-fill ph-book-open"></i></div>
+        <h1>LifeServer</h1>
+        <p class="login-subtitle">Paste your access key to continue.</p>
+        <form id="loginForm" class="login-form" autocomplete="off">
+          <label class="field-label" for="secretInput">Access key</label>
+          <textarea id="secretInput" rows="4" spellcheck="false" autocapitalize="none" autocomplete="off" placeholder="Paste the full secret from config.json"></textarea>
+          <button id="loginButton" class="login-button" type="submit"><i class="ph-bold ph-sign-in"></i><span>Unlock</span></button>
+          <p id="loginError" class="login-error hidden" role="alert"></p>
+        </form>
+      </section>
+    </main>
+    <script type="module" src="/client/pages/login/main.js"></script>
+  </body>
+</html>

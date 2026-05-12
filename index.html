@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LifeServer</title>
+    <link rel="stylesheet" href="/vendor/phosphor/regular/style.css" />
+    <link rel="stylesheet" href="/vendor/phosphor/fill/style.css" />
+    <link rel="stylesheet" href="/vendor/phosphor/duotone/style.css" />
+    <link rel="stylesheet" href="/vendor/phosphor/bold/style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header id="topbar" class="topbar">
+        <div class="topbar-main-row">
+          <div class="topbar-brand-group">
+            <button id="homeButton" class="topbar-brand" type="button" aria-label="Go to newest entry">
+              <span class="topbar-brand-mark" aria-hidden="true"><i class="ph-fill ph-book-open"></i><span class="topbar-brand-name">LifeServer</span></span>
+            </button>
+            <div class="topbar-title-stack">
+              <button id="topbarDateLabel" class="topbar-date-button" type="button" aria-label="Jump to a specific date">Memory browser</button>
+              <p id="topbarMeta" class="topbar-meta hidden"></p>
+            </div>
+          </div>
+
+          <div id="topbarActions" class="topbar-actions">
+            <button id="uploadTopbarButton" class="ghost-button icon-button" type="button" aria-label="Upload files"><i class="ph-bold ph-plus"></i></button>
+            <button id="searchToggleButton" class="ghost-button icon-button" type="button" aria-label="Search"><i class="ph ph-magnifying-glass"></i></button>
+            <button id="settingsButton" class="profile-button" type="button" aria-label="Open settings">
+              <span class="profile-avatar" aria-hidden="true">LS</span>
+            </button>
+          </div>
+        </div>
+
+        <form id="searchForm" class="search-shell hidden" autocomplete="off">
+          <button id="searchBackButton" type="button" class="ghost-button icon-button search-back-button hidden" aria-label="Exit search"><i class="ph-bold ph-caret-left"></i></button>
+          <span class="search-icon"><i class="ph ph-magnifying-glass"></i></span>
+          <input id="searchInput" type="search" placeholder="Search journals by text or date" />
+          <div id="searchDetailNav" class="search-detail-nav hidden">
+            <button id="searchDetailPrevResult" class="ghost-button icon-button" type="button" aria-label="Previous result in entry"><i class="ph-bold ph-arrow-up"></i></button>
+            <button id="searchDetailNextResult" class="ghost-button icon-button" type="button" aria-label="Next result in entry"><i class="ph-bold ph-arrow-down"></i></button>
+          </div>
+          <button id="clearSearch" type="button" class="ghost-button search-clear-button hidden" tabindex="-1" aria-hidden="true">Clear</button>
+          <button id="searchCloseButton" type="button" class="ghost-button icon-button hidden" aria-label="Clear search"><i class="ph-bold ph-x"></i></button>
+        </form>
+      </header>
+
+      <div class="workspace">
+        <main class="main-stage">
+          <section id="homeView" class="home-view">
+            <section id="yearSection" class="year-section">
+              <div class="section-header">
+                <div style="width: min(100%, 600px); margin: auto;">
+                  <h1 id="yearSectionTitle" class="section-title">Book of Life</h1>
+                  <p id="yearSectionSubtitle" style="display: flex;" class="section-subtitle"></p>
+                </div>
+              </div>
+
+              <div class="year-carousel-shell">
+                <button id="yearBackButton" class="carousel-nav" type="button" aria-label="Scroll years left"><i class="ph-bold ph-caret-left"></i></button>
+                <div id="yearCarousel" class="year-carousel"></div>
+                <button id="yearNextButton" class="carousel-nav" type="button" aria-label="Scroll years right"><i class="ph-bold ph-caret-right"></i></button>
+              </div>
+            </section>
+
+            <section id="timelineSection" class="timeline-section">
+              <section id="searchStatusSection" class="search-status-section hidden" aria-live="polite">
+                <div class="search-status-head">
+                  <div class="search-status-copy">
+                    <p id="searchStatusEyebrow" class="search-status-eyebrow hidden"><i class="ph ph-spinner-gap is-spinning"></i><span>Searching...</span></p>
+                    <h2 id="searchStatusTitle" class="search-status-title"></h2>
+                    <p id="searchStatusSubtitle" class="search-status-subtitle"></p>
+                  </div>
+                </div>
+                <div id="searchFilters" class="search-filters"></div>
+              </section>
+              <div id="timelinePane" class="timeline-pane">
+                <div id="timelineTopSpacer" class="timeline-spacer"></div>
+                <div id="timelineFeed" class="timeline-feed">
+                  <div class="timeline-boot-state" aria-live="polite">
+                    <div class="timeline-boot-card">
+                      <div class="timeline-boot-head"><i class="ph ph-spinner-gap is-spinning"></i><strong>Loading your timeline…</strong></div>
+                      <p>Preparing the first days so the page becomes usable before the full cache finishes.</p>
+                      <div class="timeline-skeleton-list">
+                        <span class="timeline-skeleton-line wide"></span>
+                        <span class="timeline-skeleton-line"></span>
+                        <span class="timeline-skeleton-line short"></span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div id="timelineBottomSpacer" class="timeline-spacer"></div>
+              </div>
+              <div id="timelineStatus" class="timeline-status hidden" aria-live="polite"></div>
+            </section>
+          </section>
+
+          <section id="searchDetailView" class="search-detail-view hidden" aria-live="polite">
+            <div class="search-detail-shell">
+              <div id="searchDetailBody" class="search-detail-body"></div>
+            </div>
+          </section>
+
+          <section id="explorerView" class="explorer-view hidden" aria-live="polite">
+            <div class="explorer-shell">
+              <div class="explorer-head">
+                <button id="explorerBackButton" class="back-link icon-button" type="button" aria-label="Go back"><i class="ph-bold ph-caret-left"></i></button>
+                <div class="explorer-heading-copy">
+                  <h2 id="explorerTitle" class="explorer-title"></h2>
+                  <p id="explorerSubtitle" class="explorer-subtitle"></p>
+                </div>
+              </div>
+              <div id="explorerGrid" class="explorer-grid"></div>
+            </div>
+          </section>
+        </main>
+      </div>
+
+      <div id="scrollYearMarks" class="scroll-year-marks" aria-hidden="true"></div>
+      <div id="jumpLoader" class="jump-loader hidden" aria-live="polite"><i class="ph ph-spinner-gap is-spinning"></i><span id="jumpLoaderLabel">Loading...</span></div>
+      <div id="scrollHandle" class="scroll-handle" aria-hidden="true">
+        <div id="scrollThumb" class="scroll-thumb">
+          <span id="scrollThumbLabel" class="scroll-thumb-label">-</span>
+          <button id="scrollGrabber" class="scroll-grab" type="button" aria-label="Drag timeline position">
+            <i class="ph-bold ph-dots-six-vertical"></i>
+          </button>
+        </div>
+      </div>
+      <button id="scrollTopButton" class="scroll-top-button" type="button" aria-label="Scroll to newest"><i class="ph-bold ph-arrow-up"></i></button>
+    </div>
+
+    <div id="settingsModal" class="settings-modal hidden" role="dialog" aria-modal="true" aria-label="Settings">
+      <div class="settings-backdrop"></div>
+      <div class="settings-window">
+        <div class="settings-window-head">
+          <h2>Settings</h2>
+          <button id="settingsCloseButton" class="ghost-button icon-button" type="button" aria-label="Close settings"><i class="ph-bold ph-x"></i></button>
+        </div>
+        <div class="settings-layout">
+          <section class="settings-hero">
+            <span class="settings-avatar" aria-hidden="true">BoL</span>
+            <div class="settings-hero-copy">
+              <h3>Book of Life</h3>
+              <p>Quick controls for browsing, capturing, and customizing your journal.</p>
+            </div>
+          </section>
+
+          <div class="settings-grid">
+            <section class="settings-panel">
+              <div class="settings-label">Quick Actions</div>
+              <div class="settings-action-list">
+                <button id="settingsHomeButton" class="settings-action-button" type="button"><i class="ph-fill ph-house"></i><span>Newest entry</span></button>
+                <button id="settingsTodayButton" class="settings-action-button" type="button"><i class="ph-duotone ph-calendar-dots"></i><span>Open today</span></button>
+                <button id="settingsJumpButton" class="settings-action-button" type="button"><i class="ph-duotone ph-calendar-blank"></i><span>Jump to date</span></button>
+                <button id="settingsUploadButton" class="settings-action-button" type="button"><i class="ph-duotone ph-images-square"></i><span>Upload files</span></button>
+              </div>
+            </section>
+
+            <section class="settings-panel">
+              <div class="settings-label">Appearance</div>
+              <div class="theme-choice-row">
+                <button id="themeLight" class="theme-choice" type="button" data-theme-choice="light">Light</button>
+                <button id="themeDark" class="theme-choice" type="button" data-theme-choice="dark">Dark</button>
+                <button id="themeSepia" class="theme-choice" type="button" data-theme-choice="sepia">Sepia</button>
+                <button id="themeForest" class="theme-choice" type="button" data-theme-choice="forest">Forest</button>
+                <button id="themeOcean" class="theme-choice" type="button" data-theme-choice="ocean">Ocean</button>
+                <button id="themeRose" class="theme-choice" type="button" data-theme-choice="rose">Rose</button>
+              </div>
+            </section>
+
+            <section class="settings-panel">
+              <div class="settings-label">Account</div>
+              <button id="logoutButton" class="theme-choice settings-logout" type="button"><i class="ph-bold ph-sign-out"></i> Logout</button>
+            </section>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="uploadModal" class="upload-modal hidden" role="dialog" aria-modal="true" aria-label="Upload media">
+      <div class="upload-backdrop"></div>
+      <div class="upload-window">
+        <div class="settings-window-head">
+          <div>
+            <h2 id="uploadTitle">Add media</h2>
+          </div>
+          <button id="uploadClose" class="ghost-button icon-button" type="button" aria-label="Close upload"><i class="ph-bold ph-x"></i></button>
+        </div>
+        <label class="upload-file-input hidden" aria-hidden="true">
+          <input id="uploadFileInput" type="file" multiple accept="image/*,video/*,.heic,.heif,.mov,.mp4,.m4v,.webm,.avi,.mkv,.3gp" />
+        </label>
+        <div id="uploadSelectionLoading" class="upload-selection-loading hidden" aria-live="polite"><i class="ph ph-spinner-gap is-spinning"></i><span>Preparing previews...</span></div>
+        <div class="upload-context-row">
+          <button id="uploadDateModeToggle" class="upload-context-toggle" type="button">Uploading for</button>
+          <button id="uploadContextDateTrigger" class="upload-preview-trigger" type="button">May 8, 2026</button>
+          <input id="uploadSharedDate" class="upload-preview-picker-input" type="date" />
+        </div>
+        <div id="uploadPreviewList" class="upload-preview-list upload-preview-list-view"></div>
+        <button id="uploadFolderButton" class="upload-folder-button" type="button">
+          <span class="upload-folder-icon"><i class="ph-duotone ph-folder-open"></i></span>
+          <strong id="uploadFolderLabel">Choose a folder</strong>
+        </button>
+        <div class="upload-folder-tree-shell">
+          <button id="uploadNewFolder" class="ghost-button icon-button" type="button" aria-label="Create folder"><i class="ph-bold ph-plus"></i></button>
+          <div id="uploadFolderTree" class="upload-folder-tree"></div>
+        </div>
+        <input id="uploadSetExifDate" class="hidden" type="checkbox" />
+        <button id="uploadAddFiles" class="upload-file-picker" type="button">
+          <span><i class="ph-bold ph-plus"></i> Add More</span>
+        </button>
+        <div class="upload-actions upload-actions-stacked">
+          <button id="uploadSubmit" class="save-button upload-submit-button" type="button"><span class="upload-submit-fill"></span><span class="upload-submit-content"><i class="ph-bold ph-upload-simple"></i><span id="uploadSubmitLabel">Upload</span></span></button>
+          <button id="uploadCancel" class="ghost-button upload-cancel-button hidden" type="button">Cancel upload</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="calendarModal" class="calendar-modal hidden" role="dialog" aria-modal="true" aria-label="Choose a date">
+      <div class="calendar-backdrop"></div>
+      <div class="calendar-window">
+        <div class="settings-window-head calendar-window-head">
+          <div class="calendar-head-copy">
+            <h2 id="calendarTitle">Choose a date</h2>
+            <p id="calendarSubtitle" class="calendar-subtitle"></p>
+          </div>
+          <button id="calendarCloseButton" class="ghost-button icon-button" type="button" aria-label="Close calendar"><i class="ph-bold ph-x"></i></button>
+        </div>
+        <div class="calendar-toolbar">
+          <button id="calendarPrevMonth" class="calendar-nav-button" type="button" aria-label="Previous month"><i class="ph-bold ph-caret-left"></i></button>
+          <div id="calendarMonthLabel" class="calendar-month-label">Month</div>
+          <button id="calendarNextMonth" class="calendar-nav-button" type="button" aria-label="Next month"><i class="ph-bold ph-caret-right"></i></button>
+        </div>
+        <div class="calendar-weekdays" aria-hidden="true">
+          <span>Sun</span>
+          <span>Mon</span>
+          <span>Tue</span>
+          <span>Wed</span>
+          <span>Thu</span>
+          <span>Fri</span>
+          <span>Sat</span>
+        </div>
+        <div id="calendarGrid" class="calendar-grid" role="grid" aria-label="Calendar"></div>
+        <div id="calendarFooter" class="calendar-footer">
+          <div class="calendar-footer-copy">
+            <strong id="calendarSelectionLabel">Choose a date</strong>
+            <p id="calendarHelperText" class="calendar-helper-text"></p>
+          </div>
+          <div class="calendar-actions">
+            <button id="calendarCancelButton" class="ghost-button" type="button">Cancel</button>
+            <button id="calendarConfirmButton" class="save-button" type="button">Confirm</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="timeModal" class="calendar-modal time-modal hidden" role="dialog" aria-modal="true" aria-label="Choose a time">
+      <div class="calendar-backdrop"></div>
+      <div class="calendar-window time-window">
+        <div class="settings-window-head calendar-window-head">
+          <div class="calendar-head-copy">
+            <h2 id="timeTitle">Choose a time</h2>
+            <p id="timeSubtitle" class="calendar-subtitle"></p>
+          </div>
+          <button id="timeCloseButton" class="ghost-button icon-button" type="button" aria-label="Close time picker"><i class="ph-bold ph-x"></i></button>
+        </div>
+        <div class="time-picker-shell">
+          <div class="time-spinner-grid">
+            <div class="time-spinner-column">
+              <span class="time-spinner-label">Hour</span>
+              <div class="time-spinner-stack">
+                <div id="timeHourLane" class="time-spinner-lane" tabindex="0" data-time-lane="hour" role="listbox" aria-label="Hour"></div>
+                <div class="time-spinner-selection" aria-hidden="true"></div>
+              </div>
+            </div>
+            <div class="time-spinner-column">
+              <span class="time-spinner-label">Minute</span>
+              <div class="time-spinner-stack">
+                <div id="timeMinuteLane" class="time-spinner-lane" tabindex="0" data-time-lane="minute" role="listbox" aria-label="Minute"></div>
+                <div class="time-spinner-selection" aria-hidden="true"></div>
+              </div>
+            </div>
+            <div class="time-spinner-column time-period-column">
+              <span class="time-spinner-label">AM / PM</span>
+              <div class="time-spinner-stack">
+                <div id="timePeriodLane" class="time-spinner-lane" tabindex="0" data-time-lane="period" role="listbox" aria-label="AM or PM"></div>
+                <div class="time-spinner-selection" aria-hidden="true"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="calendar-footer">
+          <div class="calendar-footer-copy">
+            <strong id="timeSelectionLabel">Choose a time</strong>
+            <p id="timeHelperText" class="calendar-helper-text"></p>
+          </div>
+          <div class="calendar-actions">
+            <button id="timeCancelButton" class="ghost-button" type="button">Cancel</button>
+            <button id="timeConfirmButton" class="save-button" type="button">Confirm</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <button id="uploadResume" class="upload-resume hidden" type="button" aria-label="Show upload progress"><i class="ph-bold ph-cloud-arrow-up"></i><span id="uploadResumeLabel">Uploading...</span></button>
+
+    <script type="module" src="/client/pages/app/main.js"></script>
+  </body>
+</html>

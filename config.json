@@ -15,6 +15,8 @@
     "photoFolders": [
       "${LIFESERVER_PHOTO_ROOT}"
     ],
+    "deviceSyncRoot": "./storage/device-sync",
+    "includeDeviceSyncRoot": true,
     "cacheDir": "${LIFESERVER_CACHE_DIR}"
   },
   "indexing": {
