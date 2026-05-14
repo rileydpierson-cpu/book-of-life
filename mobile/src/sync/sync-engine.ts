@@ -9,19 +9,20 @@ import type { SyncBootstrapPayload, SyncChangesPayload, SyncConnection, SyncMuta
 
 export function createSyncEngine() {
   return {
-    async connect(serverUrl: string, secret: string, deviceName = 'Book of Life Mobile', platform = 'expo') {
-      const payload = await mobileFetchJson<{ deviceId: string; authToken: string; syncRoot?: SyncConnection['syncRoot'] }>(
+    async connect(serverUrl: string, username: string, password: string, deviceName = 'Book of Life Mobile', platform = 'expo') {
+      const payload = await mobileFetchJson<{ deviceId: string; authToken: string; username?: string; syncRoot?: SyncConnection['syncRoot'] }>(
         { serverUrl },
         '/api/sync/connect',
         {
           method: 'POST',
-          body: JSON.stringify({ secret, deviceName, platform })
+          body: JSON.stringify({ username, password, deviceName, platform })
         }
       );
       const connection: SyncConnection = {
         serverUrl,
         deviceId: payload.deviceId,
         authToken: payload.authToken,
+        username: typeof payload.username === 'string' ? payload.username : username,
         syncRoot: payload.syncRoot || null
       };
       await saveConnection(connection);

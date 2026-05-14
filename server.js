@@ -213,7 +213,17 @@ async function main() {
   const syncService = new SyncService({
     cacheDir: config.paths.cacheDir,
     indexer,
-    authenticate: (secret) => auth.authenticate(secret),
+    authenticate: async ({ username, password }) => {
+      const normalizedUsername = String(username || '').trim();
+      if (normalizedUsername) {
+        try {
+          return auth.authenticateMobileAccount(normalizedUsername, password);
+        } catch (error) {
+          return { ok: false, error: error.message || 'That account was not accepted.' };
+        }
+      }
+      return { ok: false, error: 'That account was not accepted.' };
+    },
     getFolderTree: () => buildFolderTree(config.paths.photoFolders || []),
     createFolder: async (rootId, relativePath, folderName) => {
       const selectedRoot = config.paths.photoFolders[Number(rootId)];
@@ -312,17 +322,36 @@ async function main() {
       return;
     }
 
-    const secret = typeof req.body?.secret === 'string' ? req.body.secret : '';
-    if (!auth.authenticate(secret)) {
+    const username = typeof req.body?.username === 'string' ? req.body.username : '';
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    try {
+      const result = auth.login(username, password);
+      auth.recordSuccessfulLogin(ip);
+      const token = auth.createSession(result.username);
+      auth.setSessionCookie(res, token);
+      res.json({ ok: true, redirectTo: '/', username: result.username });
+    } catch (error) {
       auth.recordFailedLogin(ip);
-      res.status(401).json({ ok: false, error: 'That secret was not accepted.' });
+      res.status(error.statusCode || 401).json({ ok: false, error: error.message || 'Login failed.' });
+    }
+  });
+
+  app.post('/auth/signup', (req, res) => {
+    if (!auth.enabled) {
+      res.json({ ok: true, disabled: true, redirectTo: '/' });
       return;
     }
 
-    auth.recordSuccessfulLogin(ip);
-    const token = auth.createSession();
-    auth.setSessionCookie(res, token);
-    res.json({ ok: true, redirectTo: '/' });
+    const username = typeof req.body?.username === 'string' ? req.body.username : '';
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    try {
+      const result = auth.signup(username, password);
+      const token = auth.createSession(result.username);
+      auth.setSessionCookie(res, token);
+      res.status(201).json({ ok: true, redirectTo: '/', username: result.username });
+    } catch (error) {
+      res.status(error.statusCode || 400).json({ ok: false, error: error.message || 'Signup failed.' });
+    }
   });
 
   app.post('/auth/logout', (req, res) => {
@@ -333,7 +362,8 @@ async function main() {
   app.post('/api/sync/connect', async (req, res) => {
     try {
       const payload = await syncService.connect({
-        secret: typeof req.body?.secret === 'string' ? req.body.secret : '',
+        username: typeof req.body?.username === 'string' ? req.body.username : '',
+        password: typeof req.body?.password === 'string' ? req.body.password : '',
         deviceName: typeof req.body?.deviceName === 'string' ? req.body.deviceName : '',
         platform: typeof req.body?.platform === 'string' ? req.body.platform : ''
       });
@@ -368,7 +398,33 @@ async function main() {
   }));
 
   app.get('/api/auth/status', (req, res) => {
-    res.json({ ok: true, enabled: auth.enabled, authenticated: true });
+    res.json({
+      ok: true,
+      enabled: auth.enabled,
+      authenticated: true,
+      username: req.sessionInfo?.username || null
+    });
+  });
+
+  app.post('/auth/password', (req, res) => {
+    if (!auth.enabled) {
+      res.json({ ok: true, disabled: true });
+      return;
+    }
+    const session = auth.getSession(req);
+    if (!session?.username) {
+      res.status(401).json({ ok: false, error: 'Unauthorized' });
+      return;
+    }
+
+    const currentPassword = typeof req.body?.currentPassword === 'string' ? req.body.currentPassword : '';
+    const nextPassword = typeof req.body?.nextPassword === 'string' ? req.body.nextPassword : '';
+    try {
+      auth.changePassword(session.username, currentPassword, nextPassword);
+      res.json({ ok: true, username: session.username });
+    } catch (error) {
+      res.status(error.statusCode || 400).json({ ok: false, error: error.message || 'Password update failed.' });
+    }
   });
 
   app.get('/api/bootstrap', (req, res) => {

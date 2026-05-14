@@ -1,4 +1,7 @@
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const { ensureDirSync } = require('./utils');
 
 function parseCookies(headerValue) {
   const raw = String(headerValue || '');
@@ -13,22 +16,97 @@ function parseCookies(headerValue) {
   }, {});
 }
 
-function constantTimeSecretMatch(left, right) {
-  const hashLeft = crypto.createHash('sha256').update(String(left || ''), 'utf8').digest();
-  const hashRight = crypto.createHash('sha256').update(String(right || ''), 'utf8').digest();
-  return crypto.timingSafeEqual(hashLeft, hashRight);
+function normalizeUsername(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function validateUsername(value) {
+  const normalized = normalizeUsername(value);
+  if (!normalized) return 'Enter a username.';
+  if (normalized.length < 3) return 'Username must be at least 3 characters.';
+  if (normalized.length > 32) return 'Username must be 32 characters or fewer.';
+  if (!/^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/.test(normalized)) {
+    return 'Usernames may only use letters, numbers, periods, underscores, or hyphens.';
+  }
+  return '';
+}
+
+function validatePassword(value) {
+  const password = String(value || '');
+  if (!password) return 'Enter a password.';
+  if (password.length < 8) return 'Password must be at least 8 characters.';
+  if (password.length > 256) return 'Password is too long.';
+  return '';
+}
+
+function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
+  const passwordHash = crypto.scryptSync(String(password || ''), salt, 64).toString('hex');
+  return { passwordHash, passwordSalt: salt };
+}
+
+function verifyPassword(password, passwordHash, passwordSalt) {
+  if (!passwordHash || !passwordSalt) return false;
+  const left = Buffer.from(String(passwordHash || ''), 'hex');
+  const right = Buffer.from(hashPassword(password, passwordSalt).passwordHash, 'hex');
+  if (left.length !== right.length) return false;
+  return crypto.timingSafeEqual(left, right);
 }
 
 class AuthService {
   constructor(config) {
     this.config = config.auth || {};
-    this.enabled = Boolean(this.config.enabled && this.config.accessSecret);
+    this.enabled = Boolean(this.config.enabled);
     this.cookieName = 'lifeserver_session';
     this.sessions = new Map();
     this.loginAttempts = new Map();
     this.sessionTtlMs = Math.max(1, Number(this.config.sessionDays || 30)) * 24 * 60 * 60 * 1000;
+    this.allowedUsers = new Set((this.config.allowedUsers || []).map(normalizeUsername).filter(Boolean));
+    this.userStorePath = path.resolve(String(this.config.userStorePath || './storage/auth/users.json'));
+    this.users = this.loadUsers();
     this.cleanupInterval = setInterval(() => this.cleanup(), 30 * 60 * 1000);
     this.cleanupInterval.unref();
+  }
+
+  loadUsers() {
+    if (!this.enabled) return new Map();
+    ensureDirSync(path.dirname(this.userStorePath));
+    if (!fs.existsSync(this.userStorePath)) return new Map();
+
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.userStorePath, 'utf8'));
+      const records = Array.isArray(raw?.users) ? raw.users : [];
+      const users = new Map();
+      for (const item of records) {
+        const username = normalizeUsername(item?.username);
+        if (!username || !item?.passwordHash || !item?.passwordSalt) continue;
+        users.set(username, {
+          username,
+          passwordHash: String(item.passwordHash),
+          passwordSalt: String(item.passwordSalt),
+          createdAt: Number(item.createdAt) || Date.now(),
+          updatedAt: Number(item.updatedAt) || Date.now()
+        });
+      }
+      return users;
+    } catch (error) {
+      return new Map();
+    }
+  }
+
+  persistUsers() {
+    ensureDirSync(path.dirname(this.userStorePath));
+    const payload = {
+      users: Array.from(this.users.values())
+        .sort((left, right) => left.username.localeCompare(right.username))
+        .map((user) => ({
+          username: user.username,
+          passwordHash: user.passwordHash,
+          passwordSalt: user.passwordSalt,
+          createdAt: user.createdAt,
+          updatedAt: user.updatedAt
+        }))
+    };
+    fs.writeFileSync(this.userStorePath, JSON.stringify(payload, null, 2), 'utf8');
   }
 
   cleanup() {
@@ -86,7 +164,7 @@ class AuthService {
   }
 
   getSession(req) {
-    if (!this.enabled) return { authenticated: true };
+    if (!this.enabled) return { authenticated: true, username: null };
     const token = this.getSessionToken(req);
     if (!token) return null;
     const session = this.sessions.get(token);
@@ -174,9 +252,10 @@ class AuthService {
     this.loginAttempts.delete(key);
   }
 
-  createSession() {
+  createSession(username) {
     const token = crypto.randomBytes(32).toString('hex');
     this.sessions.set(token, {
+      username: normalizeUsername(username),
       createdAt: Date.now(),
       expiresAt: Date.now() + this.sessionTtlMs
     });
@@ -189,10 +268,104 @@ class AuthService {
     this.clearSessionCookie(res);
   }
 
-  authenticate(secret) {
-    if (!this.enabled) return true;
-    return constantTimeSecretMatch(secret, this.config.accessSecret);
+  isUsernameAllowed(username) {
+    return this.allowedUsers.has(normalizeUsername(username));
   }
+
+  signup(username, password) {
+    if (!this.enabled) return { ok: true, username: null };
+
+    const usernameError = validateUsername(username);
+    if (usernameError) {
+      const error = new Error(usernameError);
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const passwordError = validatePassword(password);
+    if (passwordError) {
+      const error = new Error(passwordError);
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const normalized = normalizeUsername(username);
+    if (!this.isUsernameAllowed(normalized)) {
+      const error = new Error('That username is not approved for access. Add it to LIFESERVER_ALLOWED_USERS first.');
+      error.statusCode = 403;
+      throw error;
+    }
+    if (this.users.has(normalized)) {
+      const error = new Error('That username already exists.');
+      error.statusCode = 409;
+      throw error;
+    }
+
+    const now = Date.now();
+    const { passwordHash, passwordSalt } = hashPassword(password);
+    this.users.set(normalized, {
+      username: normalized,
+      passwordHash,
+      passwordSalt,
+      createdAt: now,
+      updatedAt: now
+    });
+    this.persistUsers();
+    return { ok: true, username: normalized };
+  }
+
+  login(username, password) {
+    if (!this.enabled) return { ok: true, username: null };
+
+    const normalized = normalizeUsername(username);
+    const user = this.users.get(normalized);
+    if (!user || !verifyPassword(password, user.passwordHash, user.passwordSalt)) {
+      const error = new Error('That username or password was not accepted.');
+      error.statusCode = 401;
+      throw error;
+    }
+
+    return { ok: true, username: normalized };
+  }
+
+  authenticateMobileAccount(username, password) {
+    return this.login(username, password);
+  }
+
+  changePassword(username, currentPassword, nextPassword) {
+    const normalized = normalizeUsername(username);
+    const user = this.users.get(normalized);
+    if (!user) {
+      const error = new Error('Account not found.');
+      error.statusCode = 404;
+      throw error;
+    }
+    if (!verifyPassword(currentPassword, user.passwordHash, user.passwordSalt)) {
+      const error = new Error('Current password was not accepted.');
+      error.statusCode = 401;
+      throw error;
+    }
+    const passwordError = validatePassword(nextPassword);
+    if (passwordError) {
+      const error = new Error(passwordError);
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const { passwordHash, passwordSalt } = hashPassword(nextPassword);
+    user.passwordHash = passwordHash;
+    user.passwordSalt = passwordSalt;
+    user.updatedAt = Date.now();
+    this.users.set(normalized, user);
+    this.persistUsers();
+    return { ok: true, username: normalized };
+  }
+
 }
 
-module.exports = { AuthService };
+module.exports = {
+  AuthService,
+  normalizeUsername,
+  validateUsername,
+  validatePassword
+};

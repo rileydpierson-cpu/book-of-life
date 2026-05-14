@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Text, View } from 'react-native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useAppTheme } from '../theme/theme-provider';
@@ -10,12 +10,19 @@ import { SearchScreen } from '../screens/search-screen';
 import { JournalEditorScreen } from '../screens/journal-editor-screen';
 import { MediaViewerScreen } from '../screens/media-viewer-screen';
 import { SettingsScreen } from '../screens/settings-screen';
+import { SignInScreen } from '../screens/sign-in-screen';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 export function RootNavigator() {
   const { theme } = useAppTheme();
-  const { ready, status } = useMobileApp();
+  const { ready, status, connection } = useMobileApp();
+  const [allowGuestAccess, setAllowGuestAccess] = useState(false);
+  const navigatorKey = connection?.authToken ? 'signed-in' : (allowGuestAccess ? 'guest' : 'signin-required');
+
+  useEffect(() => {
+    if (connection?.authToken) setAllowGuestAccess(false);
+  }, [connection?.authToken]);
 
   if (!ready) {
     return (
@@ -37,6 +44,8 @@ export function RootNavigator() {
 
   return (
     <Stack.Navigator
+      key={navigatorKey}
+      initialRouteName={!connection?.authToken && !allowGuestAccess ? 'SignIn' : 'HomeTimeline'}
       screenOptions={{
         headerShown: false,
         animation: 'slide_from_right',
@@ -45,6 +54,17 @@ export function RootNavigator() {
         }
       }}
     >
+      <Stack.Screen
+        name="SignIn"
+        options={{ animation: 'fade' }}
+      >
+        {(props) => (
+          <SignInScreen
+            {...props}
+            onContinueWithoutSignIn={() => setAllowGuestAccess(true)}
+          />
+        )}
+      </Stack.Screen>
       <Stack.Screen name="HomeTimeline" component={HomeTimelineScreen} />
       <Stack.Screen name="Explorer" component={ExplorerScreen} />
       <Stack.Screen name="Search" component={SearchScreen} />

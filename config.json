@@ -4,7 +4,8 @@
   },
   "auth": {
     "enabled": true,
-    "accessSecret": "${LIFESERVER_SECRET}",
+    "allowedUsers": "${LIFESERVER_ALLOWED_USERS}",
+    "userStorePath": "./storage/auth/users.json",
     "sessionDays": 30,
     "secureCookie": false
   },

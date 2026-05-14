@@ -1501,6 +1501,19 @@ body.search-ui-open .search-shell {
   justify-content: center;
   gap: 10px;
 }
+.settings-account-button {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.settings-account-note {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
 
 .photo-viewer {
   position: fixed;

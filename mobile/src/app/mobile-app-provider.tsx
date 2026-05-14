@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import { loadConnection } from '../auth/connection-store';
+import { clearConnection, loadConnection } from '../auth/connection-store';
 import { getDeviceFolderSummary, registerDeviceFolder, scanDeviceFolder } from '../device/device-indexer';
 import { cacheRemoteMediaVariant } from '../media/media-cache';
 import { getSyncStateValue, initializeDatabase, listLocalEntries, listSyncedMediaItems } from '../storage/database';
@@ -44,7 +44,8 @@ type MobileAppContextValue = {
   entryMap: Map<string, LocalEntryRow>;
   library: MobileLibrarySnapshot;
   refreshDashboard: () => Promise<void>;
-  connectAndSync: (serverUrl: string, secret: string) => Promise<void>;
+  signInAndSync: (serverUrl: string, username: string, password: string) => Promise<void>;
+  signOut: () => Promise<void>;
   performConnectedSync: (options?: { includeBootstrap?: boolean; reason?: string }) => Promise<void>;
   saveJournal: (input: { isoDate: string; raw: string }) => Promise<void>;
   registerFolder: () => Promise<void>;
@@ -133,11 +134,18 @@ export function MobileAppProvider(props: { children: React.ReactNode }) {
     setStatus(`${options.reason || 'Sync complete'}: ${messages.join(' | ')}.`);
   }
 
-  async function connectAndSync(serverUrl: string, secret: string) {
-    const nextConnection = await syncEngine.connect(serverUrl, secret);
+  async function signInAndSync(serverUrl: string, username: string, password: string) {
+    const nextConnection = await syncEngine.connect(serverUrl, username, password);
     setConnection(nextConnection);
     await refreshDashboard();
-    await performConnectedSync({ includeBootstrap: true, reason: 'Connected and synced' });
+    await performConnectedSync({ includeBootstrap: true, reason: 'Signed in and synced' });
+  }
+
+  async function signOut() {
+    await clearConnection();
+    setConnection(null);
+    await refreshDashboard();
+    setStatus('Signed out. The mobile app is running in local-only mode.');
   }
 
   async function saveJournal(input: { isoDate: string; raw: string }) {
@@ -219,7 +227,8 @@ export function MobileAppProvider(props: { children: React.ReactNode }) {
     entryMap: buildEntryMap(entryRows),
     library,
     refreshDashboard,
-    connectAndSync,
+    signInAndSync,
+    signOut,
     performConnectedSync,
     saveJournal,
     registerFolder: registerFolderAction,

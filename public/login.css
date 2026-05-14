@@ -1,22 +1,28 @@
 :root {
   color-scheme: dark;
-  --bg: #101215;
-  --panel: rgba(26, 30, 36, 0.96);
-  --panel-border: rgba(255, 255, 255, 0.08);
-  --text: #f2f5f8;
-  --muted: #a4adb8;
-  --accent: #d9e8ff;
-  --accent-text: #0c1a2b;
-  --danger: #ff9b9b;
+  --bg: #0f1517;
+  --bg-glow: #20363b;
+  --panel: rgba(14, 20, 23, 0.92);
+  --panel-border: rgba(173, 220, 202, 0.18);
+  --text: #edf6f1;
+  --muted: #9fb6af;
+  --accent: #b8f2d7;
+  --accent-strong: #7fe0b4;
+  --accent-text: #092018;
+  --field: rgba(255, 255, 255, 0.05);
+  --danger: #ffb1b1;
 }
 
 * { box-sizing: border-box; }
 html, body { min-height: 100%; }
 body {
   margin: 0;
-  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family: "Segoe UI", system-ui, sans-serif;
   color: var(--text);
-  background: radial-gradient(circle at top, #1f2630 0%, var(--bg) 58%);
+  background:
+    radial-gradient(circle at top, rgba(127, 224, 180, 0.16) 0%, transparent 34%),
+    radial-gradient(circle at bottom right, rgba(124, 198, 255, 0.12) 0%, transparent 28%),
+    linear-gradient(180deg, var(--bg-glow) 0%, var(--bg) 52%);
 }
 
 .ph,
@@ -35,22 +41,24 @@ body {
 }
 
 .login-card {
-  width: min(100%, 420px);
-  padding: 28px;
-  border-radius: 24px;
+  width: min(100%, 440px);
+  padding: 30px;
+  border-radius: 28px;
   background: var(--panel);
   border: 1px solid var(--panel-border);
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(18px);
 }
 
 .login-brand {
-  width: 54px;
-  height: 54px;
-  border-radius: 16px;
+  width: 58px;
+  height: 58px;
+  border-radius: 18px;
   display: grid;
   place-items: center;
-  background: rgba(255, 255, 255, 0.08);
-  font-size: 1.4rem;
+  background: linear-gradient(135deg, rgba(184, 242, 215, 0.22), rgba(127, 224, 180, 0.08));
+  border: 1px solid rgba(184, 242, 215, 0.18);
+  font-size: 1.5rem;
   color: var(--accent);
 }
 
@@ -62,6 +70,34 @@ h1 {
 .login-subtitle {
   margin: 0 0 22px;
   color: var(--muted);
+  line-height: 1.5;
+}
+
+.auth-mode-switch {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  padding: 6px;
+  margin-bottom: 18px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.auth-mode-button {
+  border: 0;
+  border-radius: 12px;
+  padding: 11px 14px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.auth-mode-button.is-active {
+  color: var(--accent-text);
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
 }
 
 .login-form {
@@ -74,19 +110,17 @@ h1 {
   color: var(--muted);
 }
 
-#secretInput {
+.login-input {
   width: 100%;
-  resize: vertical;
-  min-height: 120px;
   border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--field);
   color: var(--text);
   border-radius: 16px;
   padding: 14px;
   font: inherit;
 }
 
-#secretInput:focus {
+.login-input:focus {
   outline: 2px solid rgba(217, 232, 255, 0.28);
   outline-offset: 2px;
 }
@@ -115,6 +149,18 @@ h1 {
   margin: 0;
   color: var(--danger);
   min-height: 1.2em;
+}
+
+.login-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.login-hint code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
 }
 
 .hidden { display: none !important; }

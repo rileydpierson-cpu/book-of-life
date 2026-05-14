@@ -309,7 +309,7 @@ export function HomeTimelineScreen({ navigation }: Props) {
         ) : null}
         {!connection?.authToken ? (
           <Text style={{ color: theme.colors.textMuted, marginTop: 8 }}>
-            Running locally. Open the menu to configure sync.
+            Running locally. Open Settings to sign in if you want sync.
           </Text>
         ) : null}
       </SurfaceCard>
@@ -400,7 +400,7 @@ export function HomeTimelineScreen({ navigation }: Props) {
           ListEmptyComponent={(
             <EmptyState
               title="No timeline yet"
-              message="Connect to your server or scan a device folder from Settings to start building the mobile timeline."
+              message="Sign in from Settings or scan a device folder to start building the mobile timeline."
             />
           )}
           contentContainerStyle={{

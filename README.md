@@ -66,7 +66,7 @@ LIFESERVER_PHOTO_FOLDERS=D:\Mission Photos;D:\Family Photos
 LIFESERVER_PHOTO_FOLDERS=["D:\\Mission Photos","D:\\Family Photos"]
 ```
 
-6. Optionally enable auth and set a long random `auth.accessSecret`
+6. Optionally enable auth and approve usernames in `.env`
 7. In the project folder run:
 
 ```bash
@@ -90,24 +90,32 @@ Useful commands:
 
 ## Authentication
 
-If `auth.enabled` is `true`, Book of Life requires a pasted access secret before loading the app.
+If `auth.enabled` is `true`, Book of Life requires a username and password before loading the app.
 
 Recommended config:
 
 ```json
 "auth": {
   "enabled": true,
-  "accessSecret": "paste-a-very-long-random-secret-here",
+  "allowedUsers": "${LIFESERVER_ALLOWED_USERS}",
+  "userStorePath": "./storage/auth/users.json",
   "sessionDays": 30,
   "secureCookie": false
 }
+```
+
+Recommended `.env` values:
+
+```dotenv
+LIFESERVER_ALLOWED_USERS=alice,bob
 ```
 
 Notes:
 
 - `secureCookie` should stay `false` for plain local HTTP.
 - If you publish this on the internet, put it behind **HTTPS** and set `secureCookie` to `true`.
-- The login page uses one pasted secret instead of usernames and passwords.
+- Users can sign up only if their username is explicitly listed in `LIFESERVER_ALLOWED_USERS`.
+- Passwords are hashed and stored in the local JSON file at `auth.userStorePath`.
 - Login sets an `httpOnly` session cookie.
 - Environment variables in `.env` are loaded automatically at startup. Existing system env vars take precedence over `.env`.
 
@@ -200,7 +208,7 @@ Markdown files remain the source of truth. Saving writes directly to the correct
 ## Main files
 
 - `server.js` - app entrypoint and routes
-- `src/auth.js` - access-secret auth and session handling
+- `src/auth.js` - user auth, password hashing, and session handling
 - `src/indexer.js` - indexing, journal parsing, entry loading/saving, date extraction, search
 - `src/image-service.js` - thumbnails, HEIC conversion, image delivery
 - `vite.config.js` - frontend build configuration

@@ -47,6 +47,13 @@ function splitPathList(value) {
     .filter(Boolean);
 }
 
+function splitFlexibleList(value) {
+  return String(value || '')
+    .split(/[,;\r\n]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function normalizePhotoFolderList(value) {
   if (Array.isArray(value)) {
     return value.flatMap((item) => normalizePhotoFolderList(item));
@@ -78,6 +85,30 @@ function parseBoolean(value, fallbackValue = false) {
   if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
   if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
   return fallbackValue;
+}
+
+function normalizeUsernameList(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => String(item || '').trim().toLowerCase())
+      .filter(Boolean);
+  }
+
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return [];
+
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) return normalizeUsernameList(parsed);
+    } catch (error) {
+      // Fall through to plain string parsing.
+    }
+  }
+
+  return splitFlexibleList(trimmed)
+    .map((item) => item.toLowerCase())
+    .filter(Boolean);
 }
 
 function resolvePath(projectRoot, value, fallbackValue = '') {
@@ -136,6 +167,10 @@ function loadConfig(projectRoot) {
     projectRoot,
     getConfigValue(config.paths?.cacheDir, 'LIFESERVER_CACHE_DIR', './.cache')
   );
+  const authUserStorePath = resolvePath(
+    projectRoot,
+    getConfigValue(config.auth?.userStorePath, 'LIFESERVER_AUTH_USER_STORE', './storage/auth/users.json')
+  );
 
   ensureDirSync(journalVault);
   ensureDirSync(path.join(journalVault, journalFolderName));
@@ -151,7 +186,8 @@ function loadConfig(projectRoot) {
     },
     auth: {
       enabled: parseBoolean(getConfigValue(config.auth?.enabled, 'LIFESERVER_AUTH_ENABLED'), false),
-      accessSecret: getConfigValue(config.auth?.accessSecret, 'LIFESERVER_SECRET', ''),
+      allowedUsers: normalizeUsernameList(getConfigValue(config.auth?.allowedUsers, 'LIFESERVER_ALLOWED_USERS', '')),
+      userStorePath: authUserStorePath,
       sessionDays: Math.max(1, Number(getConfigValue(config.auth?.sessionDays, 'LIFESERVER_SESSION_DAYS', 30))),
       secureCookie: parseBoolean(getConfigValue(config.auth?.secureCookie, 'LIFESERVER_SECURE_COOKIE'), false)
     },

@@ -1,0 +1,11 @@
+{
+  "users": [
+    {
+      "username": "riloo007",
+      "passwordHash": "7046bcfcf483b70f58c3307ddfda1aa316eef325ef9930658c29cfcf9ed1684667cb92339911c894217b11716d27399e701f897374804a5433efcebe55c2f5f5",
+      "passwordSalt": "2446e2b3d14f834b7d2484a89a211965",
+      "createdAt": 1778611870311,
+      "updatedAt": 1778611870311
+    }
+  ]
+}

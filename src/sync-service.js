@@ -63,9 +63,17 @@ class SyncService {
       .slice(0, 80) || fallbackValue;
   }
 
-  async connect({ secret, deviceName = '', platform = '' }) {
+  async connect({ username = '', password = '', deviceName = '', platform = '' }) {
     await this.ensureLoaded();
-    if (!this.authenticate(secret)) throw new Error('That secret was not accepted.');
+    const authResult = await this.authenticate({
+      username,
+      password,
+      platform,
+      deviceName
+    });
+    if (!authResult || authResult.ok === false) {
+      throw new Error(authResult?.error || 'That account was not accepted.');
+    }
     const token = this.issueToken();
     const deviceId = crypto.randomBytes(12).toString('hex');
     const safeDeviceName = this.sanitizeDeviceSegment(deviceName, `device-${deviceId.slice(0, 6)}`);
@@ -75,6 +83,7 @@ class SyncService {
     this.state.devices[token] = {
       deviceId,
       deviceName: safeDeviceName,
+      username: authResult.username || '',
       platform: String(platform || '').trim() || 'unknown',
       syncRoot,
       connectedAt: new Date().toISOString(),
@@ -85,6 +94,7 @@ class SyncService {
       ok: true,
       deviceId,
       authToken: token,
+      username: authResult.username || '',
       syncRoot
     };
   }

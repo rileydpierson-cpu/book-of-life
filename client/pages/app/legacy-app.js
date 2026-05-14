@@ -85,6 +85,8 @@ const state = {
   monthCache: new Map(),
   yearCache: new Map(),
   settingsOpen: false,
+  authEnabled: false,
+  sessionUsername: '',
   calendarModal: {
     isOpen: false,
     busy: false,
@@ -186,6 +188,8 @@ const dom = {
   settingsUploadButton: document.getElementById('settingsUploadButton'),
   settingsModal: document.getElementById('settingsModal'),
   settingsCloseButton: document.getElementById('settingsCloseButton'),
+  settingsAccountName: document.getElementById('settingsAccountName'),
+  changePasswordButton: document.getElementById('changePasswordButton'),
   logoutButton: document.getElementById('logoutButton'),
   themeChoices: Array.from(document.querySelectorAll('[data-theme-choice]')),
   yearSection: document.getElementById('yearSection'),
@@ -498,13 +502,14 @@ function redirectToLogin() {
 }
 
 function fetchJson(url, options) {
-  return fetch(url, options).then((response) => {
+  return fetch(url, options).then(async (response) => {
+    const payload = await response.json().catch(() => ({}));
     if (response.status === 401) {
       redirectToLogin();
-      throw new Error('Unauthorized');
+      throw new Error(payload.error || 'Unauthorized');
     }
-    if (!response.ok) throw new Error(`Request failed: ${response.status}`);
-    return response.json();
+    if (!response.ok) throw new Error(payload.error || `Request failed: ${response.status}`);
+    return payload;
   });
 }
 
@@ -2370,6 +2375,57 @@ function closeSettings() {
   state.settingsOpen = false;
   dom.settingsModal.classList.add('hidden');
   syncOverlayBodyState();
+}
+
+function syncSettingsAccountUi() {
+  const accountEnabled = Boolean(state.authEnabled);
+  dom.changePasswordButton?.classList.toggle('hidden', !accountEnabled);
+  dom.settingsAccountName?.classList.toggle('hidden', !accountEnabled || !state.sessionUsername);
+  if (dom.settingsAccountName) {
+    dom.settingsAccountName.textContent = state.sessionUsername ? `Signed in as ${state.sessionUsername}` : '';
+  }
+}
+
+async function changePassword() {
+  const currentPassword = window.prompt('Enter your current password.', '');
+  if (currentPassword === null) return;
+  const nextPassword = window.prompt('Enter your new password.', '');
+  if (nextPassword === null) return;
+  const confirmPassword = window.prompt('Re-enter your new password.', '');
+  if (confirmPassword === null) return;
+  if (!String(nextPassword || '').trim()) {
+    window.alert('Enter a new password to continue.');
+    return;
+  }
+  if (nextPassword !== confirmPassword) {
+    window.alert('The new passwords did not match.');
+    return;
+  }
+
+  const button = dom.changePasswordButton;
+  const previousDisabled = Boolean(button?.disabled);
+  const previousLabel = button?.innerHTML || '';
+  if (button) {
+    button.disabled = true;
+    button.innerHTML = `${renderPhIcon('spinner-gap')} Saving…`;
+  }
+
+  try {
+    await fetchJson('/auth/password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ currentPassword, nextPassword })
+    });
+    closeSettings();
+    window.alert('Password updated.');
+  } catch (error) {
+    window.alert(error.message || 'Failed to update the password.');
+  } finally {
+    if (button) {
+      button.disabled = previousDisabled;
+      button.innerHTML = previousLabel;
+    }
+  }
 }
 
 function syncTopbarSearchState() {
@@ -5003,6 +5059,9 @@ function attachEvents() {
     closeSettings();
     openUploadForDateModal({ returnFocus: dom.settingsButton });
   });
+  dom.changePasswordButton?.addEventListener('click', () => {
+    changePassword().catch(console.error);
+  });
   dom.themeChoices.forEach((button) => {
     button.addEventListener('click', () => setThemeChoice(button.dataset.themeChoice));
   });
@@ -5546,6 +5605,10 @@ async function bootstrapApp() {
   updateTimelineStatus();
   const initialState = history.state || parseInitialRoute();
   history.replaceState(initialState, '', location.href || '#');
+  const authStatus = await fetchJson('/api/auth/status');
+  state.authEnabled = Boolean(authStatus?.enabled);
+  state.sessionUsername = typeof authStatus?.username === 'string' ? authStatus.username : '';
+  syncSettingsAccountUi();
   state.bootstrap = await fetchJson('/api/bootstrap');
   state.totalDays = state.bootstrap.totalDays;
   renderDefaultYearSubtitle();

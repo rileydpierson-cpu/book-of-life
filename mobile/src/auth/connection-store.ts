@@ -6,6 +6,7 @@ export type StoredConnection = {
   serverUrl: string;
   deviceId: string;
   authToken: string;
+  username?: string;
   syncRoot?: {
     rootId: string;
     rootLabel: string;

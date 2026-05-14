@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Text, TextInput, View } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { ArrowLeft, CalendarDots, CloudArrowUp, Palette, PlusSquare } from 'phosphor-react-native';
+import { ArrowLeft, CalendarDots, CloudArrowUp, Palette, PlusSquare, SignIn, SignOut } from 'phosphor-react-native';
 import { useMobileApp } from '../app/mobile-app-provider';
 import { THEMES } from '../theme/themes';
 import { useAppTheme } from '../theme/theme-provider';
@@ -17,14 +17,12 @@ export function SettingsScreen({ navigation }: Props) {
     connection,
     syncStats,
     deviceFolderSummary,
-    connectAndSync,
+    signOut,
     performConnectedSync,
     registerFolder,
     scanAndUploadMedia,
     buildTodayIsoDate
   } = useMobileApp();
-  const [serverUrl, setServerUrl] = useState(connection?.serverUrl || 'http://127.0.0.1:3000');
-  const [secret, setSecret] = useState('');
   const [jumpDate, setJumpDate] = useState(buildTodayIsoDate());
   const [busyKey, setBusyKey] = useState('');
 
@@ -81,55 +79,42 @@ export function SettingsScreen({ navigation }: Props) {
         />
       </View>
 
-      <SectionHeader title="Connection" subtitle={connection?.serverUrl || 'No sync connection saved yet.'} />
+      <SectionHeader title="Connection" subtitle={connection?.serverUrl || 'Not signed in to a sync server.'} />
       <SurfaceCard>
         <View style={{ gap: theme.spacing.sm }}>
-          <TextInput
-            value={serverUrl}
-            onChangeText={setServerUrl}
-            autoCapitalize="none"
-            placeholder="Server URL"
-            placeholderTextColor={theme.colors.textMuted}
-            style={{
-              borderWidth: 1,
-              borderColor: theme.colors.border,
-              borderRadius: theme.radius.md,
-              paddingHorizontal: 14,
-              paddingVertical: 12,
-              color: theme.colors.text,
-              backgroundColor: theme.colors.surface
-            }}
-          />
-          <TextInput
-            value={secret}
-            onChangeText={setSecret}
-            autoCapitalize="none"
-            secureTextEntry
-            placeholder="Access secret"
-            placeholderTextColor={theme.colors.textMuted}
-            style={{
-              borderWidth: 1,
-              borderColor: theme.colors.border,
-              borderRadius: theme.radius.md,
-              paddingHorizontal: 14,
-              paddingVertical: 12,
-              color: theme.colors.text,
-              backgroundColor: theme.colors.surface
-            }}
-          />
-          <PrimaryButton
-            label={busyKey === 'connect' ? 'Connecting...' : 'Connect And Sync'}
-            onPress={() => runBusy('connect', () => connectAndSync(serverUrl, secret))}
-            fullWidth
-          />
-          <SecondaryButton
-            label={busyKey === 'sync' ? 'Syncing...' : 'Sync Now'}
-            onPress={() => runBusy('sync', () => performConnectedSync({ reason: 'Manual sync' }))}
-            fullWidth
-          />
+          {connection?.authToken ? (
+            <>
+              <Text style={{ color: theme.colors.textMuted }}>
+                Signed in{connection.username ? ` as ${connection.username}` : ''} on {connection.serverUrl}
+              </Text>
+              <PrimaryButton
+                label={busyKey === 'sync' ? 'Syncing...' : 'Sync Now'}
+                onPress={() => runBusy('sync', () => performConnectedSync({ reason: 'Manual sync' }))}
+                fullWidth
+              />
+              <SecondaryButton
+                label={busyKey === 'signout' ? 'Signing Out...' : 'Sign Out'}
+                icon={<SignOut size={18} color={theme.colors.text} weight="bold" />}
+                onPress={() => runBusy('signout', signOut)}
+                fullWidth
+              />
+            </>
+          ) : (
+            <>
+              <Text style={{ color: theme.colors.textMuted }}>
+                Sign in when you want server sync. You can keep using the app locally without an account.
+              </Text>
+              <PrimaryButton
+                label="Sign In To Sync"
+                icon={<SignIn size={18} color={theme.colors.onAccent} weight="bold" />}
+                onPress={() => navigation.navigate('SignIn', { allowSkip: false })}
+                fullWidth
+              />
+            </>
+          )}
           {syncStats ? (
             <Text style={{ color: theme.colors.textMuted }}>
-              Checkpoint {syncStats.lastCheckpoint} • Pending {syncStats.pendingMutations} • Remote media {syncStats.syncedMediaItems}
+              Checkpoint {syncStats.lastCheckpoint} | Pending {syncStats.pendingMutations} | Remote media {syncStats.syncedMediaItems}
             </Text>
           ) : null}
         </View>

@@ -114,7 +114,7 @@ describe('sync service', () => {
     const service = new SyncService({
       cacheDir,
       indexer: createFakeIndexer(),
-      authenticate: (secret) => secret === 'good-secret',
+      authenticate: ({ username, password }) => ({ ok: username === 'alice' && password === 'pw123456', username: username || '' }),
       getFolderTree: () => [{ rootId: '0', rootLabel: 'Photos', tree: { label: 'Photos', relativePath: '', mediaCount: 0, children: [] } }],
       createFolder: async (rootId, relativePath, folderName) => ({ rootId, relativePath: [relativePath, folderName].filter(Boolean).join('/') || '.' }),
       deletePhoto: async (photoId) => ({ photoId, isoDate: '2026-05-10', trashedTo: '.trash' }),
@@ -126,7 +126,7 @@ describe('sync service', () => {
       })
     });
     await service.init();
-    const connected = await service.connect({ secret: 'good-secret', deviceName: 'Phone', platform: 'ios' });
+    const connected = await service.connect({ username: 'alice', password: 'pw123456', deviceName: 'Phone', platform: 'ios' });
     expect(connected.authToken).toBeTruthy();
     expect(connected.syncRoot?.baseRelativePath).toBe('Phone');
     const device = await service.authenticateToken(connected.authToken);
@@ -141,7 +141,7 @@ describe('sync service', () => {
     const service = new SyncService({
       cacheDir,
       indexer: createFakeIndexer(),
-      authenticate: () => true,
+      authenticate: () => ({ ok: true, username: 'alice' }),
       getFolderTree: () => [],
       createFolder: async () => ({ rootId: '0', relativePath: '.' }),
       deletePhoto: async (photoId) => ({ photoId, isoDate: '2026-05-10', trashedTo: '.trash' })
