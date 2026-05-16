@@ -331,6 +331,7 @@ async function main() {
     try {
       const result = auth.login(username, password);
       auth.recordSuccessfulLogin(ip);
+      console.log(`User ${result.username} logged in successfully from IP ${ip}.`);
       const token = auth.createSession(result.username);
       auth.setSessionCookie(res, token);
       res.json({ ok: true, redirectTo: '/', username: result.username });
@@ -527,6 +528,8 @@ async function main() {
       if (req.file?.path) {
         await fs.promises.rm(req.file.path, { force: true }).catch(() => {});
       }
+
+      console.log(`Sync upload attempt from device ${req.syncDevice?.deviceName || req.syncDevice?.id || 'unknown'} resulted in: ${error ? error.message : 'success'}`);
     }
   });
 
@@ -786,7 +789,10 @@ async function main() {
         isoDate: distinctDates.size === 1 ? Array.from(distinctDates)[0] : (targetIsoDate || null),
         dateMode: distinctDates.size ? 'per-file' : 'existing'
       });
+
+      console.log(`Sync upload from device ${req.syncDevice?.deviceName || req.syncDevice?.id || 'unknown'} completed.`);
     } catch (error) {
+      console.error(`Sync upload from device ${req.syncDevice?.deviceName || req.syncDevice?.id || 'unknown'} failed:`, error);
       for (const filePath of uploadedPaths) await fs.promises.rm(filePath, { force: true }).catch(() => {});
       const cleanup = Array.isArray(req.files) ? req.files : [];
       for (const file of cleanup) await fs.promises.rm(file.path, { force: true }).catch(() => {});
@@ -806,6 +812,7 @@ async function main() {
         media: syncService.serializeMediaRecord(photo)
       });
       res.json({ ok: true, photoId: req.params.photoId, tags: photo.tags || [] });
+      console.log(`Updated tags for media ${req.params.photoId}:`, photo.tags);
     } catch (error) {
       res.status(500).json({ error: error.message || 'Failed to save tags.' });
     }
@@ -822,6 +829,7 @@ async function main() {
         media: syncService.serializeMediaRecord(photo)
       });
       res.json({ ok: true, photoId: req.params.photoId, description: photo.description || '' });
+      console.log(`Description updated for media ${req.params.photoId}.`);
     } catch (error) {
       res.status(500).json({ error: error.message || 'Failed to save description.' });
     }
@@ -843,6 +851,7 @@ async function main() {
         media: syncService.serializeMediaRecord(photo)
       });
       res.json({ ok: true, photo });
+      console.log(`Renamed media ${req.params.photoId} to ${baseName}.`);
     } catch (error) {
       res.status(500).json({ error: error.message || 'Failed to rename media.' });
     }
@@ -890,6 +899,7 @@ async function main() {
         media: syncService.serializeMediaRecord(photo)
       });
       res.json({ ok: true, photo });
+      console.log(`Moved media ${req.params.photoId} to root ${rootId} and path ${relativePath}.`);
     } catch (error) {
       res.status(500).json({ error: error.message || 'Failed to move media.' });
     }
@@ -906,6 +916,7 @@ async function main() {
         media: syncService.serializeMediaRecord(photo)
       });
       res.json({ ok: true, photoId: req.params.photoId, liked: Boolean(photo.liked) });
+      console.log(`Set liked state for media ${req.params.photoId} to ${Boolean(photo.liked)}.`);
     } catch (error) {
       res.status(500).json({ error: error.message || 'Failed to save like state.' });
     }
@@ -933,6 +944,7 @@ async function main() {
         capturedAt: photo.capturedAt,
         dateSource: photo.dateSource || 'manual'
       });
+      console.log(`Set date override for media ${req.params.photoId} to ${isoDate || 'null'}.`);
     } catch (error) {
       res.status(500).json({ error: error.message || 'Failed to save date override.' });
     }
@@ -959,6 +971,7 @@ async function main() {
         media: syncService.serializeMediaRecord(photo)
       });
       res.json({ ok: true, photo });
+      console.log(`Set date/time override for media ${req.params.photoId} to ${isoDate || 'null'} ${time || ''}.`);
     } catch (error) {
       res.status(500).json({ error: error.message || 'Failed to save media date/time.' });
     }
@@ -983,6 +996,7 @@ async function main() {
         isoDate: deleted.isoDate
       });
       res.json({ ok: true, photoId: req.params.photoId, isoDate: deleted.isoDate, trashedTo: deleted.trashedTo });
+      console.log(`Deleted media ${req.params.photoId}.`);
     } catch (error) {
       res.status(500).json({ error: error.message || 'Delete failed.' });
     }

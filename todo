@@ -1,0 +1,11 @@
+I've noticed that when playing videos in the media viewer, the description covers the scrub bar and video playback controls. I like where the description is, but just for videos it's problematic. Help me create a plan to fix this. Maybe a custom video player? Or just adjust the layout when it's a video?
+
+I've also noticed the preview images aren't loading anymore in the calendar grid cells
+
+Plan: I would like to be able to select multiple photos and perform actions on them such as
+ - Changing the date
+ - Moving them to another folder
+ - Downloading them all
+ - Deleting them
+ - etc.
+
