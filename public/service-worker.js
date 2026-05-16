@@ -12,6 +12,7 @@ const MEDIA_ROUTE_CONFIG = [
   { prefix: '/media/thumb/', cacheName: 'lifeserver-media-thumb-v2', maxEntries: 50 },
   { prefix: '/media/preview/', cacheName: 'lifeserver-media-thumb-v2', maxEntries: 50 },
   { prefix: '/media/journal-inline/', cacheName: 'lifeserver-media-thumb-v2', maxEntries: 50 },
+  { prefix: '/media/display/', cacheName: 'lifeserver-media-display-v1', maxEntries: 4 },
   { prefix: '/media/full/', cacheName: 'lifeserver-media-full-v2', maxEntries: 6 }
 ];
 const ACTIVE_CACHE_NAMES = new Set(MEDIA_ROUTE_CONFIG.map((entry) => entry.cacheName));

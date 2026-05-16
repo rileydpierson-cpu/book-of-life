@@ -25,7 +25,38 @@ function renderPhIcon(name, { variant = 'regular', className = '', spin = false 
   return `<i class="${classes.join(' ')}" aria-hidden="true"></i>`;
 }
 
-window.renderPhIcon = renderPhIcon;
+if (typeof window !== 'undefined') window.renderPhIcon = renderPhIcon;
+
+const BACKGROUND_PRELOAD_BUFFER_SIZE = 20;
+
+export function buildNearbyMediaPreloadQueue(items, centerIndex, {
+  maxItems = BACKGROUND_PRELOAD_BUFFER_SIZE,
+  isEligible = () => true,
+  getId = (item) => item?.id
+} = {}) {
+  const sourceItems = Array.isArray(items) ? items : [];
+  const queue = [];
+  const queuedIds = new Set();
+  if (!sourceItems.length || maxItems <= 0) return { queue, queuedIds };
+
+  const normalizedCenterIndex = clamp(Number(centerIndex) || 0, 0, sourceItems.length - 1);
+  const pushIndex = (itemIndex) => {
+    if (queue.length >= maxItems || itemIndex < 0 || itemIndex >= sourceItems.length) return;
+    const item = sourceItems[itemIndex];
+    const id = getId(item);
+    if (!item || !id || queuedIds.has(id) || !isEligible(item, itemIndex)) return;
+    queue.push(item);
+    queuedIds.add(id);
+  };
+
+  pushIndex(normalizedCenterIndex);
+  for (let offset = 1; offset < sourceItems.length && queue.length < maxItems; offset += 1) {
+    pushIndex(normalizedCenterIndex - offset);
+    pushIndex(normalizedCenterIndex + offset);
+  }
+
+  return { queue, queuedIds };
+}
 
 export function createMediaViewer(options) {
 
@@ -89,6 +120,7 @@ export function createMediaViewer(options) {
     { prefix: '/media/thumb/', cacheName: 'lifeserver-media-thumb-v2', kind: 'thumb', maxEntries: 50 },
     { prefix: '/media/preview/', cacheName: 'lifeserver-media-thumb-v2', kind: 'thumb', maxEntries: 50 },
     { prefix: '/media/journal-inline/', cacheName: 'lifeserver-media-thumb-v2', kind: 'thumb', maxEntries: 50 },
+    { prefix: '/media/display/', cacheName: 'lifeserver-media-display-v1', kind: 'display', maxEntries: 4 },
     { prefix: '/media/full/', cacheName: 'lifeserver-media-full-v2', kind: 'full', maxEntries: 6 }
   ];
 
@@ -117,7 +149,11 @@ export function createMediaViewer(options) {
         return '';
       }
     };
-    const getKindLimit = (kind) => (kind === 'full' ? 6 : 50);
+    const getKindLimit = (kind) => {
+      if (kind === 'full') return 6;
+      if (kind === 'display') return 4;
+      return 50;
+    };
 
     const touchObjectUrlEntry = (cacheKey) => {
       const entry = objectUrlEntries.get(cacheKey);
@@ -1573,10 +1609,11 @@ export function createMediaViewer(options) {
     }
 
     async copyCurrentMediaToClipboard(item) {
-      if (!item?.fullUrl) return false;
+      const mediaUrl = this.getDisplayUrl(item);
+      if (!mediaUrl) return false;
       if (item.type === 'video' || !this.canWriteClipboardItems()) return false;
 
-      const response = await fetch(item.fullUrl, { credentials: 'same-origin' });
+      const response = await fetch(mediaUrl, { credentials: 'same-origin' });
       if (!response.ok) throw new Error(`Unable to fetch media for clipboard copy: ${response.status}`);
 
       const blob = await response.blob();
@@ -1584,7 +1621,7 @@ export function createMediaViewer(options) {
       await navigator.clipboard.write([
         new window.ClipboardItem({
           [type]: blob,
-          'text/plain': new Blob([item.fullUrl], { type: 'text/plain' })
+          'text/plain': new Blob([mediaUrl], { type: 'text/plain' })
         })
       ]);
       return true;
@@ -1706,7 +1743,11 @@ export function createMediaViewer(options) {
     getPreviewSrc(item) {
       if (!item) return '';
       if (item.type === 'video') return item.previewUrl || item.thumbUrl || '';
-      return item.thumbUrl || item.fullUrl || '';
+      return item.thumbUrl || this.getDisplayUrl(item) || '';
+    }
+
+    getDisplayUrl(item) {
+      return item?.displayUrl || item?.fullUrl || '';
     }
 
     buildPreviewElement(item) {
@@ -1724,7 +1765,7 @@ export function createMediaViewer(options) {
       preview.innerHTML = item.type === 'video'
         ? `
           <video muted autoplay loop playsinline preload="metadata" aria-hidden="true"></video>
-          <span class="viewer-slot-video-mark">${renderPhIcon('play-fill', { variant: 'fill' })}</span>
+          <span class="viewer-slot-video-mark">${renderPhIcon('play', { variant: 'fill' })}</span>
         `
         : '<img alt="" draggable="false" />';
       return preview;
@@ -1780,11 +1821,12 @@ export function createMediaViewer(options) {
     }
 
     async syncSlotFullSource(slot, item = this.getItemAt(Number(slot?.dataset?.itemIndex || -1))) {
-      if (!(slot instanceof HTMLElement) || !item || item.type === 'video' || !item.fullUrl) return;
+      const displayUrl = this.getDisplayUrl(item);
+      if (!(slot instanceof HTMLElement) || !item || item.type === 'video' || !displayUrl) return;
       const image = slot.querySelector('.viewer-slot-full img');
       if (!image) return;
-      const requestKey = `${item.id}:${item.fullUrl}`;
-      const existingObjectUrl = window.mediaAssetCache?.peekObjectUrl(item.fullUrl);
+      const requestKey = `${item.id}:${displayUrl}`;
+      const existingObjectUrl = window.mediaAssetCache?.peekObjectUrl(displayUrl);
       if (existingObjectUrl && slot.dataset.fullRequestKey === requestKey && image.getAttribute('src') === existingObjectUrl) {
         this.setSlotFullHidden(slot, false);
         return;
@@ -1980,8 +2022,9 @@ export function createMediaViewer(options) {
     }
 
     loadFullImage(item) {
-      if (!item || item.type === 'video' || !item.fullUrl) return Promise.resolve('');
-      const existingObjectUrl = window.mediaAssetCache?.peekObjectUrl(item.fullUrl);
+      const displayUrl = this.getDisplayUrl(item);
+      if (!item || item.type === 'video' || !displayUrl) return Promise.resolve('');
+      const existingObjectUrl = window.mediaAssetCache?.peekObjectUrl(displayUrl);
       if (existingObjectUrl) {
         this.state.loadedFullMedia.add(item.id);
         return Promise.resolve(existingObjectUrl);
@@ -1989,7 +2032,7 @@ export function createMediaViewer(options) {
       const pending = this.state.pendingFullImageLoads.get(item.id);
       if (pending) return pending.promise;
 
-      const promise = Promise.resolve(window.mediaAssetCache?.getObjectUrl(item.fullUrl, { fallbackFetch: true }))
+      const promise = Promise.resolve(window.mediaAssetCache?.getObjectUrl(displayUrl, { fallbackFetch: true }))
         .then((objectUrl) => {
           if (objectUrl) {
             this.state.loadedFullMedia.add(item.id);
@@ -2027,25 +2070,15 @@ export function createMediaViewer(options) {
 
     buildBackgroundPreloadQueue(centerIndex = this.state.index) {
       const items = this.getItems();
-      const queue = [];
-      const queuedIds = new Set();
-      if (!items.length) return { queue, queuedIds };
-
-      const pushIndex = (itemIndex) => {
-        const item = items[itemIndex];
-        if (!item || item.type === 'video' || !item.fullUrl) return;
-        if (this.state.loadedFullMedia.has(item.id) || this.state.pendingFullImageLoads.has(item.id) || queuedIds.has(item.id)) return;
-        queue.push(item);
-        queuedIds.add(item.id);
-      };
-
-      pushIndex(centerIndex);
-      for (let offset = 1; offset < items.length; offset += 1) {
-        pushIndex(centerIndex - offset);
-        pushIndex(centerIndex + offset);
-      }
-
-      return { queue, queuedIds };
+      return buildNearbyMediaPreloadQueue(items, centerIndex, {
+        maxItems: BACKGROUND_PRELOAD_BUFFER_SIZE,
+        isEligible: (item) => (
+          item.type !== 'video'
+          && Boolean(this.getDisplayUrl(item))
+          && !this.state.loadedFullMedia.has(item.id)
+          && !this.state.pendingFullImageLoads.has(item.id)
+        )
+      });
     }
 
     scheduleBackgroundPreload(centerIndex = this.state.index) {
@@ -2060,7 +2093,7 @@ export function createMediaViewer(options) {
         const nextItem = this.state.backgroundPreloadQueue.shift();
         if (!nextItem) break;
         this.state.backgroundPreloadQueuedIds.delete(nextItem.id);
-        if (!nextItem.fullUrl || nextItem.type === 'video' || this.state.loadedFullMedia.has(nextItem.id)) continue;
+        if (!this.getDisplayUrl(nextItem) || nextItem.type === 'video' || this.state.loadedFullMedia.has(nextItem.id)) continue;
 
         this.state.backgroundPreloadActive += 1;
         this.loadFullImage(nextItem).finally(() => {
@@ -2068,6 +2101,11 @@ export function createMediaViewer(options) {
           this.drainBackgroundPreloadQueue();
         });
       }
+    }
+
+    clearBackgroundPreloadQueue() {
+      this.state.backgroundPreloadQueue = [];
+      this.state.backgroundPreloadQueuedIds.clear();
     }
 
     resetCloseAnimationState() {
@@ -2084,6 +2122,7 @@ export function createMediaViewer(options) {
       this.closeFolderModal();
       this.stopMomentum();
       this.stopCarouselAnimation({ jumpToCurrent: false });
+      this.clearBackgroundPreloadQueue();
       this.state.pointers.clear();
       this.state.primaryGesture = null;
       this.state.primaryPointerId = null;
@@ -2696,11 +2735,11 @@ export function createMediaViewer(options) {
           this.setLoadingState(false);
           this.updateTransform();
         }, { once: true });
-        this.dom.video.src = contentItem.fullUrl;
+        this.dom.video.src = this.getDisplayUrl(contentItem);
         this.dom.video.load();
       } else {
         this.dom.image.alt = contentItem.fileName || 'Selected media';
-        if (this.state.loadedFullMedia.has(contentItem.id) && contentItem.fullUrl) {
+        if (this.state.loadedFullMedia.has(contentItem.id) && this.getDisplayUrl(contentItem)) {
           this.loadFullImage(contentItem).then((objectUrl) => {
             if (!objectUrl || token !== this.state.loadToken) return false;
             return this.revealCurrentImage(objectUrl, token);
@@ -2794,9 +2833,10 @@ export function createMediaViewer(options) {
         return;
       }
 
-      if (!item.fullUrl) return;
+      const downloadUrl = item.downloadUrl || item.fullUrl;
+      if (!downloadUrl) return;
       const link = document.createElement('a');
-      link.href = item.fullUrl;
+      link.href = downloadUrl;
       link.download = item.fileName || '';
       link.rel = 'noopener';
       document.body.appendChild(link);
@@ -2813,7 +2853,7 @@ export function createMediaViewer(options) {
         return;
       }
 
-      const shareUrl = item.fullUrl || window.location.href;
+      const shareUrl = this.getDisplayUrl(item) || window.location.href;
       const shareData = {
         title: item.fileName || 'Media',
         text: item.description || item.fileName || 'Media',

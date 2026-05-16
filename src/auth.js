@@ -52,10 +52,29 @@ function verifyPassword(password, passwordHash, passwordSalt) {
   return crypto.timingSafeEqual(left, right);
 }
 
+function isLoopbackAddress(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return false;
+  if (normalized === '::1' || normalized === '::ffff:127.0.0.1') return true;
+  return normalized === '127.0.0.1' || normalized.startsWith('127.');
+}
+
+function normalizeHostName(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return '';
+  if (raw.startsWith('[')) {
+    const closingIndex = raw.indexOf(']');
+    if (closingIndex !== -1) return raw.slice(1, closingIndex);
+  }
+  const colonIndex = raw.indexOf(':');
+  return colonIndex === -1 ? raw : raw.slice(0, colonIndex);
+}
+
 class AuthService {
   constructor(config) {
     this.config = config.auth || {};
     this.enabled = Boolean(this.config.enabled);
+    this.allowLocalhostViewerBypass = Boolean(this.config.allowLocalhostViewerBypass);
     this.cookieName = 'lifeserver_session';
     this.sessions = new Map();
     this.loginAttempts = new Map();
@@ -133,6 +152,15 @@ class AuthService {
     return req.path.startsWith('/api/sync/');
   }
 
+  isLocalhostViewerRequest(req) {
+    if (!this.enabled || !this.allowLocalhostViewerBypass) return false;
+    if (this.isPublicSyncPath(req)) return false;
+    const hostName = normalizeHostName(req.headers?.host || req.hostname || '');
+    if (!isLoopbackAddress(hostName) && hostName !== 'localhost') return false;
+    const remoteAddress = req.socket?.remoteAddress || req.connection?.remoteAddress || req.ip || '';
+    return isLoopbackAddress(remoteAddress);
+  }
+
   setSessionCookie(res, token) {
     const maxAgeSeconds = Math.floor(this.sessionTtlMs / 1000);
     const parts = [
@@ -189,6 +217,13 @@ class AuthService {
       if (session) {
         req.authenticated = true;
         req.sessionInfo = session;
+        next();
+        return;
+      }
+
+      if (this.isLocalhostViewerRequest(req)) {
+        req.authenticated = true;
+        req.sessionInfo = { username: null, localhostBypass: true };
         next();
         return;
       }

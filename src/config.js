@@ -87,6 +87,11 @@ function parseBoolean(value, fallbackValue = false) {
   return fallbackValue;
 }
 
+function parsePositiveNumber(value, fallbackValue) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackValue;
+}
+
 function normalizeUsernameList(value) {
   if (Array.isArray(value)) {
     return value
@@ -179,13 +184,26 @@ function loadConfig(projectRoot) {
   ensureDirSync(cacheDir);
   ensureDirSync(path.join(cacheDir, 'thumbs'));
   ensureDirSync(path.join(cacheDir, 'converted'));
+  ensureDirSync(path.join(cacheDir, 'display'));
 
   return {
     server: {
       port: Number(config.server?.port || 3000)
     },
+    mediaOptimization: {
+      enabled: parseBoolean(getConfigValue(config.mediaOptimization?.enabled, 'LIFESERVER_MEDIA_OPTIMIZATION_ENABLED', true), true),
+      imageMaxEdge: Math.round(parsePositiveNumber(getConfigValue(config.mediaOptimization?.imageMaxEdge, 'LIFESERVER_MEDIA_IMAGE_MAX_EDGE', 2560), 2560)),
+      imageQuality: Math.max(1, Math.min(100, Math.round(parsePositiveNumber(getConfigValue(config.mediaOptimization?.imageQuality, 'LIFESERVER_MEDIA_IMAGE_QUALITY', 86), 86)))),
+      videoMaxHeight: Math.round(parsePositiveNumber(getConfigValue(config.mediaOptimization?.videoMaxHeight, 'LIFESERVER_MEDIA_VIDEO_MAX_HEIGHT', 1080), 1080)),
+      videoCrf: Math.max(0, Math.min(51, Math.round(parsePositiveNumber(getConfigValue(config.mediaOptimization?.videoCrf, 'LIFESERVER_MEDIA_VIDEO_CRF', 22), 22)))),
+      videoPreset: String(getConfigValue(config.mediaOptimization?.videoPreset, 'LIFESERVER_MEDIA_VIDEO_PRESET', 'medium') || 'medium').trim() || 'medium'
+    },
     auth: {
       enabled: parseBoolean(getConfigValue(config.auth?.enabled, 'LIFESERVER_AUTH_ENABLED'), false),
+      allowLocalhostViewerBypass: parseBoolean(
+        getConfigValue(config.auth?.allowLocalhostViewerBypass, 'LIFESERVER_ALLOW_LOCALHOST_VIEWER_BYPASS'),
+        false
+      ),
       allowedUsers: normalizeUsernameList(getConfigValue(config.auth?.allowedUsers, 'LIFESERVER_ALLOWED_USERS', '')),
       userStorePath: authUserStorePath,
       sessionDays: Math.max(1, Number(getConfigValue(config.auth?.sessionDays, 'LIFESERVER_SESSION_DAYS', 30))),

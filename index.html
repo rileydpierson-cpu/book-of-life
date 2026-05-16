@@ -45,8 +45,75 @@
         </form>
       </header>
 
+      <aside id="viewTabs" class="view-tabs" aria-label="Primary views">
+        <button id="viewTabsToggle" class="view-tabs-toggle" type="button" aria-label="Collapse navigation" aria-expanded="true"><i class="ph-bold ph-sidebar-simple"></i></button>
+        <div class="view-tab-action">
+          <button id="sideHomeButton" class="view-tab-button view-tab-home is-active" type="button" title="Home">
+            <i class="ph-duotone ph-house"></i><span>Home</span>
+          </button>
+          <button id="sideTodayButton" class="view-tab-button view-tab-today" type="button" title="Edit today's entry">
+            <i class="ph-duotone ph-pencil-simple-line"></i><span>Today</span>
+          </button>
+        </div>
+        <div class="view-tab-list">
+          <button class="view-tab-button" type="button" data-app-view="gallery" title="Gallery"><i class="ph-duotone ph-images-square"></i><span>Gallery</span></button>
+          <button class="view-tab-button" type="button" data-app-view="timeline" title="Timeline"><i class="ph-duotone ph-clock-counter-clockwise"></i><span>Timeline</span></button>
+          <button class="view-tab-button" type="button" data-app-view="calendar" title="Calendar"><i class="ph-duotone ph-calendar-dots"></i><span>Calendar</span></button>
+          <button class="view-tab-button" type="button" data-app-view="folders" title="Folders"><i class="ph-duotone ph-folder-open"></i><span>Folders</span></button>
+        </div>
+      </aside>
+
       <div class="workspace">
         <main class="main-stage">
+          <section id="galleryView" class="library-view gallery-view hidden" aria-live="polite">
+            <div class="library-view-shell">
+              <div class="library-view-head">
+                <div>
+                  <h2>Gallery</h2>
+                  <p id="gallerySubtitle" class="section-subtitle">Browse your media first.</p>
+                </div>
+                <div id="galleryFilters" class="gallery-filters" aria-label="Gallery display options">
+                  <div class="gallery-filter-group" aria-label="Gallery layout">
+                    <button id="galleryLayoutToggle" class="search-filter-chip gallery-filter-chip-icon" type="button" data-gallery-layout-toggle aria-label="Switch to ratio layout" title="Switch to ratio layout">
+                      <span class="gallery-filter-icon" aria-hidden="true">▦</span>
+                    </button>
+                    <div class="media-scale-control media-scale-control--inline">
+                      <div class="media-scale-pill">
+                        <button id="galleryScaleToggle" class="search-filter-chip gallery-filter-chip-icon" type="button" aria-label="Adjust gallery media size" aria-expanded="false" aria-controls="galleryScalePanel" title="Adjust gallery media size">
+                          <i class="ph-duotone ph-magnifying-glass-plus"></i>
+                        </button>
+                        <div id="galleryScalePanel" class="media-scale-panel hidden">
+                          <span class="media-scale-caption">More</span>
+                          <input id="galleryScaleSlider" class="media-scale-slider" type="range" min="1" max="5" step="1" value="3" aria-label="Gallery media size" />
+                          <span class="media-scale-caption">Less</span>
+                        </div>
+                      </div>
+                    </div>
+                    <button id="galleryLayoutRatio" class="search-filter-chip gallery-filter-chip-icon" type="button" data-gallery-layout="ratio" aria-label="Ratio layout" title="Ratio layout">
+                      <span class="gallery-filter-icon" aria-hidden="true">▭</span>
+                    </button>
+                  </div>
+                  <div class="gallery-filter-group" role="tablist" aria-label="Gallery detail">
+                    <button class="search-filter-chip gallery-filter-chip-icon" type="button" data-gallery-detail="compact" aria-label="Compact detail" title="Compact detail">
+                      <span class="gallery-filter-icon" aria-hidden="true">·</span>
+                    </button>
+                    <button class="search-filter-chip gallery-filter-chip-icon" type="button" data-gallery-detail="comfortable" aria-label="Comfortable detail" title="Comfortable detail">
+                      <span class="gallery-filter-icon" aria-hidden="true">●</span>
+                    </button>
+                    <button class="search-filter-chip gallery-filter-chip-icon" type="button" data-gallery-detail="detail" aria-label="Detailed view" title="Detailed view">
+                      <span class="gallery-filter-icon" aria-hidden="true">⬤</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div id="galleryPane" class="gallery-pane">
+                <div id="galleryTopSpacer" class="gallery-spacer"></div>
+                <div id="galleryFeed" class="gallery-feed"></div>
+                <div id="galleryBottomSpacer" class="gallery-spacer"></div>
+              </div>
+            </div>
+          </section>
+
           <section id="homeView" class="home-view">
             <section id="yearSection" class="year-section">
               <div class="section-header">
@@ -74,6 +141,26 @@
                 </div>
                 <div id="searchFilters" class="search-filters"></div>
               </section>
+              <div class="timeline-view-head">
+                <div>
+                  <h2>Timeline</h2>
+                  <p id="timelineSubtitle" class="section-subtitle">Browse entries and media together.</p>
+                </div>
+                <div class="gallery-filter-group" aria-label="Timeline media size">
+                  <div class="media-scale-control media-scale-control--inline">
+                    <div class="media-scale-pill">
+                      <button id="timelineScaleToggle" class="search-filter-chip gallery-filter-chip-icon" type="button" aria-label="Adjust timeline media size" aria-expanded="false" aria-controls="timelineScalePanel" title="Adjust timeline media size">
+                        <i class="ph-duotone ph-magnifying-glass-plus"></i>
+                      </button>
+                      <div id="timelineScalePanel" class="media-scale-panel hidden">
+                        <span class="media-scale-caption">More</span>
+                        <input id="timelineScaleSlider" class="media-scale-slider" type="range" min="1" max="5" step="1" value="3" aria-label="Timeline media size" />
+                        <span class="media-scale-caption">Less</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
               <div id="timelinePane" class="timeline-pane">
                 <div id="timelineTopSpacer" class="timeline-spacer"></div>
                 <div id="timelineFeed" class="timeline-feed">
@@ -95,9 +182,61 @@
             </section>
           </section>
 
+          <section id="calendarView" class="library-view calendar-browser-view hidden" aria-live="polite">
+            <div class="library-view-shell">
+              <div class="calendar-browser-layout">
+                <div class="calendar-browser-grid-shell">
+                  <div class="calendar-browser-toolbar">
+                    <button id="calendarViewPrevMonth" class="calendar-nav-button" type="button" aria-label="Previous month"><i class="ph-bold ph-caret-left"></i></button>
+                    <button id="calendarViewMonthLabel" class="calendar-month-label calendar-month-trigger" type="button">Month</button>
+                    <button id="calendarViewNextMonth" class="calendar-nav-button" type="button" aria-label="Next month"><i class="ph-bold ph-caret-right"></i></button>
+                    <button id="calendarViewToday" class="ghost-button calendar-today-button" type="button">Today</button>
+                  </div>
+                  <div class="calendar-weekdays" aria-hidden="true">
+                    <span>Sun</span>
+                    <span>Mon</span>
+                    <span>Tue</span>
+                    <span>Wed</span>
+                    <span>Thu</span>
+                    <span>Fri</span>
+                    <span>Sat</span>
+                  </div>
+                  <div id="calendarViewGrid" class="calendar-grid" role="grid" aria-label="Browse calendar"></div>
+                </div>
+                <aside id="calendarDayPanel" class="calendar-day-panel"></aside>
+              </div>
+            </div>
+          </section>
+
+          <section id="foldersView" class="library-view folders-view hidden" aria-live="polite">
+            <div class="library-view-shell folders-shell">
+              <div class="folders-layout">
+                <aside class="folders-sidebar">
+                  <div id="foldersTree" class="folders-tree"></div>
+                </aside>
+                <section class="folders-content">
+                  <div class="folder-compact-bar">
+                    <div class="folder-location-copy">
+                      <div id="folderBreadcrumbs" class="folder-breadcrumbs"></div>
+                      <p id="foldersSubtitle" class="folder-compact-meta">Browse like a file explorer, with journal context attached.</p>
+                    </div>
+                    <div id="folderViewControls" class="folder-view-controls" aria-label="Folder display mode"></div>
+                  </div>
+                  <div id="folderWorkspace" class="folder-workspace"></div>
+                </section>
+              </div>
+            </div>
+          </section>
+
           <section id="searchDetailView" class="search-detail-view hidden" aria-live="polite">
             <div class="search-detail-shell">
               <div id="searchDetailBody" class="search-detail-body"></div>
+            </div>
+          </section>
+
+          <section id="entryDetailView" class="entry-detail-view hidden" aria-live="polite">
+            <div class="entry-detail-shell">
+              <div id="entryDetailBody" class="entry-detail-body"></div>
             </div>
           </section>
 

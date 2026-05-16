@@ -266,9 +266,9 @@ async function main() {
   app.use(express.json({ limit: '8mb' }));
   app.use(express.urlencoded({ extended: false, limit: '8mb' }));
 
-  const initialBuild = await indexer.init();
+  await indexer.loadCache();
   await syncService.init();
-  setInterval(() => indexer.scheduleRefresh('interval'), config.indexing.rebuildIntervalMs).unref();
+  let backgroundStartupRebuildQueued = false;
 
   app.use('/vendor/phosphor/regular', express.static(path.join(projectRoot, 'node_modules', '@phosphor-icons', 'web', 'src', 'regular'), {
     etag: true,
@@ -297,6 +297,10 @@ async function main() {
 
   app.get('/login', (req, res) => {
     if (!auth.enabled) {
+      res.redirect('/');
+      return;
+    }
+    if (auth.isLocalhostViewerRequest(req)) {
       res.redirect('/');
       return;
     }
@@ -559,6 +563,16 @@ async function main() {
     }));
   });
 
+  app.get('/api/gallery', (req, res) => {
+    const startIndex = req.query.start !== undefined ? Number(req.query.start) : 0;
+    const limit = req.query.limit !== undefined ? Number(req.query.limit) : config.indexing.chunkSize;
+    res.json(indexer.getGalleryChunk({ startIndex, limit }));
+  });
+
+  app.get('/api/gallery/index', (req, res) => {
+    res.json(indexer.getGalleryIndex());
+  });
+
   app.get('/api/search', (req, res) => {
     const query = typeof req.query.q === 'string' ? req.query.q : '';
     res.json(indexer.search(query));
@@ -625,6 +639,17 @@ async function main() {
   app.get('/api/upload/folders', (req, res) => {
     const roots = buildFolderTree(config.paths.photoFolders || []);
     res.json({ roots: roots.map(({ rootId, rootLabel, tree }) => ({ rootId, rootLabel, tree })) });
+  });
+
+  app.get('/api/folders/browse', (req, res) => {
+    const rootId = String(req.query.rootId || '0');
+    const relativePath = String(req.query.path || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    const payload = indexer.getFolderBrowse(rootId, relativePath);
+    if (!payload) {
+      res.status(404).json({ error: 'Folder not found.' });
+      return;
+    }
+    res.json(payload);
   });
 
   app.post('/api/upload/folders', async (req, res) => {
@@ -977,6 +1002,15 @@ async function main() {
     sendNoStoreFile(res, path.join(distDir, 'editor.html'));
   });
 
+  app.get('/entry/:date', async (req, res) => {
+    const isoDate = req.params.date;
+    if (!isValidIsoDate(isoDate)) {
+      res.status(400).send('Invalid entry date.');
+      return;
+    }
+    sendNoStoreFile(res, path.join(distDir, 'index.html'));
+  });
+
   app.get('/media/thumb/:photoId', async (req, res) => {
     await imageService.sendThumb(res, req.params.photoId);
   });
@@ -985,8 +1019,16 @@ async function main() {
     await imageService.sendPreview(res, req.params.photoId);
   });
 
+  app.get('/media/display/:photoId', async (req, res) => {
+    await imageService.sendDisplay(res, req.params.photoId);
+  });
+
   app.get('/media/full/:photoId', async (req, res) => {
     await imageService.sendFull(res, req.params.photoId);
+  });
+
+  app.get('/media/download/:photoId', async (req, res) => {
+    await imageService.sendDownload(res, req.params.photoId);
   });
 
   app.get('/media/journal-inline/:imageName', async (req, res) => {
@@ -1000,9 +1042,15 @@ async function main() {
   await new Promise((resolve, reject) => {
     const server = app.listen(config.server.port, () => {
       const startupDurationMs = Date.now() - startupStartedAt;
-      const indexBuildDurationMs = initialBuild?.durationMs || 0;
       console.log(`Book of Life running on port ${config.server.port} after ${formatStartupDuration(startupDurationMs)} total startup.`);
-      console.log(`Book of Life startup summary: index build ${formatStartupDuration(indexBuildDurationMs)}, server ready ${formatStartupDuration(startupDurationMs)}.`);
+      console.log(`Book of Life startup summary: cached index loaded, server ready ${formatStartupDuration(startupDurationMs)}.`);
+      if (!backgroundStartupRebuildQueued) {
+        backgroundStartupRebuildQueued = true;
+        setImmediate(() => {
+          indexer.scheduleRebuild('startup');
+          setInterval(() => indexer.scheduleRefresh('interval'), config.indexing.rebuildIntervalMs).unref();
+        });
+      }
       resolve(server);
     });
     server.on('error', reject);

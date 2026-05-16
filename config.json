@@ -2,8 +2,17 @@
   "server": {
     "port": 3000
   },
+  "mediaOptimization": {
+    "enabled": true,
+    "imageMaxEdge": 2560,
+    "imageQuality": 86,
+    "videoMaxHeight": 1080,
+    "videoCrf": 22,
+    "videoPreset": "medium"
+  },
   "auth": {
     "enabled": true,
+    "allowLocalhostViewerBypass": true,
     "allowedUsers": "${LIFESERVER_ALLOWED_USERS}",
     "userStorePath": "./storage/auth/users.json",
     "sessionDays": 30,

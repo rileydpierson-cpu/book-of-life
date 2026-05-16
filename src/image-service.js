@@ -8,6 +8,7 @@ const { hash } = require('./utils');
 
 const execFileAsync = promisify(execFile);
 const HEIC_EXTENSIONS = new Set(['.heic', '.heif']);
+const VIDEO_DISPLAY_PRESETS = new Set(['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow']);
 
 class ImageService {
   constructor(config, indexer) {
@@ -80,6 +81,47 @@ class ImageService {
     } catch (error) {
       console.error('Full image error', error);
       res.status(500).send('Image delivery failed');
+    }
+  }
+
+  async sendDisplay(res, photoId) {
+    const photo = this.indexer.getPhoto(photoId);
+    if (!photo) {
+      res.status(404).send('Not found');
+      return;
+    }
+
+    if (!this.config.mediaOptimization?.enabled) {
+      await this.sendFull(res, photoId);
+      return;
+    }
+
+    try {
+      const cachePath = photo.type === 'video'
+        ? await this.ensureVideoDisplay(photo)
+        : await this.ensureImageDisplay(photo);
+      if (photo.type === 'video') res.set('Accept-Ranges', 'bytes');
+      res.set('Cache-Control', 'private, max-age=31536000, immutable');
+      res.sendFile(cachePath);
+    } catch (error) {
+      console.error('Display media error', error);
+      res.status(500).send('Optimized media generation failed');
+    }
+  }
+
+  async sendDownload(res, photoId) {
+    const photo = this.indexer.getPhoto(photoId);
+    if (!photo) {
+      res.status(404).send('Not found');
+      return;
+    }
+
+    try {
+      res.set('Cache-Control', 'private, max-age=86400');
+      res.download(photo.filePath, photo.fileName || path.basename(photo.filePath));
+    } catch (error) {
+      console.error('Download media error', error);
+      if (!res.headersSent) res.status(500).send('Media download failed');
     }
   }
 
@@ -225,6 +267,90 @@ class ImageService {
       }
 
       throw new Error(`Failed to generate WebM preview for ${photo.filePath}`);
+    });
+  }
+
+  displaySettingsSignature() {
+    const settings = this.config.mediaOptimization || {};
+    return [
+      settings.enabled ? 'on' : 'off',
+      `img${Number(settings.imageMaxEdge || 2560)}`,
+      `q${Number(settings.imageQuality || 86)}`,
+      `vh${Number(settings.videoMaxHeight || 1080)}`,
+      `crf${Number(settings.videoCrf || 22)}`,
+      `preset${settings.videoPreset || 'medium'}`
+    ].join('|');
+  }
+
+  async ensureImageDisplay(photo) {
+    const settings = this.config.mediaOptimization || {};
+    const maxEdge = Math.max(1, Number(settings.imageMaxEdge || 2560));
+    const quality = Math.max(1, Math.min(100, Number(settings.imageQuality || 86)));
+    const key = hash(`${photo.filePath}|${photo.mtimeMs}|${photo.size}|display-image-v1|${this.displaySettingsSignature()}`);
+    const outputPath = path.join(this.cacheDir, 'display', `${key}.webp`);
+    if (fs.existsSync(outputPath)) return outputPath;
+
+    return this.withLock(`display-image:${key}`, async () => {
+      if (fs.existsSync(outputPath)) return outputPath;
+      const tempOutput = `${outputPath}.tmp.webp`;
+      const source = this.isHeic(photo.filePath)
+        ? await this.ensureHeicConverted(photo, 'display-source')
+        : photo.filePath;
+
+      try {
+        await sharp(source, { limitInputPixels: false, failOn: 'none' })
+          .rotate()
+          .resize({ width: maxEdge, height: maxEdge, fit: 'inside', withoutEnlargement: true })
+          .webp({ quality, effort: 5 })
+          .toFile(tempOutput);
+        await fs.promises.rename(tempOutput, outputPath);
+        return outputPath;
+      } catch (error) {
+        await fs.promises.rm(tempOutput, { force: true }).catch(() => {});
+        throw error;
+      }
+    });
+  }
+
+  async ensureVideoDisplay(photo) {
+    const settings = this.config.mediaOptimization || {};
+    const maxHeight = Math.max(2, Number(settings.videoMaxHeight || 1080));
+    const crf = Math.max(0, Math.min(51, Number(settings.videoCrf || 22)));
+    const preset = VIDEO_DISPLAY_PRESETS.has(String(settings.videoPreset || 'medium'))
+      ? String(settings.videoPreset || 'medium')
+      : 'medium';
+    const key = hash(`${photo.filePath}|${photo.mtimeMs}|${photo.size}|display-video-v1|${this.displaySettingsSignature()}`);
+    const outputPath = path.join(this.cacheDir, 'display', `${key}.mp4`);
+    if (fs.existsSync(outputPath)) return outputPath;
+
+    return this.withLock(`display-video:${key}`, async () => {
+      if (fs.existsSync(outputPath)) return outputPath;
+      const tempOutput = `${outputPath}.tmp.mp4`;
+      const vf = `scale=-2:'min(${maxHeight},ih)':force_original_aspect_ratio=decrease`;
+      const args = [
+        '-hide_banner', '-loglevel', 'error', '-y',
+        '-i', photo.filePath,
+        '-map', '0:v:0',
+        '-map', '0:a?',
+        '-vf', vf,
+        '-c:v', 'libx264',
+        '-preset', preset,
+        '-crf', String(crf),
+        '-pix_fmt', 'yuv420p',
+        '-c:a', 'aac',
+        '-b:a', '160k',
+        '-movflags', '+faststart',
+        tempOutput
+      ];
+
+      try {
+        await execFileAsync('ffmpeg', args);
+        await fs.promises.rename(tempOutput, outputPath);
+        return outputPath;
+      } catch (error) {
+        await fs.promises.rm(tempOutput, { force: true }).catch(() => {});
+        throw error;
+      }
     });
   }
 

@@ -383,6 +383,10 @@ body.viewer-open {
     scale(calc(var(--viewer-canvas-scale) * var(--viewer-detail-scale)));
 }
 
+video.viewer-video {
+  background: none;
+}
+
 .viewer-canvas.is-pannable {
   cursor: grab;
 }

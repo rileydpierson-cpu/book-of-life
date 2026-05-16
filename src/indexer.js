@@ -71,7 +71,7 @@ class TimelineIndexer {
     this.mediaInventorySignature = '';
   }
 
-  async init() {
+  async loadCache() {
     const cachedIndex = await readJson(this.indexCachePath, null);
     if (cachedIndex) this.state = this.inflateState(cachedIndex);
     const cachedInventory = await readJson(this.mediaInventoryCachePath, null);
@@ -79,6 +79,10 @@ class TimelineIndexer {
       this.mediaInventory = cachedInventory.entries;
       this.mediaInventorySignature = String(cachedInventory.signature || '');
     }
+  }
+
+  async init() {
+    await this.loadCache();
     return this.rebuild('startup');
   }
 
@@ -146,6 +150,28 @@ class TimelineIndexer {
     if (!photo?.id || photo.type !== 'video') return '';
     const version = hash(`${photo.id}|${photo.mtimeMs || 0}|${photo.size || 0}|preview-v1`);
     return `/media/preview/${photo.id}?v=${version}`;
+  }
+
+  displayUrlForPhoto(photo) {
+    if (!photo?.id) return '';
+    const settings = this.config.mediaOptimization || {};
+    const version = hash([
+      photo.id,
+      photo.mtimeMs || 0,
+      photo.size || 0,
+      'display-v1',
+      settings.enabled ? 'on' : 'off',
+      settings.imageMaxEdge || 2560,
+      settings.imageQuality || 86,
+      settings.videoMaxHeight || 1080,
+      settings.videoCrf || 22,
+      settings.videoPreset || 'medium'
+    ].join('|'));
+    return `/media/display/${photo.id}?v=${version}`;
+  }
+
+  downloadUrlForPhoto(photo) {
+    return photo?.id ? `/media/download/${photo.id}` : '';
   }
 
   thumbUrlForPhotoId(photoId) {
@@ -676,6 +702,92 @@ class TimelineIndexer {
     };
   }
 
+  getGalleryIndex() {
+    const days = this.state.dayKeys
+      .map((isoDate) => this.state.days.get(isoDate))
+      .filter((day) => day?.photos?.length)
+      .sort((a, b) => b.isoDate.localeCompare(a.isoDate))
+      .map((day) => ({
+        isoDate: day.isoDate,
+        dateLabel: day.dateLabel,
+        monthKey: day.monthKey,
+        monthLabel: day.monthLabel,
+        photoCount: day.photos.length,
+        hasJournal: Boolean(day.journal),
+        wordCount: day.journal?.wordCount || 0
+      }));
+    return { total: days.length, days };
+  }
+
+  getFolderBrowse(rootId, relativePath = '') {
+    const targetRootId = String(rootId || '0');
+    const rootPath = this.config.paths.photoFolders?.[Number(targetRootId)];
+    if (!rootPath) return null;
+
+    const normalizedPath = String(relativePath || '')
+      .replace(/\\/g, '/')
+      .replace(/^\/+|\/+$/g, '');
+    const targetPath = normalizedPath || '.';
+    const childFolders = new Map();
+    const media = [];
+
+    for (const photo of this.state.photosById.values()) {
+      if (String(photo.folderRootId || '') !== targetRootId) continue;
+      const folderPath = String(photo.folder || '.');
+      const comparableFolder = folderPath === '.' ? '' : folderPath;
+
+      if (comparableFolder === normalizedPath) {
+        media.push(this.serializePhoto(photo));
+        continue;
+      }
+
+      const prefix = normalizedPath ? `${normalizedPath}/` : '';
+      if (!comparableFolder.startsWith(prefix)) continue;
+      const remainder = comparableFolder.slice(prefix.length);
+      const [childName] = remainder.split('/').filter(Boolean);
+      if (!childName) continue;
+      const childRelativePath = [normalizedPath, childName].filter(Boolean).join('/');
+      if (!childFolders.has(childRelativePath)) {
+        childFolders.set(childRelativePath, {
+          label: childName,
+          relativePath: childRelativePath,
+          displayPath: childRelativePath || '.',
+          mediaCount: 0,
+          latestModifiedMs: 0,
+          cover: null
+        });
+      }
+      const bucket = childFolders.get(childRelativePath);
+      bucket.mediaCount += 1;
+      const modifiedMs = Number(photo.modifiedAtMs || photo.createdAtMs || 0);
+      bucket.latestModifiedMs = Math.max(bucket.latestModifiedMs, modifiedMs);
+      if (!bucket.cover || String(photo.capturedAt || '') > String(bucket.cover.capturedAt || '')) {
+        bucket.cover = this.serializePhoto(photo);
+      }
+    }
+
+    media.sort((a, b) => String(b.capturedAt || '').localeCompare(String(a.capturedAt || '')) || String(a.fileName || '').localeCompare(String(b.fileName || '')));
+    const folders = [...childFolders.values()]
+      .sort((a, b) => (b.latestModifiedMs || 0) - (a.latestModifiedMs || 0) || a.label.localeCompare(b.label));
+
+    const parts = normalizedPath ? normalizedPath.split('/').filter(Boolean) : [];
+    const breadcrumbs = [{ label: path.basename(rootPath) || rootPath, relativePath: '' }];
+    let currentPath = '';
+    for (const part of parts) {
+      currentPath = [currentPath, part].filter(Boolean).join('/');
+      breadcrumbs.push({ label: part, relativePath: currentPath });
+    }
+
+    return {
+      rootId: targetRootId,
+      rootLabel: path.basename(rootPath) || rootPath,
+      relativePath: targetPath,
+      breadcrumbs,
+      folders,
+      media
+    };
+  }
+
   getDateIndex(isoDate) {
     return this.state.dayIndexByDate[isoDate] ?? -1;
   }
@@ -705,6 +817,35 @@ class TimelineIndexer {
       hasOlder: start > 0,
       hasNewer: end < total,
       days: slice.map((isoDate) => this.serializeDay(isoDate))
+    };
+  }
+
+  getGalleryChunk({ startIndex, limit }) {
+    const mediaDayKeys = this.state.dayKeys.filter((isoDate) => {
+      const day = this.state.days.get(isoDate);
+      return Boolean(day?.photos?.length);
+    });
+    const total = mediaDayKeys.length;
+    if (!total) {
+      return { total, startIndex: 0, endIndex: -1, hasOlder: false, hasNewer: false, days: [] };
+    }
+
+    const safeStart = Math.max(0, Math.min(total - 1, Number(startIndex || 0)));
+    const safeLimit = Math.max(1, Number(limit || this.config.indexing.chunkSize));
+    const endExclusive = Math.min(total, safeStart + safeLimit);
+    const days = [];
+    for (let offset = safeStart; offset < endExclusive; offset += 1) {
+      const isoDate = mediaDayKeys[total - 1 - offset];
+      days.push(this.serializeDay(isoDate));
+    }
+
+    return {
+      total,
+      startIndex: safeStart,
+      endIndex: endExclusive - 1,
+      hasOlder: endExclusive < total,
+      hasNewer: safeStart > 0,
+      days
     };
   }
 
@@ -784,6 +925,8 @@ class TimelineIndexer {
       baseName: photo.baseName,
       thumbUrl: this.thumbUrlForPhoto(photo),
       previewUrl: this.previewUrlForPhoto(photo),
+      displayUrl: this.displayUrlForPhoto(photo),
+      downloadUrl: this.downloadUrlForPhoto(photo),
       fullUrl: `/media/full/${photo.id}`,
       isoDate: photo.isoDate,
       dateLabel: longDateLabel(photo.isoDate),
@@ -971,6 +1114,8 @@ class TimelineIndexer {
     const exists = fs.existsSync(filePath);
     const raw = exists ? await fs.promises.readFile(filePath, 'utf8') : '';
     const day = this.state.days.get(isoDate);
+    const serializedDay = day ? this.serializeDay(isoDate) : null;
+    const fallbackJournal = exists && raw.trim() ? this.createJournalRecord(filePath, raw) : null;
     return {
       isoDate,
       exists,
@@ -979,10 +1124,13 @@ class TimelineIndexer {
       title: path.basename(filePath, '.md'),
       raw,
       dateLabel: longDateLabel(isoDate),
-      photos: day ? this.serializeDay(isoDate).photos : [],
+      monthKey: isoDate.slice(0, 7),
+      monthLabel: monthLabelFromIso(isoDate),
+      photos: serializedDay?.photos || [],
       photoCount: day?.photos?.length || 0,
-      hasJournal: Boolean(day?.journal),
-      wordCount: day?.journal?.wordCount || this.countWords(raw)
+      hasJournal: Boolean(day?.journal || fallbackJournal),
+      journal: serializedDay?.journal || fallbackJournal,
+      wordCount: day?.journal?.wordCount || fallbackJournal?.wordCount || this.countWords(raw)
     };
   }
 

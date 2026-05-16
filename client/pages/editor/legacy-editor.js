@@ -1043,6 +1043,10 @@ function activeViewerNode() {
   return dom.viewerImage.classList.contains('hidden') ? dom.viewerVideo : dom.viewerImage;
 }
 
+function getDisplayUrl(item) {
+  return item?.displayUrl || item?.fullUrl || '';
+}
+
 function getViewerBaseSize() {
   const stageRect = dom.viewerStage.getBoundingClientRect();
   const node = activeViewerNode();
@@ -1143,7 +1147,7 @@ function renderViewer(direction = 0) {
   resetViewerTransform();
   if (item.type === 'video') {
     dom.viewerVideo.classList.remove('hidden');
-    dom.viewerVideo.src = item.fullUrl;
+    dom.viewerVideo.src = getDisplayUrl(item);
     dom.viewerVideo.poster = item.thumbUrl;
     dom.viewerVideo.load();
     dom.viewerVideo.onloadeddata = () => {
@@ -1156,14 +1160,14 @@ function renderViewer(direction = 0) {
     dom.viewerImage.alt = item.fileName || 'Photo';
     const fullImage = new Image();
     fullImage.onload = () => {
-      dom.viewerImage.src = item.fullUrl;
+      dom.viewerImage.src = getDisplayUrl(item);
       dom.viewerLoading?.classList.add('hidden');
       updateViewerTransform();
     };
     fullImage.onerror = () => {
       dom.viewerLoading?.classList.add('hidden');
     };
-    fullImage.src = item.fullUrl;
+    fullImage.src = getDisplayUrl(item);
   }
   if (direction) playViewerStepAnimation(direction);
 }
@@ -1299,6 +1303,8 @@ function applyLocalEntryPhotoDateMutation(previousPhoto, payloadPhoto) {
       ...payloadPhoto,
       thumbUrl: payloadPhoto.thumbUrl || `/media/thumb/${payloadPhoto.id}`,
       previewUrl: payloadPhoto.previewUrl || (payloadPhoto.type === 'video' ? `/media/preview/${payloadPhoto.id}` : ''),
+      displayUrl: payloadPhoto.displayUrl || `/media/display/${payloadPhoto.id}`,
+      downloadUrl: payloadPhoto.downloadUrl || `/media/download/${payloadPhoto.id}`,
       fullUrl: payloadPhoto.fullUrl || `/media/full/${payloadPhoto.id}`
     } : photo))
     .sort((a, b) => String(b.capturedAt || '').localeCompare(String(a.capturedAt || '')) || String(a.fileName || '').localeCompare(String(b.fileName || '')));
