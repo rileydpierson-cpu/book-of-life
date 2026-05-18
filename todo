@@ -9,3 +9,19 @@ Plan: I would like to be able to select multiple photos and perform actions on t
  - Deleting them
  - etc.
 
+GIFs don't play in the media viewer when they should
+
+Delete isn't instant, which causes laggs and bugs in the UI
+
+Video media is processed (compressed) as needed. But when I try to delete said media, it can't until the processing is complete. This is an issue. So when a delete request is made, you must ensure to cancel the ffmpeg process first. Another thing about video processing: I would like all the videos processed in advance. These processes only need happen once, unless the original file changes. This way the client doesn't have to wait for ffmpeg before they can watch their video.
+
+I notice the index is rebuilt every time the server starts. This is ok, but it would be better if it just updated changed files.
+
+Remove the home tab and combine it with the now default timeline tab. 
+
+I need a new folder button and some drag and drop features in the file browser.
+
+The browser grid size should follow the same scaling as the gallery or timeline views. Include the same zoom UI element there too. 
+
+Improve the breadcrumbs. 
+
