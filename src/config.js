@@ -75,7 +75,7 @@ function normalizePhotoFolderList(value) {
     }
   }
 
-  return splitPathList(trimmed);
+  return splitFlexibleList(trimmed);
 }
 
 function parseBoolean(value, fallbackValue = false) {

@@ -56,10 +56,10 @@ LIFESERVER_CACHE_DIR=./.cache
 ```
 
 4. `config.json` can reference env vars with `${...}` placeholders, and the app will create these folders automatically if they do not exist
-5. Optionally set `LIFESERVER_PHOTO_FOLDERS` for multiple photo roots. On Windows, separate folders with `;`, or use a JSON array string.
+5. Optionally set `LIFESERVER_PHOTO_FOLDERS` for multiple photo roots. On Windows or Linux, separate folders with `;` or `:`, or use a JSON array string.
 
 ```dotenv
-LIFESERVER_PHOTO_FOLDERS=D:\Mission Photos;D:\Family Photos
+LIFESERVER_PHOTO_FOLDERS=/media/rilo/EldrPierson/MissionPhotos;/media/rilo/EldrPierson/FamilyPhotos
 ```
 
 ```dotenv
