@@ -262,8 +262,8 @@ async function main() {
   process.on('SIGTERM', handleShutdown);
 
   try {
-    await createTunnel();
     await startServer();
+    await createTunnel();
   } catch (error) {
     console.error('❌ Startup failed:', error);
     process.exit(1);

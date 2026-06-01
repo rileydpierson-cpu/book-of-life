@@ -99,7 +99,7 @@ Useful commands:
 
 ## Public access via GitHub Pages tunnel
 
-`npm start` now creates a **free public tunnel** to your localhost app using [localtunnel](https://localtunnel.me/), and automatically updates a GitHub Pages redirect page so the app is accessible from anywhere.
+`npm start` now creates a **free public tunnel** to your localhost app using Cloudflare Tunnel, and automatically updates a GitHub Pages redirect page so the app is accessible from anywhere.
 
 ### Setup (one-time)
 
@@ -133,7 +133,7 @@ npm start
 The script will:
 1. 🔨 Build your frontend
 2. 🚀 Start Express on `localhost:3000`
-3. 🌐 Create a localtunnel public URL
+3. 🌐 Create a Cloudflare public URL
 4. 📝 Update GitHub Pages with the tunnel URL
 5. 🔗 Print the public URL to console
 
@@ -164,12 +164,12 @@ Since the app runs on your machine, you can:
 
 **Tunnel fails to create**
 - Check your internet connection and network firewall.
-- localtunnel relies on outbound HTTPS to `localtunnel.me`. Some corporate networks block this.
+- Cloudflare Tunnel relies on the `cloudflared` command and outbound HTTPS. Some corporate networks block this.
 - Fallback: run `npm run start:local` for localhost-only access.
 
 **Want local-only mode instead?**
 - Run `npm run start:local` to start without tunneling
-- Or set up port forwarding / ngrok / cloudflared manually
+- Or set up port forwarding, ngrok, or another tunnel manually
 
 ## Useful commands
 
