@@ -5,10 +5,11 @@
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
-    "start": "npm run build && node server.js",
+    "start": "npm run build && node scripts/start-with-tunnel.js",
+    "start:local": "npm run build && node server.js",
     "dev": "node --watch server.js",
-    "build": "vite build",
-    "test": "vitest run"
+    "build": "node node_modules/vite/bin/vite.js build",
+    "test": "node node_modules/vitest/vitest.mjs run"
   },
   "dependencies": {
     "@phosphor-icons/web": "^2.1.2",
@@ -20,6 +21,7 @@
     "sharp": "^0.33.5"
   },
   "devDependencies": {
+    "localtunnel": "^2.0.2",
     "vite": "^7.1.0",
     "vitest": "^3.2.4"
   }

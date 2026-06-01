@@ -84,9 +84,86 @@ To use the app on your LAN, visit your machine's local IP on port `3000`.
 
 Useful commands:
 
-- `npm start` - build the frontend and then start Express
+- `npm start` - build the frontend and start with public tunnel via GitHub Pages
+- `npm run start:local` - build the frontend and start Express locally (no public access)
 - `npm run build` - build the frontend only
 - `npm test` - run Vitest unit tests for extracted frontend domain modules
+
+## Public access via GitHub Pages tunnel
+
+`npm start` now creates a **free public tunnel** to your localhost app using [localtunnel](https://localtunnel.me/), and automatically updates a GitHub Pages redirect page so the app is accessible from anywhere.
+
+### Setup (one-time)
+
+1. **Generate a GitHub Personal Access Token:**
+   - Go to https://github.com/settings/tokens/new
+   - Select "Generate new token (classic)"
+   - Check the `repo` scope only
+   - Click "Generate token" and copy the token value
+
+2. **Add token to `.env`:**
+   - Copy `.env.template` to `.env` in the project root
+   - Paste your token as the `GITHUB_TOKEN` value:
+   ```dotenv
+   GITHUB_TOKEN=ghp_your_token_here
+   ```
+   - (`.env` is already in `.gitignore`, so your token won't be committed)
+
+3. **Enable GitHub Pages in your repo:**
+   - Go to your repo **Settings → Pages**
+   - Set "Source" to "Deploy from a branch"
+   - Set "Branch" to `main` and "Folder" to `/docs`
+   - Save
+
+### Usage
+
+Run:
+```bash
+npm start
+```
+
+The script will:
+1. 🔨 Build your frontend
+2. 🚀 Start Express on `localhost:3000`
+3. 🌐 Create a localtunnel public URL
+4. 📝 Update GitHub Pages with the tunnel URL
+5. 🔗 Print the public URL to console
+
+Then visit your **GitHub Pages URL** (e.g., `https://yourname.github.io/book-of-life`) to access the app. It will auto-redirect to the current tunnel URL.
+
+**Every time you restart `npm start`, the tunnel URL updates automatically, and GitHub Pages reflects the change.**
+
+### Sharing access
+
+Since the app runs on your machine, you can:
+- Share the tunnel URL (from console output) with friends
+- Share your GitHub Pages URL for a stable bookmark
+- Both expire when the server stops
+
+### Troubleshooting
+
+**npm install fails with EPERM (on external drives)**
+- External drives (USB, network mounts) don't support Unix symlinks
+- The project is already configured to work without symlinks (`node_modules/.bin` links are created manually)
+- If you still see errors, you can:
+  1. Copy the project to your home/local drive: `cp -r "Book of Life" ~/book-of-life && cd ~/book-of-life && npm install`
+  2. Or use: `npm install --no-bin-links` on the external drive
+- Once installed, `npm start` will work fine
+
+**GitHub Pages shows "Loading tunnel information..."**
+- The URL endpoint hasn't been created yet. Wait 30 seconds and refresh the GitHub Pages page.
+- Check that your `GITHUB_TOKEN` has the `repo` scope.
+
+**Tunnel fails to create**
+- Check your internet connection and network firewall.
+- localtunnel relies on outbound HTTPS to `localtunnel.me`. Some corporate networks block this.
+- Fallback: run `npm run start:local` for localhost-only access.
+
+**Want local-only mode instead?**
+- Run `npm run start:local` to start without tunneling
+- Or set up port forwarding / ngrok / cloudflared manually
+
+## Useful commands
 
 ## Authentication
 
