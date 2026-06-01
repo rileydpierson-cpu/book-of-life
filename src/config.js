@@ -75,7 +75,7 @@ function normalizePhotoFolderList(value) {
     }
   }
 
-  return splitPathList(trimmed);
+  return splitFlexibleList(trimmed);
 }
 
 function parseBoolean(value, fallbackValue = false) {
@@ -188,7 +188,7 @@ function loadConfig(projectRoot) {
 
   return {
     server: {
-      port: Number(config.server?.port || 3000)
+      port: Number(getConfigValue(config.server?.port, 'PORT', 3000))
     },
     mediaOptimization: {
       enabled: parseBoolean(getConfigValue(config.mediaOptimization?.enabled, 'LIFESERVER_MEDIA_OPTIMIZATION_ENABLED', true), true),

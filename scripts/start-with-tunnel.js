@@ -12,11 +12,13 @@
 
 const { spawn } = require('child_process');
 const localtunnel = require('localtunnel');
-const fs = require('fs');
 const path = require('path');
 const https = require('https');
+const { loadConfig } = require('../src/config');
 
-const PORT = process.env.PORT || 3000;
+const PROJECT_ROOT = path.join(__dirname, '..');
+const CONFIG = loadConfig(PROJECT_ROOT);
+const PORT = Number(CONFIG.server.port || 3000);
 const SERVER_SCRIPT = path.join(__dirname, '..', 'server.js');
 
 // GitHub Pages config

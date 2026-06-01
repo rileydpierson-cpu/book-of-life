@@ -6,6 +6,10 @@
  */
 
 const https = require('https');
+const path = require('path');
+const { loadConfig } = require('../src/config');
+
+loadConfig(path.join(__dirname, '..'));
 
 const tunnelUrl = process.argv[2];
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
