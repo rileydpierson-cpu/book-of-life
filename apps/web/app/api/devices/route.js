@@ -1,4 +1,4 @@
-import { requireUser } from '../../../lib/supabase-admin.js';
+import { apiError, requireUser } from '../../../lib/supabase-api.js';
 
 async function ownsLibrary(supabase, userId, libraryId) {
   const { data, error } = await supabase
@@ -25,7 +25,7 @@ export async function GET(request) {
     .select('*')
     .eq('library_id', libraryId)
     .order('created_at', { ascending: true });
-  if (error) return Response.json({ ok: false, error: error.message }, { status: 500 });
+  if (error) return apiError(error);
   return Response.json({ ok: true, devices: data || [] });
 }
 
@@ -53,6 +53,6 @@ export async function POST(request) {
     })
     .select('*')
     .single();
-  if (error) return Response.json({ ok: false, error: error.message }, { status: 500 });
+  if (error) return apiError(error);
   return Response.json({ ok: true, device: data }, { status: 201 });
 }

@@ -1,4 +1,4 @@
-import { requireUser } from '../../../../../lib/supabase-admin.js';
+import { apiError, requireUser } from '../../../../../lib/supabase-api.js';
 
 export async function GET(request, { params }) {
   const context = await requireUser(request);
@@ -17,7 +17,7 @@ export async function GET(request, { params }) {
     .eq('id', libraryId)
     .eq('owner_user_id', context.user.id)
     .maybeSingle();
-  if (library.error) return Response.json({ ok: false, error: library.error.message }, { status: 500 });
+  if (library.error) return apiError(library.error);
   if (!library.data) return Response.json({ ok: false, error: 'Library not found.' }, { status: 404 });
 
   const { data, error } = await context.supabase
@@ -27,6 +27,6 @@ export async function GET(request, { params }) {
     .eq('iso_date', isoDate)
     .order('superseded_at', { ascending: false });
 
-  if (error) return Response.json({ ok: false, error: error.message }, { status: 500 });
+  if (error) return apiError(error);
   return Response.json({ ok: true, revisions: data || [] });
 }

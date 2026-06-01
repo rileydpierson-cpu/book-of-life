@@ -1,4 +1,4 @@
-import { requireUser } from '../../../lib/supabase-admin.js';
+import { apiError, requireUser } from '../../../lib/supabase-api.js';
 
 export async function GET(request) {
   const context = await requireUser(request);
@@ -13,7 +13,7 @@ export async function GET(request) {
     .eq('id', libraryId)
     .eq('owner_user_id', context.user.id)
     .maybeSingle();
-  if (library.error) return Response.json({ ok: false, error: library.error.message }, { status: 500 });
+  if (library.error) return apiError(library.error);
   if (!library.data) return Response.json({ ok: false, error: 'Library not found.' }, { status: 404 });
 
   const { data, error } = await context.supabase
@@ -23,6 +23,6 @@ export async function GET(request) {
     .eq('device_type', 'desktop')
     .eq('can_use_desktop_host', true)
     .order('last_seen_at', { ascending: false });
-  if (error) return Response.json({ ok: false, error: error.message }, { status: 500 });
+  if (error) return apiError(error);
   return Response.json({ ok: true, hosts: data || [] });
 }

@@ -1,4 +1,4 @@
-import { requireUser } from '../../../lib/supabase-admin.js';
+import { requireUser } from '../../../lib/supabase-api.js';
 
 export async function GET(request) {
   const context = await requireUser(request);

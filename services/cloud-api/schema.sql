@@ -77,3 +77,208 @@ create table if not exists sync_mutations (
   result jsonb not null default '{}',
   created_at timestamptz not null default now()
 );
+
+alter table libraries enable row level security;
+alter table devices enable row level security;
+alter table entries enable row level security;
+alter table entry_revisions enable row level security;
+alter table media_items enable row level security;
+alter table sync_changes enable row level security;
+alter table sync_mutations enable row level security;
+
+drop policy if exists "Users can read own libraries" on libraries;
+create policy "Users can read own libraries"
+  on libraries for select
+  using (owner_user_id = auth.uid());
+
+drop policy if exists "Users can create own libraries" on libraries;
+create policy "Users can create own libraries"
+  on libraries for insert
+  with check (owner_user_id = auth.uid());
+
+drop policy if exists "Users can update own libraries" on libraries;
+create policy "Users can update own libraries"
+  on libraries for update
+  using (owner_user_id = auth.uid())
+  with check (owner_user_id = auth.uid());
+
+drop policy if exists "Users can delete own libraries" on libraries;
+create policy "Users can delete own libraries"
+  on libraries for delete
+  using (owner_user_id = auth.uid());
+
+drop policy if exists "Users can read own devices" on devices;
+create policy "Users can read own devices"
+  on devices for select
+  using (owner_user_id = auth.uid());
+
+drop policy if exists "Users can create own devices" on devices;
+create policy "Users can create own devices"
+  on devices for insert
+  with check (
+    owner_user_id = auth.uid()
+    and exists (
+      select 1 from libraries
+      where libraries.id = devices.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can update own devices" on devices;
+create policy "Users can update own devices"
+  on devices for update
+  using (owner_user_id = auth.uid())
+  with check (owner_user_id = auth.uid());
+
+drop policy if exists "Users can delete own devices" on devices;
+create policy "Users can delete own devices"
+  on devices for delete
+  using (owner_user_id = auth.uid());
+
+drop policy if exists "Users can read own entries" on entries;
+create policy "Users can read own entries"
+  on entries for select
+  using (
+    exists (
+      select 1 from libraries
+      where libraries.id = entries.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can create own entries" on entries;
+create policy "Users can create own entries"
+  on entries for insert
+  with check (
+    exists (
+      select 1 from libraries
+      where libraries.id = entries.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can update own entries" on entries;
+create policy "Users can update own entries"
+  on entries for update
+  using (
+    exists (
+      select 1 from libraries
+      where libraries.id = entries.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  )
+  with check (
+    exists (
+      select 1 from libraries
+      where libraries.id = entries.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can read own entry revisions" on entry_revisions;
+create policy "Users can read own entry revisions"
+  on entry_revisions for select
+  using (
+    exists (
+      select 1 from libraries
+      where libraries.id = entry_revisions.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can create own entry revisions" on entry_revisions;
+create policy "Users can create own entry revisions"
+  on entry_revisions for insert
+  with check (
+    exists (
+      select 1 from libraries
+      where libraries.id = entry_revisions.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can read own media" on media_items;
+create policy "Users can read own media"
+  on media_items for select
+  using (
+    exists (
+      select 1 from libraries
+      where libraries.id = media_items.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can create own media" on media_items;
+create policy "Users can create own media"
+  on media_items for insert
+  with check (
+    exists (
+      select 1 from libraries
+      where libraries.id = media_items.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can update own media" on media_items;
+create policy "Users can update own media"
+  on media_items for update
+  using (
+    exists (
+      select 1 from libraries
+      where libraries.id = media_items.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  )
+  with check (
+    exists (
+      select 1 from libraries
+      where libraries.id = media_items.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can read own sync changes" on sync_changes;
+create policy "Users can read own sync changes"
+  on sync_changes for select
+  using (
+    exists (
+      select 1 from libraries
+      where libraries.id = sync_changes.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can create own sync changes" on sync_changes;
+create policy "Users can create own sync changes"
+  on sync_changes for insert
+  with check (
+    exists (
+      select 1 from libraries
+      where libraries.id = sync_changes.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can read own sync mutations" on sync_mutations;
+create policy "Users can read own sync mutations"
+  on sync_mutations for select
+  using (
+    exists (
+      select 1 from libraries
+      where libraries.id = sync_mutations.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can create own sync mutations" on sync_mutations;
+create policy "Users can create own sync mutations"
+  on sync_mutations for insert
+  with check (
+    exists (
+      select 1 from libraries
+      where libraries.id = sync_mutations.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+notify pgrst, 'reload schema';

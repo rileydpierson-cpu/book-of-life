@@ -2,40 +2,27 @@
 
 import Link from 'next/link';
 import { useMemo, useState } from 'react';
-import { createClient } from '@supabase/supabase-js';
+import { createClient, isBrowserSupabaseConfigured } from '../../utils/supabase/client.js';
 
 function todayIso() {
   const date = new Date();
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
-function createBrowserSupabase() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!url || !anonKey) return null;
-  return createClient(url, anonKey);
-}
-
 export default function WebAppPage() {
-  const supabase = useMemo(() => createBrowserSupabase(), []);
+  const supabase = useMemo(() => (isBrowserSupabaseConfigured() ? createClient() : null), []);
   const [libraryId, setLibraryId] = useState('');
   const [isoDate, setIsoDate] = useState(todayIso());
   const [raw, setRaw] = useState('');
   const [entries, setEntries] = useState([]);
   const [status, setStatus] = useState('Connect to Supabase, then load or save a cloud entry.');
 
-  async function authHeader() {
-    if (!supabase) return {};
-    const { data } = await supabase.auth.getSession();
-    const token = data.session?.access_token;
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  }
-
   async function ensureLibrary() {
+    if (!supabase) throw new Error('Supabase environment variables are not configured yet.');
     if (libraryId) return libraryId;
     const response = await fetch('/api/libraries', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(await authHeader()) },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: 'Book of Life' })
     });
     const payload = await response.json();
@@ -48,9 +35,7 @@ export default function WebAppPage() {
     try {
       setStatus('Loading entries...');
       const activeLibraryId = await ensureLibrary();
-      const response = await fetch(`/api/entries?libraryId=${encodeURIComponent(activeLibraryId)}`, {
-        headers: await authHeader()
-      });
+      const response = await fetch(`/api/entries?libraryId=${encodeURIComponent(activeLibraryId)}`);
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'Could not load entries.');
       setEntries(payload.entries || []);
@@ -68,7 +53,7 @@ export default function WebAppPage() {
       const activeLibraryId = await ensureLibrary();
       const response = await fetch('/api/entries', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(await authHeader()) },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ libraryId: activeLibraryId, isoDate, raw })
       });
       const payload = await response.json();

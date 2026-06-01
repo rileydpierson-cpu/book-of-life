@@ -2,17 +2,10 @@
 
 import Link from 'next/link';
 import { useMemo, useState } from 'react';
-import { createClient } from '@supabase/supabase-js';
-
-function createBrowserSupabase() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!url || !anonKey) return null;
-  return createClient(url, anonKey);
-}
+import { createClient, isBrowserSupabaseConfigured } from '../../utils/supabase/client.js';
 
 export default function LoginPage() {
-  const supabase = useMemo(() => createBrowserSupabase(), []);
+  const supabase = useMemo(() => (isBrowserSupabaseConfigured() ? createClient() : null), []);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [mode, setMode] = useState('signin');
@@ -23,20 +16,19 @@ export default function LoginPage() {
   async function submit(event) {
     event.preventDefault();
     if (!supabase) {
-      setStatus('Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY, then redeploy.');
+      setStatus('Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY, then redeploy.');
       return;
     }
     setStatus(mode === 'signin' ? 'Signing in...' : 'Creating account...');
-    const action = mode === 'signin'
-      ? supabase.auth.signInWithPassword({ email, password })
-      : supabase.auth.signUp({ email, password });
-    const { error } = await action;
+    const { error } = mode === 'signin'
+      ? await supabase.auth.signInWithPassword({ email, password })
+      : await createAccountAndSignIn(supabase, email, password);
     if (error) {
       setStatus(error.message);
       return;
     }
-    setStatus(mode === 'signin' ? 'Signed in. Opening your library...' : 'Account created. Check your email if confirmation is enabled.');
-    if (mode === 'signin') window.location.href = '/app';
+    setStatus('Signed in. Opening your library...');
+    window.location.href = '/app';
   }
 
   return (
@@ -61,4 +53,11 @@ export default function LoginPage() {
       </form>
     </main>
   );
+}
+
+async function createAccountAndSignIn(supabase, email, password) {
+  const signUp = await supabase.auth.signUp({ email, password });
+  if (signUp.error) return signUp;
+  if (signUp.data.session) return signUp;
+  return supabase.auth.signInWithPassword({ email, password });
 }

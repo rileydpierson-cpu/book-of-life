@@ -1,4 +1,4 @@
-import { requireUser, toEntry } from '../../../lib/supabase-admin.js';
+import { apiError, requireUser, toEntry } from '../../../lib/supabase-api.js';
 
 function isValidIsoDate(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
@@ -34,7 +34,7 @@ export async function GET(request) {
     .eq('library_id', libraryId)
     .order('iso_date', { ascending: false });
 
-  if (error) return Response.json({ ok: false, error: error.message }, { status: 500 });
+  if (error) return apiError(error);
   return Response.json({ ok: true, entries: (data || []).map(toEntry) });
 }
 
@@ -63,7 +63,7 @@ export async function POST(request) {
     .maybeSingle();
 
   if (previous.error) {
-    return Response.json({ ok: false, error: previous.error.message }, { status: 500 });
+    return apiError(previous.error);
   }
 
   const nextVersion = Number(previous.data?.cloud_version || 0) + 1;
@@ -79,7 +79,7 @@ export async function POST(request) {
     };
     const revisionResult = await context.supabase.from('entry_revisions').insert(revision);
     if (revisionResult.error) {
-      return Response.json({ ok: false, error: revisionResult.error.message }, { status: 500 });
+      return apiError(revisionResult.error);
     }
   }
 
@@ -97,7 +97,7 @@ export async function POST(request) {
     .single();
 
   if (upsert.error) {
-    return Response.json({ ok: false, error: upsert.error.message }, { status: 500 });
+    return apiError(upsert.error);
   }
 
   await context.supabase.from('sync_changes').insert({

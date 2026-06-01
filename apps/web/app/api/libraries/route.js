@@ -1,4 +1,4 @@
-import { requireUser, toLibrary } from '../../../lib/supabase-admin.js';
+import { apiError, requireUser, toLibrary } from '../../../lib/supabase-api.js';
 
 export async function GET(request) {
   const context = await requireUser(request);
@@ -11,7 +11,7 @@ export async function GET(request) {
     .order('created_at', { ascending: true });
 
   if (error) {
-    return Response.json({ ok: false, error: error.message }, { status: 500 });
+    return apiError(error);
   }
   return Response.json({ ok: true, libraries: (data || []).map(toLibrary) });
 }
@@ -31,7 +31,7 @@ export async function POST(request) {
     .maybeSingle();
 
   if (existing.error) {
-    return Response.json({ ok: false, error: existing.error.message }, { status: 500 });
+    return apiError(existing.error);
   }
   if (existing.data) {
     return Response.json({ ok: true, library: toLibrary(existing.data), existing: true });
@@ -44,7 +44,7 @@ export async function POST(request) {
     .single();
 
   if (error) {
-    return Response.json({ ok: false, error: error.message }, { status: 500 });
+    return apiError(error);
   }
   return Response.json({ ok: true, library: toLibrary(data), existing: false }, { status: 201 });
 }

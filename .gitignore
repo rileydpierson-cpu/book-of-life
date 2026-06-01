@@ -3,6 +3,7 @@ node_modules/
 .env
 cloudflared.exe
 package-lock.json
+!apps/web/package-lock.json
 dist/
 .next/
 .vercel/
