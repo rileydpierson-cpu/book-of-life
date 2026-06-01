@@ -11,7 +11,6 @@
  */
 
 const { spawn } = require('child_process');
-const localtunnel = require('localtunnel');
 const path = require('path');
 const https = require('https');
 const { loadConfig } = require('../src/config');
@@ -27,7 +26,7 @@ const GITHUB_OWNER = process.env.GITHUB_OWNER || extractOwnerFromGit();
 const GITHUB_REPO = process.env.GITHUB_REPO || extractRepoFromGit();
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH || 'main';
 
-let tunnel = null;
+let tunnelProcess = null;
 let serverProcess = null;
 
 /**
@@ -171,31 +170,68 @@ function startServer() {
 }
 
 /**
- * Create localtunnel tunnel
+ * Create cloudflared tunnel
  */
 async function createTunnel() {
-  try {
-    console.log('🌐 Creating localtunnel tunnel...');
-    tunnel = await localtunnel({ port: PORT });
-    const tunnelUrl = tunnel.url;
+  return new Promise((resolve, reject) => {
+    try {
+      console.log('🌐 Creating Cloudflare tunnel...');
+      tunnelProcess = spawn('cloudflared', ['tunnel', '--url', `http://localhost:${PORT}`], {
+        stdio: ['ignore', 'pipe', 'pipe']
+      });
 
-    console.log(`\n✨ Tunnel ready!`);
-    console.log(`   Public URL: ${tunnelUrl}`);
-    console.log(`   Local URL:  http://localhost:${PORT}\n`);
+      let tunnelUrl = null;
+      let resolved = false;
 
-    // Update GitHub Pages with the tunnel URL
-    await updateGitHubPages(tunnelUrl);
+      const onOutput = (data) => {
+        const output = data.toString();
+        console.log(output);
 
-    tunnel.on('close', () => {
-      console.log('\n⚠️  Tunnel closed');
-      process.exit(0);
-    });
+        // Parse the tunnel URL from cloudflared output
+        // cloudflared outputs: "INF |  https://spencer-busy-circuits-synopsis.trycloudflare.com"
+        const urlMatch = output.match(/https:\/\/[\w.-]+\.trycloudflare\.com/);
+        if (urlMatch && !resolved) {
+          tunnelUrl = urlMatch[0];
+          resolved = true;
+          console.log(`\n✨ Tunnel ready!`);
+          console.log(`   Public URL: ${tunnelUrl}`);
+          console.log(`   Local URL:  http://localhost:${PORT}\n`);
+          
+          // Update GitHub Pages with the tunnel URL
+          updateGitHubPages(tunnelUrl);
+          resolve(tunnelUrl);
+        }
+      };
 
-    return tunnelUrl;
-  } catch (error) {
-    console.error('❌ Failed to create tunnel:', error.message);
-    process.exit(1);
-  }
+      tunnelProcess.stdout.on('data', onOutput);
+      tunnelProcess.stderr.on('data', onOutput);
+
+      tunnelProcess.on('error', (error) => {
+        if (!resolved) {
+          console.error('❌ Failed to start cloudflared:', error.message);
+          reject(error);
+        }
+      });
+
+      tunnelProcess.on('close', (code) => {
+        if (code !== 0 && !resolved) {
+          console.error(`\n❌ Cloudflared exited with code ${code}`);
+          process.exit(code);
+        }
+      });
+
+      // Timeout if tunnel doesn't start within 10 seconds
+      setTimeout(() => {
+        if (!resolved) {
+          console.error('❌ Tunnel failed to start within timeout');
+          reject(new Error('Tunnel creation timeout'));
+        }
+      }, 10000);
+    } catch (error) {
+      console.error('❌ Failed to create tunnel:', error.message);
+      reject(error);
+    }
+  });
 }
 
 /**
@@ -204,8 +240,8 @@ async function createTunnel() {
 function handleShutdown() {
   console.log('\n🛑 Shutting down...');
 
-  if (tunnel) {
-    tunnel.close();
+  if (tunnelProcess) {
+    tunnelProcess.kill('SIGTERM');
   }
 
   if (serverProcess) {
@@ -226,8 +262,8 @@ async function main() {
   process.on('SIGTERM', handleShutdown);
 
   try {
-    await startServer();
     await createTunnel();
+    await startServer();
   } catch (error) {
     console.error('❌ Startup failed:', error);
     process.exit(1);

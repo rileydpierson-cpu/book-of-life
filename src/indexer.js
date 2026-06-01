@@ -413,6 +413,7 @@ class TimelineIndexer {
         type,
         isoDate: dateInfo.isoDate,
         capturedAt: dateInfo.capturedAt,
+        modifiedAt: dateInfo.modifiedAt,
         dateSource: dateInfo.source,
         size: stat.size,
         mtimeMs: stat.mtimeMs,
@@ -436,16 +437,24 @@ class TimelineIndexer {
   }
 
   async extractMediaDateInfo(filePath, stat) {
+    let capturedAtDate = null;
+    let modifiedAtDate = null;
+    let dateSource = null;
+
     if (isImageFile(filePath)) {
       try {
-        const exif = await exifr.parse(filePath, { pick: ['DateTimeOriginal', 'CreateDate', 'ModifyDate'] });
-        const exifDate = exif?.DateTimeOriginal || exif?.CreateDate || exif?.ModifyDate;
-        if (exifDate instanceof Date && !Number.isNaN(exifDate.getTime())) {
-          return {
-            isoDate: exifDate.toISOString().slice(0, 10),
-            capturedAt: exifDate.toISOString(),
-            source: 'exif'
-          };
+        const fileBuffer = await fs.promises.readFile(filePath);
+        const exif = await exifr.parse(fileBuffer, { pick: ['DateTimeOriginal', 'CreateDate', 'ModifyDate'] });
+        const exifCapturedDate = exif?.DateTimeOriginal || exif?.CreateDate;
+        const exifModifiedDate = exif?.ModifyDate;
+        
+        if (exifCapturedDate instanceof Date && !Number.isNaN(exifCapturedDate.getTime())) {
+          capturedAtDate = exifCapturedDate;
+          dateSource = 'exif';
+        }
+        
+        if (exifModifiedDate instanceof Date && !Number.isNaN(exifModifiedDate.getTime())) {
+          modifiedAtDate = exifModifiedDate;
         }
       } catch (error) {
         // Many exported or edited images have no EXIF. Ignore and fall through.
@@ -454,28 +463,43 @@ class TimelineIndexer {
 
     if (isVideoFile(filePath)) {
       const videoDate = await readVideoCreatedDate(filePath);
-      if (videoDate) return videoDate;
+      if (videoDate) {
+        capturedAtDate = new Date(videoDate.capturedAt);
+        dateSource = videoDate.source;
+      }
     }
 
-    const created = stat.birthtimeMs ? new Date(stat.birthtimeMs) : null;
-    if (created && !Number.isNaN(created.getTime())) {
-      return {
-        isoDate: created.toISOString().slice(0, 10),
-        capturedAt: created.toISOString(),
-        source: 'filesystem-created'
-      };
+    if (!capturedAtDate) {
+      const created = stat.birthtimeMs ? new Date(stat.birthtimeMs) : null;
+      if (created && !Number.isNaN(created.getTime())) {
+        capturedAtDate = created;
+        dateSource = 'filesystem-created';
+      }
     }
 
-    const modified = new Date(stat.mtimeMs);
-    if (!Number.isNaN(modified.getTime())) {
-      return {
-        isoDate: modified.toISOString().slice(0, 10),
-        capturedAt: modified.toISOString(),
-        source: 'filesystem-modified'
-      };
+    if (!capturedAtDate) {
+      const modified = new Date(stat.mtimeMs);
+      if (!Number.isNaN(modified.getTime())) {
+        capturedAtDate = modified;
+        dateSource = 'filesystem-modified';
+      }
     }
 
-    return null;
+    if (!capturedAtDate) {
+      return null;
+    }
+
+    // Use file modification time as fallback for modifiedAtDate
+    if (!modifiedAtDate) {
+      modifiedAtDate = new Date(stat.mtimeMs);
+    }
+
+    return {
+      isoDate: capturedAtDate.toISOString().slice(0, 10),
+      capturedAt: capturedAtDate.toISOString(),
+      modifiedAt: modifiedAtDate.toISOString(),
+      source: dateSource
+    };
   }
 
 
@@ -680,7 +704,7 @@ class TimelineIndexer {
           wordCount: day.journal?.wordCount || 0,
           previewThumbs: day.photos
             .slice()
-            .sort((a, b) => b.capturedAt.localeCompare(a.capturedAt) || a.filePath.localeCompare(b.filePath))
+            .sort((a, b) => String(b.modifiedAt || b.capturedAt || '').localeCompare(String(a.modifiedAt || a.capturedAt || '')) || a.filePath.localeCompare(b.filePath))
             .slice(0, 4)
             .map((photo) => ({
               id: photo.id,
@@ -766,7 +790,7 @@ class TimelineIndexer {
       }
     }
 
-    media.sort((a, b) => String(b.capturedAt || '').localeCompare(String(a.capturedAt || '')) || String(a.fileName || '').localeCompare(String(b.fileName || '')));
+    media.sort((a, b) => String(b.modifiedAt || b.capturedAt || '').localeCompare(String(a.modifiedAt || a.capturedAt || '')) || String(a.fileName || '').localeCompare(String(b.fileName || '')));
     const folders = [...childFolders.values()]
       .sort((a, b) => (b.latestModifiedMs || 0) - (a.latestModifiedMs || 0) || a.label.localeCompare(b.label));
 
@@ -864,7 +888,7 @@ class TimelineIndexer {
       const journalMatch = journalMatchCount > 0;
       const matchedMedia = (day.photos || [])
         .filter((photo) => String(photo.description || '').toLowerCase().includes(term))
-        .sort((a, b) => b.capturedAt.localeCompare(a.capturedAt) || a.filePath.localeCompare(b.filePath))
+        .sort((a, b) => String(b.modifiedAt || b.capturedAt || '').localeCompare(String(a.modifiedAt || a.capturedAt || '')) || a.filePath.localeCompare(b.filePath))
         .map((photo) => {
           const serialized = this.serializePhoto(photo);
           serialized.searchMatch = true;
@@ -951,7 +975,7 @@ class TimelineIndexer {
     const preview = day.journal ? this.buildJournalPreview(day.journal.raw, { searchTerm }) : null;
     const orderedPhotos = day.photos
       .slice()
-      .sort((a, b) => b.capturedAt.localeCompare(a.capturedAt) || a.filePath.localeCompare(b.filePath))
+      .sort((a, b) => String(b.modifiedAt || b.capturedAt || '').localeCompare(String(a.modifiedAt || a.capturedAt || '')) || a.filePath.localeCompare(b.filePath))
       .map((photo) => this.serializePhoto(photo));
     const matched = Array.isArray(matchedMedia) ? matchedMedia : [];
     return {
@@ -1025,7 +1049,7 @@ class TimelineIndexer {
           ? day.journal.wordCount
           : this.countWords(day.journal.raw);
       }
-      day.photos = (day.photos || []).slice().sort((a, b) => a.capturedAt.localeCompare(b.capturedAt) || a.filePath.localeCompare(b.filePath));
+      day.photos = (day.photos || []).slice().sort((a, b) => String(a.modifiedAt || a.capturedAt || '').localeCompare(String(b.modifiedAt || b.capturedAt || '')) || a.filePath.localeCompare(b.filePath));
       day.photoIds = day.photos.map((photo) => photo.id);
       day.journalSearchText = [
         day.dateLabel,

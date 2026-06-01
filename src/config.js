@@ -190,6 +190,13 @@ function loadConfig(projectRoot) {
     server: {
       port: Number(getConfigValue(config.server?.port, 'PORT', 3000))
     },
+    cloud: {
+      enabled: parseBoolean(getConfigValue(config.cloud?.enabled, 'BOOK_OF_LIFE_CLOUD_ENABLED'), false),
+      apiBaseUrl: String(getConfigValue(config.cloud?.apiBaseUrl, 'BOOK_OF_LIFE_CLOUD_API_BASE_URL', '') || '').trim(),
+      userId: String(getConfigValue(config.cloud?.userId, 'BOOK_OF_LIFE_USER_ID', 'local-user') || 'local-user').trim(),
+      libraryId: String(getConfigValue(config.cloud?.libraryId, 'BOOK_OF_LIFE_LIBRARY_ID', 'default-library') || 'default-library').trim(),
+      deviceId: String(getConfigValue(config.cloud?.deviceId, 'BOOK_OF_LIFE_DEVICE_ID', 'local-desktop') || 'local-desktop').trim()
+    },
     mediaOptimization: {
       enabled: parseBoolean(getConfigValue(config.mediaOptimization?.enabled, 'LIFESERVER_MEDIA_OPTIMIZATION_ENABLED', true), true),
       imageMaxEdge: Math.round(parsePositiveNumber(getConfigValue(config.mediaOptimization?.imageMaxEdge, 'LIFESERVER_MEDIA_IMAGE_MAX_EDGE', 2560), 2560)),

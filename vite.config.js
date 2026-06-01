@@ -10,7 +10,8 @@ module.exports = defineConfig({
       input: {
         app: path.resolve(__dirname, 'index.html'),
         editor: path.resolve(__dirname, 'editor.html'),
-        login: path.resolve(__dirname, 'login.html')
+        login: path.resolve(__dirname, 'login.html'),
+        desktopSettings: path.resolve(__dirname, 'desktop-settings.html')
       }
     }
   }

@@ -14,6 +14,9 @@ const {
 const { AuthService } = require('./src/auth');
 const { dateToIsoLocal } = require('./src/utils');
 const { SyncService } = require('./src/sync-service');
+const { CloudEntryStore } = require('./src/cloud-entry-store');
+const { DesktopSyncSettingsStore } = require('./src/desktop-sync-settings');
+const { JournalCloudSync } = require('./src/journal-cloud-sync');
 
 function sendNoStoreFile(res, filePath) {
   res.setHeader('Cache-Control', 'no-store');
@@ -210,9 +213,18 @@ async function main() {
   const imageService = new ImageService(config, indexer);
   const auth = new AuthService(config);
   const uploader = createUploader(config.paths.cacheDir);
+  const cloudEntryStore = new CloudEntryStore({ cacheDir: config.paths.cacheDir });
+  const desktopSyncSettings = new DesktopSyncSettingsStore({ cacheDir: config.paths.cacheDir });
+  const defaultCloudScope = {
+    userId: config.cloud.userId || 'local-user',
+    libraryId: config.cloud.libraryId || 'default-library',
+    deviceId: config.cloud.deviceId || 'local-desktop'
+  };
   const syncService = new SyncService({
     cacheDir: config.paths.cacheDir,
     indexer,
+    entryStore: cloudEntryStore,
+    defaultScope: defaultCloudScope,
     authenticate: async ({ username, password }) => {
       const normalizedUsername = String(username || '').trim();
       if (normalizedUsername) {
@@ -267,7 +279,30 @@ async function main() {
   app.use(express.urlencoded({ extended: false, limit: '8mb' }));
 
   await indexer.loadCache();
+  await cloudEntryStore.init();
+  await desktopSyncSettings.init();
   await syncService.init();
+  const journalCloudSync = new JournalCloudSync({
+    journalDir: path.join(config.paths.journalVault, config.paths.journalFolderName),
+    cloudEntryStore,
+    getScope: async () => {
+      const settings = await desktopSyncSettings.getSettings();
+      return {
+        userId: settings.userId || defaultCloudScope.userId,
+        libraryId: settings.libraryId || defaultCloudScope.libraryId,
+        deviceId: settings.deviceId || defaultCloudScope.deviceId
+      };
+    },
+    onSynced: async (result) => {
+      if (!result?.entry) return;
+      await syncService.appendChange('entry.upsert', result.entry.isoDate, {
+        entry: syncService.serializeEntryRecord(result.entry.isoDate),
+        cloudVersion: result.entry.cloudVersion,
+        source: 'desktop-file-watch'
+      });
+    }
+  });
+  journalCloudSync.start();
   let backgroundStartupRebuildQueued = false;
 
   app.use('/vendor/phosphor/regular', express.static(path.join(projectRoot, 'node_modules', '@phosphor-icons', 'web', 'src', 'regular'), {
@@ -409,6 +444,79 @@ async function main() {
       authenticated: true,
       username: req.sessionInfo?.username || null
     });
+  });
+
+  app.get('/api/cloud/entries', (req, res) => {
+    const userId = String(req.query.userId || defaultCloudScope.userId);
+    const libraryId = String(req.query.libraryId || defaultCloudScope.libraryId);
+    res.json({
+      ok: true,
+      entries: cloudEntryStore.listEntries({ userId, libraryId })
+    });
+  });
+
+  app.get('/api/cloud/entries/:date', (req, res) => {
+    const isoDate = req.params.date;
+    if (!isValidIsoDate(isoDate)) {
+      res.status(400).json({ error: 'Invalid entry date.' });
+      return;
+    }
+    const scope = {
+      userId: String(req.query.userId || defaultCloudScope.userId),
+      libraryId: String(req.query.libraryId || defaultCloudScope.libraryId)
+    };
+    const entry = cloudEntryStore.getEntry(scope, isoDate);
+    if (!entry) {
+      res.status(404).json({ error: 'Cloud entry not found.' });
+      return;
+    }
+    res.json({ ok: true, entry, revisions: cloudEntryStore.getRevisions(scope, isoDate) });
+  });
+
+  app.post('/api/cloud/entries/:date', async (req, res) => {
+    try {
+      const isoDate = req.params.date;
+      if (!isValidIsoDate(isoDate)) {
+        res.status(400).json({ error: 'Invalid entry date.' });
+        return;
+      }
+      const settings = await desktopSyncSettings.getSettings();
+      const scope = {
+        userId: String(req.body?.userId || settings.userId || defaultCloudScope.userId),
+        libraryId: String(req.body?.libraryId || settings.libraryId || defaultCloudScope.libraryId),
+        deviceId: String(req.body?.deviceId || settings.deviceId || defaultCloudScope.deviceId)
+      };
+      const result = await cloudEntryStore.saveEntry(scope, {
+        isoDate,
+        raw: typeof req.body?.raw === 'string' ? req.body.raw : '',
+        baseCloudVersion: Number(req.body?.baseCloudVersion || 0)
+      });
+      await indexer.saveEntry(isoDate, result.entry.raw);
+      await syncService.appendChange('entry.upsert', isoDate, {
+        entry: syncService.serializeEntryRecord(isoDate),
+        cloudVersion: result.entry.cloudVersion,
+        conflict: result.conflict
+      });
+      res.json({ ok: true, ...result });
+    } catch (error) {
+      res.status(500).json({ error: error.message || 'Failed to save cloud entry.' });
+    }
+  });
+
+  app.get('/api/desktop/sync-settings', async (_req, res) => {
+    res.json({ ok: true, settings: await desktopSyncSettings.getSettings() });
+  });
+
+  app.post('/api/desktop/sync-settings', async (req, res) => {
+    try {
+      const settings = await desktopSyncSettings.saveSettings(req.body?.settings || req.body || {});
+      await syncService.appendChange('sync-settings.upsert', settings.deviceId || defaultCloudScope.deviceId, {
+        settings
+      });
+      res.json({ ok: true, settings });
+    } catch (error) {
+      res.status(500).json({ error: error.message || 'Failed to save desktop sync settings.' });
+    }
   });
 
   app.post('/auth/password', (req, res) => {
@@ -608,6 +716,19 @@ async function main() {
       }
 
       const createIfMissing = req.query.create === '1';
+      const cloudEntry = cloudEntryStore.getEntry(defaultCloudScope, isoDate);
+      if (cloudEntry) {
+        res.json({
+          isoDate,
+          raw: cloudEntry.raw || '',
+          title: cloudEntry.title || '',
+          cloudVersion: cloudEntry.cloudVersion,
+          updatedAt: cloudEntry.updatedAt,
+          updatedByDeviceId: cloudEntry.updatedByDeviceId,
+          source: 'cloud'
+        });
+        return;
+      }
       const entry = await indexer.getEntry(isoDate, { createIfMissing });
       if (!entry) {
         res.status(404).json({ error: 'Entry not found.' });
@@ -628,12 +749,19 @@ async function main() {
       }
 
       const raw = typeof req.body?.raw === 'string' ? req.body.raw : '';
+      const cloudResult = await cloudEntryStore.saveEntry(defaultCloudScope, {
+        isoDate,
+        raw,
+        baseCloudVersion: Number(req.body?.baseCloudVersion || 0)
+      });
       const day = await indexer.saveEntry(isoDate, raw);
       await syncService.appendChange(day ? 'entry.upsert' : 'entry.delete', isoDate, {
         entry: syncService.serializeEntryRecord(isoDate),
-        day
+        day,
+        cloudVersion: cloudResult.entry.cloudVersion,
+        conflict: cloudResult.conflict
       });
-      res.json({ ok: true, day, isoDate, removed: !day });
+      res.json({ ok: true, day, isoDate, removed: !day, cloudEntry: cloudResult.entry, conflict: cloudResult.conflict });
     } catch (error) {
       res.status(500).json({ error: error.message || 'Failed to save entry.' });
     }
@@ -1005,6 +1133,10 @@ async function main() {
   app.get('/today', async (req, res) => {
     const isoDate = dateToIsoLocal(new Date());
     res.redirect(`/edit/${isoDate}?create=1`);
+  });
+
+  app.get('/desktop/settings', async (_req, res) => {
+    sendNoStoreFile(res, path.join(distDir, 'desktop-settings.html'));
   });
 
   app.get('/edit/:date', async (req, res) => {

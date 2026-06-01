@@ -11,7 +11,9 @@ class SyncService {
     getFolderTree,
     createFolder,
     deletePhoto,
-    resolveDeviceSyncRoot
+    resolveDeviceSyncRoot,
+    entryStore,
+    defaultScope
   }) {
     this.cachePath = path.join(cacheDir, 'sync-state.json');
     this.indexer = indexer;
@@ -20,6 +22,8 @@ class SyncService {
     this.createFolder = createFolder;
     this.deletePhoto = deletePhoto;
     this.resolveDeviceSyncRoot = resolveDeviceSyncRoot;
+    this.entryStore = entryStore || null;
+    this.defaultScope = defaultScope || {};
     this.state = {
       nextSequence: 1,
       changes: [],
@@ -130,6 +134,16 @@ class SyncService {
   }
 
   serializeEntryRecord(isoDate) {
+    if (this.entryStore) {
+      const cloudEntry = this.entryStore.getEntry(this.defaultScope, isoDate);
+      if (cloudEntry) {
+        return {
+          ...cloudEntry,
+          serverVersion: this.currentSequence(),
+          hasJournal: Boolean(String(cloudEntry.raw || '').trim())
+        };
+      }
+    }
     const day = this.indexer.state.days.get(isoDate);
     if (!day) {
       return {
@@ -186,7 +200,13 @@ class SyncService {
   }
 
   buildBootstrapPayload() {
-    const entries = this.indexer.state.dayKeys.map((isoDate) => this.serializeEntryRecord(isoDate));
+    const entries = this.entryStore
+      ? this.entryStore.listEntries(this.defaultScope).map((entry) => ({
+          ...entry,
+          serverVersion: this.currentSequence(),
+          hasJournal: Boolean(String(entry.raw || '').trim())
+        }))
+      : this.indexer.state.dayKeys.map((isoDate) => this.serializeEntryRecord(isoDate));
     const media = Array.from(this.indexer.state.photosById.values()).map((photo) => this.serializeMediaRecord(photo));
     const roots = this.getFolderTree();
     return {
@@ -224,15 +244,39 @@ class SyncService {
     let result = null;
     switch (envelope.type) {
       case MUTATION_TYPES.ENTRY_SAVE: {
-        result = await this.indexer.saveEntry(envelope.payload.isoDate, envelope.payload.raw);
+        if (this.entryStore) {
+          const scope = {
+            ...this.defaultScope,
+            userId: envelope.userId || envelope.payload.scope?.userId || this.defaultScope.userId,
+            libraryId: envelope.libraryId || envelope.payload.scope?.libraryId || this.defaultScope.libraryId,
+            deviceId: envelope.deviceId || envelope.payload.scope?.deviceId || this.defaultScope.deviceId
+          };
+          result = await this.entryStore.saveEntry(scope, {
+            isoDate: envelope.payload.isoDate,
+            raw: envelope.payload.raw,
+            baseCloudVersion: envelope.baseCloudVersion || envelope.payload.baseCloudVersion || 0
+          });
+          await this.indexer.saveEntry(envelope.payload.isoDate, envelope.payload.raw);
+        } else {
+          result = await this.indexer.saveEntry(envelope.payload.isoDate, envelope.payload.raw);
+        }
         sequence = await this.appendChange(CHANGE_TYPES.ENTRY_UPSERT, envelope.payload.isoDate, {
           entry: this.serializeEntryRecord(envelope.payload.isoDate),
-          day: result
+          day: result?.entry ? { isoDate: envelope.payload.isoDate } : result,
+          conflict: Boolean(result?.conflict)
         });
         break;
       }
       case MUTATION_TYPES.ENTRY_DELETE: {
-        result = await this.indexer.saveEntry(envelope.payload.isoDate, '');
+        if (this.entryStore) {
+          result = await this.entryStore.saveEntry(this.defaultScope, {
+            isoDate: envelope.payload.isoDate,
+            raw: '',
+            deleted: true,
+            baseCloudVersion: envelope.baseCloudVersion || 0
+          });
+        }
+        await this.indexer.saveEntry(envelope.payload.isoDate, '');
         sequence = await this.appendChange(CHANGE_TYPES.ENTRY_DELETE, envelope.payload.isoDate, {
           isoDate: envelope.payload.isoDate,
           deleted: true

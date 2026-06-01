@@ -1311,7 +1311,7 @@ function applyLocalEntryPhotoDateMutation(previousPhoto, payloadPhoto) {
       previewUrl: payloadPhoto.previewUrl || (payloadPhoto.type === 'video' ? `/media/preview/${payloadPhoto.id}` : ''),
       fullUrl: payloadPhoto.fullUrl || `/media/full/${payloadPhoto.id}`
     } : photo))
-    .sort((a, b) => String(b.capturedAt || '').localeCompare(String(a.capturedAt || '')) || String(a.fileName || '').localeCompare(String(b.fileName || '')));
+    .sort((a, b) => String(b.modifiedAt || b.capturedAt || '').localeCompare(String(a.modifiedAt || a.capturedAt || '')) || String(a.fileName || '').localeCompare(String(b.fileName || '')));
   renderPhotos();
 }
 

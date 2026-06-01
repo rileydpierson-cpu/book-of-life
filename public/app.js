@@ -4166,7 +4166,7 @@ function syncViewerMediaMutation(photoId, mutator) {
 }
 
 function sortClientDayPhotos(photos) {
-  return photos.slice().sort((a, b) => String(b.capturedAt || '').localeCompare(String(a.capturedAt || '')) || String(a.fileName || '').localeCompare(String(b.fileName || '')));
+  return photos.slice().sort((a, b) => String(b.modifiedAt || b.capturedAt || '').localeCompare(String(a.modifiedAt || a.capturedAt || '')) || String(a.fileName || '').localeCompare(String(b.fileName || '')));
 }
 
 function rebuildViewerSequenceFromLoadedDays() {

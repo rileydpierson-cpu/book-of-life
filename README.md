@@ -5,6 +5,8 @@ Book of Life is a server/app for browsing a personal journal and photo timeline.
 ## Architecture
 
 - **Express server**: serves the UI, editor, auth, and timeline/media APIs.
+- **Cloud-authoritative entry layer**: stores canonical per-user/per-library entry versions and revision history, then mirrors entries to local Markdown.
+- **Desktop sync settings**: configures library identity, desktop host mode, media folder policies, and device upload destinations from `/desktop/settings`.
 - **Startup indexer**: recursively scans journal files, journal images, and photo folders.
 - **Hidden cache**: stores the built index, photo-date metadata, HEIC conversions, and thumbnails in `.cache/`.
 - **Frontend source**: Vite-powered vanilla JS in `client/`, built into `dist/`.
@@ -78,6 +80,12 @@ Then open:
 
 ```text
 http://127.0.0.1:3000
+```
+
+Desktop sync settings are available at:
+
+```text
+http://127.0.0.1:3000/desktop/settings
 ```
 
 To use the app on your LAN, visit your machine's local IP on port `3000`.
@@ -224,6 +232,12 @@ Markdown files remain the source of truth. Saving writes directly to the correct
 - Background rebuilds run on an interval after startup.
 
 ## Developer map
+
+For the new cloud-hosted entries and configurable desktop sync setup, see:
+
+```text
+docs/cloud-desktop-sync-setup.md
+```
 
 ### Runtime flow
 

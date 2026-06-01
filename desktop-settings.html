@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Book of Life Desktop Sync</title>
+    <script type="module" src="/client/pages/desktop-settings/main.js"></script>
+  </head>
+  <body>
+    <main class="settings-shell">
+      <header class="settings-header">
+        <div>
+          <p class="eyebrow">Book of Life</p>
+          <h1>Desktop Sync Settings</h1>
+        </div>
+        <button id="save-settings" type="button">Save</button>
+      </header>
+
+      <section class="settings-grid">
+        <form id="settings-form" class="settings-panel">
+          <h2>Cloud Library</h2>
+          <label>
+            User ID
+            <input name="userId" autocomplete="off" />
+          </label>
+          <label>
+            Library ID
+            <input name="libraryId" autocomplete="off" />
+          </label>
+          <label>
+            Desktop Device ID
+            <input name="deviceId" autocomplete="off" />
+          </label>
+          <label>
+            Library Name
+            <input name="libraryName" autocomplete="off" />
+          </label>
+
+          <h2>Desktop Host</h2>
+          <label>
+            Local Journal Mirror Folder
+            <input name="localJournalMirrorPath" autocomplete="off" />
+          </label>
+          <label>
+            Device Upload Destination
+            <input name="deviceUploadDestinationPath" autocomplete="off" />
+          </label>
+          <label>
+            Host Availability
+            <select name="hostAvailability">
+              <option value="local-only">Local only</option>
+              <option value="lan">LAN</option>
+              <option value="cloud-relay">Cloud relay</option>
+            </select>
+          </label>
+          <label>
+            External Edit Conflict Behavior
+            <select name="externalEditConflictBehavior">
+              <option value="cloud-version-with-revision">Cloud version with revision history</option>
+              <option value="manual-review">Manual review</option>
+            </select>
+          </label>
+        </form>
+
+        <section class="settings-panel">
+          <div class="panel-heading">
+            <h2>Media Folders</h2>
+            <button id="add-folder" type="button">Add Folder</button>
+          </div>
+          <div id="media-folders" class="folder-list"></div>
+        </section>
+      </section>
+
+      <p id="settings-status" class="status-line">Loading settings...</p>
+    </main>
+  </body>
+</html>

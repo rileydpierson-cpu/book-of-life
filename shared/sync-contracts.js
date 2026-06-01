@@ -1,6 +1,7 @@
 const MUTATION_TYPES = Object.freeze({
   ENTRY_SAVE: 'entry.save',
   ENTRY_DELETE: 'entry.delete',
+  ENTRY_CLOUD_PULL: 'entry.cloud.pull',
   FOLDER_CREATE: 'folder.create',
   MEDIA_TAGS_SET: 'media.tags.set',
   MEDIA_DESCRIPTION_SET: 'media.description.set',
@@ -15,10 +16,33 @@ const CHANGE_TYPES = Object.freeze({
   SNAPSHOT: 'snapshot',
   ENTRY_UPSERT: 'entry.upsert',
   ENTRY_DELETE: 'entry.delete',
+  ENTRY_REVISION: 'entry.revision',
+  DEVICE_UPSERT: 'device.upsert',
+  SYNC_SETTINGS_UPSERT: 'sync-settings.upsert',
   MEDIA_UPSERT: 'media.upsert',
   MEDIA_DELETE: 'media.delete',
   FOLDER_UPSERT: 'folder.upsert'
 });
+
+const MEDIA_CLOUD_POLICIES = Object.freeze({
+  METADATA_ONLY: 'metadata-only',
+  DERIVATIVES: 'derivatives',
+  SELECTED_ORIGINALS: 'selected-originals',
+  ALL_ORIGINALS: 'all-originals'
+});
+
+const HOST_AVAILABILITY_MODES = Object.freeze({
+  LOCAL_ONLY: 'local-only',
+  LAN: 'lan',
+  CLOUD_RELAY: 'cloud-relay'
+});
+
+const DEVICE_PERMISSION_KEYS = Object.freeze([
+  'canUploadMedia',
+  'canEditEntries',
+  'canRequestOriginals',
+  'canUseDesktopHost'
+]);
 
 function isObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -32,18 +56,95 @@ function isValidTime(value) {
   return /^\d{2}:\d{2}$/.test(String(value || ''));
 }
 
+function normalizeScope(value) {
+  if (!isObject(value)) return {};
+  return {
+    userId: String(value.userId || '').trim(),
+    libraryId: String(value.libraryId || '').trim(),
+    deviceId: String(value.deviceId || '').trim()
+  };
+}
+
+function hasValidOptionalScope(value) {
+  if (!value || !isObject(value)) return true;
+  const scope = normalizeScope(value);
+  return (!('userId' in value) || Boolean(scope.userId)) &&
+    (!('libraryId' in value) || Boolean(scope.libraryId)) &&
+    (!('deviceId' in value) || Boolean(scope.deviceId));
+}
+
+function normalizeDevicePermissions(value = {}) {
+  const permissions = {};
+  for (const key of DEVICE_PERMISSION_KEYS) {
+    permissions[key] = Boolean(value?.[key]);
+  }
+  return permissions;
+}
+
+function normalizeMediaFolderSetting(value) {
+  if (!isObject(value)) return null;
+  const id = String(value.id || '').trim();
+  const path = String(value.path || '').trim();
+  const cloudPolicy = Object.values(MEDIA_CLOUD_POLICIES).includes(value.cloudPolicy)
+    ? value.cloudPolicy
+    : MEDIA_CLOUD_POLICIES.DERIVATIVES;
+  if (!id || !path) return null;
+  return {
+    id,
+    path,
+    label: String(value.label || '').trim() || path,
+    enabled: value.enabled !== false,
+    cloudPolicy
+  };
+}
+
+function normalizeDesktopSyncSettings(value = {}) {
+  const settings = isObject(value) ? value : {};
+  const scope = normalizeScope(settings);
+  const hostAvailability = Object.values(HOST_AVAILABILITY_MODES).includes(settings.hostAvailability)
+    ? settings.hostAvailability
+    : HOST_AVAILABILITY_MODES.LOCAL_ONLY;
+  const mediaFolders = Array.isArray(settings.mediaFolders)
+    ? settings.mediaFolders.map(normalizeMediaFolderSetting).filter(Boolean)
+    : [];
+  return {
+    ...scope,
+    libraryName: String(settings.libraryName || '').trim(),
+    localJournalMirrorPath: String(settings.localJournalMirrorPath || '').trim(),
+    markdownDateFormat: String(settings.markdownDateFormat || 'MMMM D, YYYY').trim() || 'MMMM D, YYYY',
+    externalEditConflictBehavior: String(settings.externalEditConflictBehavior || 'cloud-version-with-revision').trim(),
+    deviceUploadDestinationPath: String(settings.deviceUploadDestinationPath || '').trim(),
+    mediaFolders,
+    hostAvailability,
+    thumbnail: {
+      uploadDerivatives: settings.thumbnail?.uploadDerivatives !== false,
+      imageMaxEdge: Number(settings.thumbnail?.imageMaxEdge || 1600),
+      previewMaxEdge: Number(settings.thumbnail?.previewMaxEdge || 2560)
+    },
+    devicePermissions: isObject(settings.devicePermissions)
+      ? Object.fromEntries(Object.entries(settings.devicePermissions).map(([deviceId, permissions]) => [
+          deviceId,
+          normalizeDevicePermissions(permissions)
+        ]))
+      : {}
+  };
+}
+
 function normalizeMutationEnvelope(value) {
   if (!isObject(value)) return null;
   const id = String(value.id || '').trim();
   const type = String(value.type || '').trim();
   const clientTimestamp = String(value.clientTimestamp || '').trim();
   const payload = isObject(value.payload) ? value.payload : {};
+  const scope = normalizeScope(value);
   if (!id || !type) return null;
   return {
     id,
     type,
+    ...scope,
     entityId: String(value.entityId || '').trim(),
     baseSequence: Number.isFinite(Number(value.baseSequence)) ? Number(value.baseSequence) : 0,
+    baseCloudVersion: Number.isFinite(Number(value.baseCloudVersion)) ? Number(value.baseCloudVersion) : 0,
     clientTimestamp,
     payload
   };
@@ -53,9 +154,11 @@ function validateMutationEnvelope(envelope) {
   const normalized = normalizeMutationEnvelope(envelope);
   if (!normalized) return { ok: false, error: 'Invalid mutation envelope.' };
   const { type, payload } = normalized;
+  if (!hasValidOptionalScope(envelope)) return { ok: false, error: 'Invalid mutation scope.' };
   switch (type) {
     case MUTATION_TYPES.ENTRY_SAVE:
       if (!isValidIsoDate(payload.isoDate) || typeof payload.raw !== 'string') return { ok: false, error: 'Invalid entry.save payload.' };
+      if (payload.scope && !hasValidOptionalScope(payload.scope)) return { ok: false, error: 'Invalid entry.save scope.' };
       return { ok: true, mutation: normalized };
     case MUTATION_TYPES.ENTRY_DELETE:
       if (!isValidIsoDate(payload.isoDate)) return { ok: false, error: 'Invalid entry.delete payload.' };
@@ -94,7 +197,13 @@ function validateMutationEnvelope(envelope) {
 module.exports = {
   MUTATION_TYPES,
   CHANGE_TYPES,
+  MEDIA_CLOUD_POLICIES,
+  HOST_AVAILABILITY_MODES,
+  DEVICE_PERMISSION_KEYS,
   normalizeMutationEnvelope,
+  normalizeDesktopSyncSettings,
+  normalizeDevicePermissions,
+  normalizeMediaFolderSetting,
   validateMutationEnvelope,
   isValidIsoDate,
   isValidTime

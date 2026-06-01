@@ -78,7 +78,8 @@ async function main() {
 
     let exifInfo = null;
     try {
-      const exif = await exifr.parse(filePath, { pick: ['DateTimeOriginal', 'CreateDate', 'ModifyDate'] });
+      const fileBuffer = await fs.promises.readFile(filePath);
+      const exif = await exifr.parse(fileBuffer, { pick: ['DateTimeOriginal', 'CreateDate', 'ModifyDate'] });
       exifInfo = exifInfoFromDate(exif?.DateTimeOriginal || exif?.CreateDate || exif?.ModifyDate);
       if (exifInfo) summary.exifDatesFound += 1;
       else summary.exifMissing += 1;
