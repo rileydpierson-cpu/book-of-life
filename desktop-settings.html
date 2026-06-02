@@ -35,6 +35,25 @@
             Library Name
             <input name="libraryName" autocomplete="off" />
           </label>
+          <label>
+            Desktop Name
+            <input name="deviceName" autocomplete="off" placeholder="Book of Life Desktop" />
+          </label>
+          <div class="cloud-connect-grid">
+            <label>
+              Email
+              <input id="cloud-email" type="email" autocomplete="username" />
+            </label>
+            <label>
+              Password
+              <input id="cloud-password" type="password" autocomplete="current-password" />
+            </label>
+          </div>
+          <div class="button-row">
+            <button id="connect-cloud" type="button">Connect Cloud</button>
+            <button id="sync-cloud" type="button">Sync Now</button>
+          </div>
+          <p id="cloud-status" class="status-line compact">Cloud status unavailable.</p>
 
           <h2>Desktop Host</h2>
           <label>

@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Book of Life Desktop Setup</title>
+    <link rel="stylesheet" href="/vendor/phosphor/regular/style.css" />
+    <link rel="stylesheet" href="/vendor/phosphor/fill/style.css" />
+    <link rel="stylesheet" href="/vendor/phosphor/duotone/style.css" />
+    <link rel="stylesheet" href="/vendor/phosphor/bold/style.css" />
+    <script type="module" src="/client/pages/desktop-onboarding/main.js"></script>
+  </head>
+  <body>
+    <main class="desktop-onboarding-shell">
+      <section id="splashStep" class="onboarding-panel onboarding-splash">
+        <div class="brand-mark"><i class="ph-fill ph-book-open"></i></div>
+        <p class="eyebrow">Book of Life Desktop</p>
+        <h1>Open your library</h1>
+        <p class="lede">Sign in to Book of Life Cloud or set up this desktop locally. Your database connection is handled by the app.</p>
+
+        <div class="auth-card">
+          <div class="mode-tabs" role="tablist" aria-label="Cloud account mode">
+            <button class="mode-tab is-active" type="button" data-auth-mode="login">Log in</button>
+            <button class="mode-tab" type="button" data-auth-mode="signup">Sign up</button>
+          </div>
+          <div class="field-grid">
+            <label>Email<input id="cloudEmail" type="email" autocomplete="username" /></label>
+            <label>Password<input id="cloudPassword" type="password" autocomplete="current-password" /></label>
+          </div>
+          <p id="cloudConfigStatus" class="cloud-config-status">Checking Book of Life Cloud...</p>
+          <div class="button-row">
+            <button id="cloudAuthButton" class="primary-button" type="button"><i class="ph-bold ph-sign-in"></i><span>Log in</span></button>
+            <button id="localOnlyButton" class="secondary-button" type="button">Continue without logging in</button>
+          </div>
+          <p id="authStatus" class="status-line">Cloud sync is optional. Local setup keeps your entries and originals on this desktop.</p>
+        </div>
+      </section>
+
+      <section id="configStep" class="onboarding-panel hidden">
+        <header class="panel-header">
+          <div>
+            <p class="eyebrow">Library setup</p>
+            <h1>Choose what this desktop can see</h1>
+          </div>
+          <button id="backToSplash" class="ghost-button" type="button"><i class="ph-bold ph-caret-left"></i>Back</button>
+        </header>
+
+        <div class="setup-grid">
+          <section class="setup-section">
+            <div class="section-heading">
+              <h2>Photo folders</h2>
+              <button id="addMediaFolder" class="icon-text-button" type="button"><i class="ph-bold ph-plus"></i>Add folder</button>
+            </div>
+            <div id="mediaFolders" class="folder-list"></div>
+          </section>
+
+          <section class="setup-section">
+            <h2>Entries</h2>
+            <div class="option-stack">
+              <label class="option-row">
+                <input type="radio" name="entryMode" value="none" checked />
+                <span><strong>No entry import right now</strong><small>Start with photos or an empty journal.</small></span>
+              </label>
+              <label class="option-row">
+                <input type="radio" name="entryMode" value="copy" />
+                <span><strong>Import entries</strong><small>Copy Markdown files into this app's journal folder.</small></span>
+              </label>
+              <div class="path-row" data-entry-path="copy">
+                <input id="entryImportPath" placeholder="Choose a Markdown entry folder" readonly />
+                <button class="icon-button" type="button" data-pick-target="entryImportPath" title="Choose folder"><i class="ph-bold ph-folder-open"></i></button>
+              </div>
+              <label class="option-row">
+                <input type="radio" name="entryMode" value="mirror" />
+                <span><strong>Use a live journal mirror</strong><small>Edit the selected Markdown folder in place.</small></span>
+              </label>
+              <div class="path-row" data-entry-path="mirror">
+                <input id="journalMirrorPath" placeholder="Choose a Markdown mirror folder" readonly />
+                <button class="icon-button" type="button" data-pick-target="journalMirrorPath" title="Choose folder"><i class="ph-bold ph-folder-open"></i></button>
+              </div>
+            </div>
+          </section>
+
+          <section class="setup-section storage-section">
+            <h2>Storage</h2>
+            <label class="option-row">
+              <input type="radio" name="storageMode" value="device-only" checked />
+              <span><strong>Just on this device</strong><small>Keep originals local. You can change this later.</small></span>
+            </label>
+            <label class="option-row">
+              <input type="radio" name="storageMode" value="cloud-originals" />
+              <span><strong>Store originals in the cloud</strong><small>Upload full media files after indexing.</small></span>
+            </label>
+          </section>
+        </div>
+
+        <footer class="onboarding-footer">
+          <p id="configStatus" class="status-line">Add a photo folder, import entries, or select a journal mirror.</p>
+          <button id="continueButton" class="primary-button" type="button">Continue</button>
+        </footer>
+      </section>
+
+      <section id="loaderStep" class="onboarding-panel loader-panel hidden">
+        <div class="loader-orbit"><i class="ph-duotone ph-clock-counter-clockwise"></i></div>
+        <p id="loaderMessage" class="eyebrow">Mapping your life</p>
+        <h1 id="loaderStage">Preparing library</h1>
+        <div class="progress-track"><span id="progressFill"></span></div>
+        <p id="loaderStatus" class="status-line">Indexing your entries and media.</p>
+      </section>
+    </main>
+  </body>
+</html>

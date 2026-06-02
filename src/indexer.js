@@ -69,6 +69,21 @@ class TimelineIndexer {
     this.rebuildQueued = false;
     this.mediaInventory = {};
     this.mediaInventorySignature = '';
+    this.rebuildProgress = createIdleRebuildProgress();
+  }
+
+  setPhotoRoots(photoRoots = []) {
+    this.photoRoots = Array.isArray(photoRoots) ? photoRoots.filter(Boolean) : [];
+    this.config.paths.photoFolders = this.photoRoots;
+    this.portableMediaStore = new PortableMediaStore(this.photoRoots);
+  }
+
+  setJournalFolderPath(journalFolderPath) {
+    const nextPath = String(journalFolderPath || '').trim();
+    if (!nextPath) return;
+    this.config.paths.journalVault = path.dirname(nextPath);
+    this.config.paths.journalFolderName = path.basename(nextPath);
+    fs.mkdirSync(nextPath, { recursive: true });
   }
 
   async loadCache() {
@@ -130,6 +145,14 @@ class TimelineIndexer {
         dayCount: nextState.dayKeys.length,
         durationMs
       };
+    } catch (error) {
+      this.rebuildProgress = {
+        ...this.getRebuildStatus(),
+        running: false,
+        completedAt: new Date().toISOString(),
+        error: error.message || 'Index rebuild failed.'
+      };
+      throw error;
     } finally {
       progress?.clear();
       this.isBuilding = false;
@@ -362,8 +385,21 @@ class TimelineIndexer {
   }
 
   createRebuildProgress(reason) {
-    if (reason !== 'startup' || !process.stdout.isTTY) return null;
-    return new StartupProgressRenderer('Book of Life startup');
+    const webProgress = new WebRebuildProgress(this, reason);
+    if (reason !== 'startup' || !process.stdout.isTTY) return webProgress;
+    return new CompositeRebuildProgress([
+      webProgress,
+      new StartupProgressRenderer('Book of Life startup')
+    ]);
+  }
+
+  getRebuildStatus() {
+    return {
+      ...createIdleRebuildProgress(),
+      ...(this.rebuildProgress || {}),
+      running: this.isBuilding,
+      queued: this.rebuildQueued
+    };
   }
 
   async buildPhotoRecord({
@@ -1754,6 +1790,98 @@ function formatDuration(durationMs) {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = Math.round(totalSeconds % 60);
   return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+}
+
+function createIdleRebuildProgress() {
+  return {
+    reason: '',
+    running: false,
+    queued: false,
+    stage: 'Idle',
+    current: 0,
+    total: 0,
+    percent: 100,
+    startedAt: '',
+    completedAt: '',
+    error: ''
+  };
+}
+
+class WebRebuildProgress {
+  constructor(indexer, reason) {
+    this.indexer = indexer;
+    this.reason = reason;
+    this.startedAt = new Date().toISOString();
+    this.stage = 'Preparing library';
+    this.current = 0;
+    this.total = 0;
+    this.done = false;
+    this.publish({ running: true, percent: 0 });
+  }
+
+  publish(patch = {}) {
+    const total = Math.max(0, Number(this.total) || 0);
+    const current = Math.max(0, Number(this.current) || 0);
+    this.indexer.rebuildProgress = {
+      reason: this.reason,
+      running: patch.running !== undefined ? patch.running : !this.done,
+      queued: this.indexer.rebuildQueued,
+      stage: this.stage,
+      current,
+      total,
+      percent: total > 0 ? Math.round((Math.min(current, total) / total) * 100) : (this.done ? 100 : 0),
+      startedAt: this.startedAt,
+      completedAt: patch.completedAt || '',
+      error: patch.error || ''
+    };
+  }
+
+  setStage(stageLabel, total = 0) {
+    this.stage = stageLabel;
+    this.total = Math.max(0, Number(total) || 0);
+    this.current = 0;
+    this.publish();
+  }
+
+  increment(amount = 1) {
+    this.current += Math.max(1, Number(amount) || 1);
+    if (this.total > 0) this.current = Math.min(this.current, this.total);
+    this.publish();
+  }
+
+  complete() {
+    this.done = true;
+    if (this.total > 0) this.current = this.total;
+    this.publish({ running: false, completedAt: new Date().toISOString() });
+  }
+
+  clear() {
+    if (!this.done && this.indexer.rebuildProgress?.running) {
+      this.publish();
+    }
+  }
+}
+
+class CompositeRebuildProgress {
+  constructor(renderers = []) {
+    this.renderers = renderers.filter(Boolean);
+  }
+
+  setStage(stageLabel, total = 0) {
+    this.renderers.forEach((renderer) => renderer.setStage(stageLabel, total));
+  }
+
+  increment(amount = 1) {
+    this.renderers.forEach((renderer) => renderer.increment(amount));
+  }
+
+  complete() {
+    this.renderers.forEach((renderer) => renderer.complete());
+  }
+
+  clear() {
+    this.renderers.forEach((renderer) => renderer.clear());
+  }
 }
 
 class StartupProgressRenderer {

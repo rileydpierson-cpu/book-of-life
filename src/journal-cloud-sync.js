@@ -34,6 +34,14 @@ class JournalCloudSync {
     return true;
   }
 
+  setJournalDir(journalDir) {
+    const nextDir = String(journalDir || '').trim();
+    if (!nextDir || path.resolve(nextDir) === path.resolve(this.journalDir || '')) return;
+    this.stop();
+    this.journalDir = nextDir;
+    this.start();
+  }
+
   stop() {
     if (this.watcher) this.watcher.close();
     this.watcher = null;

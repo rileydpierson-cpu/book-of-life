@@ -12,11 +12,20 @@ const {
   writeVideoCreatedDate
 } = require('./src/media-metadata');
 const { AuthService } = require('./src/auth');
-const { dateToIsoLocal } = require('./src/utils');
+const { dateToIsoLocal, ensureDirSync } = require('./src/utils');
 const { SyncService } = require('./src/sync-service');
 const { CloudEntryStore } = require('./src/cloud-entry-store');
 const { DesktopSyncSettingsStore } = require('./src/desktop-sync-settings');
 const { JournalCloudSync } = require('./src/journal-cloud-sync');
+const { SupabaseDesktopSync } = require('./src/supabase-desktop-sync');
+const { DESKTOP_STORAGE_MODES, ENTRY_IMPORT_MODES, MEDIA_CLOUD_POLICIES } = require('./shared/sync-contracts');
+const {
+  copyImportedEntries,
+  desktopOnboardingStatus,
+  entryImportModeFromPayload,
+  hasOnboardingSource,
+  normalizeOnboardingMediaFolders
+} = require('./src/desktop-onboarding');
 
 function sendNoStoreFile(res, filePath) {
   res.setHeader('Cache-Control', 'no-store');
@@ -132,6 +141,21 @@ function buildFolderTree(roots) {
   })).sort((a, b) => (b.latestModifiedMs || 0) - (a.latestModifiedMs || 0) || a.rootLabel.localeCompare(b.rootLabel));
 }
 
+function currentJournalFolderPath(config) {
+  return path.join(config.paths.journalVault, config.paths.journalFolderName);
+}
+
+function normalizeFolderListFromSettings(settings, config) {
+  const enabledFolders = Array.isArray(settings.mediaFolders)
+    ? settings.mediaFolders
+        .filter((folder) => folder?.enabled !== false && String(folder?.path || '').trim())
+        .map((folder) => path.resolve(String(folder.path)))
+    : [];
+  const deviceRoot = config.paths.deviceSyncRoot ? [config.paths.deviceSyncRoot] : [];
+  return [...enabledFolders, ...deviceRoot]
+    .filter((folder, index, list) => list.indexOf(folder) === index);
+}
+
 function moveToTrash(rootPath, filePath) {
   const trashRoot = path.join(rootPath, '.trash');
   fs.mkdirSync(trashRoot, { recursive: true });
@@ -215,6 +239,15 @@ async function main() {
   const uploader = createUploader(config.paths.cacheDir);
   const cloudEntryStore = new CloudEntryStore({ cacheDir: config.paths.cacheDir });
   const desktopSyncSettings = new DesktopSyncSettingsStore({ cacheDir: config.paths.cacheDir });
+  const desktopCloudSync = new SupabaseDesktopSync({
+    settingsStore: desktopSyncSettings,
+    cloudEntryStore,
+    indexer
+  });
+  const appCloudSettings = {
+    supabaseUrl: config.cloud.supabaseUrl,
+    supabasePublishableKey: config.cloud.supabasePublishableKey
+  };
   const defaultCloudScope = {
     userId: config.cloud.userId || 'local-user',
     libraryId: config.cloud.libraryId || 'default-library',
@@ -278,12 +311,25 @@ async function main() {
   app.use(express.json({ limit: '8mb' }));
   app.use(express.urlencoded({ extended: false, limit: '8mb' }));
 
+  await desktopSyncSettings.init();
+  async function saveDesktopSettings(nextSettings = {}) {
+    return desktopSyncSettings.saveSettings({
+      ...(nextSettings || {}),
+      ...appCloudSettings
+    });
+  }
+  await saveDesktopSettings({});
+  const startupDesktopSettings = await desktopSyncSettings.getSettings();
+  config.paths.photoFolders = normalizeFolderListFromSettings(startupDesktopSettings, config);
+  indexer.setPhotoRoots(config.paths.photoFolders);
+  if (startupDesktopSettings.localJournalMirrorPath) {
+    indexer.setJournalFolderPath(startupDesktopSettings.localJournalMirrorPath);
+  }
   await indexer.loadCache();
   await cloudEntryStore.init();
-  await desktopSyncSettings.init();
   await syncService.init();
   const journalCloudSync = new JournalCloudSync({
-    journalDir: path.join(config.paths.journalVault, config.paths.journalFolderName),
+    journalDir: currentJournalFolderPath(config),
     cloudEntryStore,
     getScope: async () => {
       const settings = await desktopSyncSettings.getSettings();
@@ -303,6 +349,48 @@ async function main() {
     }
   });
   journalCloudSync.start();
+  async function applyDesktopRuntimeSettings(settings) {
+    const roots = normalizeFolderListFromSettings(settings, config);
+    config.paths.photoFolders = roots;
+    config.paths.serverPhotoFolders = roots.filter((folder) => folder !== config.paths.deviceSyncRoot);
+    config.paths.deviceSyncRootId = roots.includes(config.paths.deviceSyncRoot) ? String(roots.indexOf(config.paths.deviceSyncRoot)) : '';
+    roots.forEach((folder) => ensureDirSync(folder));
+    indexer.setPhotoRoots(roots);
+    if (settings.localJournalMirrorPath) {
+      indexer.setJournalFolderPath(settings.localJournalMirrorPath);
+      journalCloudSync.setJournalDir(currentJournalFolderPath(config));
+    }
+  }
+
+  function queueCloudOriginalUpload(reason = 'background') {
+    setImmediate(async () => {
+      try {
+        const settings = await desktopSyncSettings.getSettings();
+        if (settings.storageMode !== DESKTOP_STORAGE_MODES.CLOUD_ORIGINALS) return;
+        const result = await desktopCloudSync.uploadOriginalsForPolicy();
+        console.log(`Cloud original upload queue (${reason}) uploaded ${result.uploaded}, failed ${result.failed}, skipped ${result.skipped}.`);
+      } catch (error) {
+        console.warn(`Cloud original upload queue skipped (${reason}): ${error.message}`);
+      }
+    });
+  }
+
+  function startIndexRebuild(reason = 'manual') {
+    if (indexer.isBuilding) return { ok: true, queued: true, status: indexer.getRebuildStatus() };
+    indexer.rebuild(reason)
+      .then(() => queueCloudOriginalUpload(reason))
+      .catch((error) => console.error(`Index rebuild failed (${reason})`, error));
+    return { ok: true, queued: false, status: indexer.getRebuildStatus() };
+  }
+
+  async function getActiveCloudScope(overrides = {}) {
+    const settings = await desktopSyncSettings.getSettings();
+    return {
+      userId: overrides.userId || settings.userId || defaultCloudScope.userId,
+      libraryId: overrides.libraryId || settings.libraryId || defaultCloudScope.libraryId,
+      deviceId: overrides.deviceId || settings.deviceId || defaultCloudScope.deviceId
+    };
+  }
   let backgroundStartupRebuildQueued = false;
 
   app.use('/vendor/phosphor/regular', express.static(path.join(projectRoot, 'node_modules', '@phosphor-icons', 'web', 'src', 'regular'), {
@@ -447,30 +535,39 @@ async function main() {
   });
 
   app.get('/api/cloud/entries', (req, res) => {
-    const userId = String(req.query.userId || defaultCloudScope.userId);
-    const libraryId = String(req.query.libraryId || defaultCloudScope.libraryId);
-    res.json({
-      ok: true,
-      entries: cloudEntryStore.listEntries({ userId, libraryId })
+    getActiveCloudScope({
+      userId: String(req.query.userId || ''),
+      libraryId: String(req.query.libraryId || '')
+    }).then((scope) => {
+      res.json({
+        ok: true,
+        entries: cloudEntryStore.listEntries(scope)
+      });
+    }).catch((error) => {
+      res.status(500).json({ error: error.message || 'Failed to list cloud entries.' });
     });
   });
 
-  app.get('/api/cloud/entries/:date', (req, res) => {
-    const isoDate = req.params.date;
-    if (!isValidIsoDate(isoDate)) {
-      res.status(400).json({ error: 'Invalid entry date.' });
-      return;
+  app.get('/api/cloud/entries/:date', async (req, res) => {
+    try {
+      const isoDate = req.params.date;
+      if (!isValidIsoDate(isoDate)) {
+        res.status(400).json({ error: 'Invalid entry date.' });
+        return;
+      }
+      const scope = await getActiveCloudScope({
+        userId: String(req.query.userId || ''),
+        libraryId: String(req.query.libraryId || '')
+      });
+      const entry = cloudEntryStore.getEntry(scope, isoDate);
+      if (!entry) {
+        res.status(404).json({ error: 'Cloud entry not found.' });
+        return;
+      }
+      res.json({ ok: true, entry, revisions: cloudEntryStore.getRevisions(scope, isoDate) });
+    } catch (error) {
+      res.status(500).json({ error: error.message || 'Failed to load cloud entry.' });
     }
-    const scope = {
-      userId: String(req.query.userId || defaultCloudScope.userId),
-      libraryId: String(req.query.libraryId || defaultCloudScope.libraryId)
-    };
-    const entry = cloudEntryStore.getEntry(scope, isoDate);
-    if (!entry) {
-      res.status(404).json({ error: 'Cloud entry not found.' });
-      return;
-    }
-    res.json({ ok: true, entry, revisions: cloudEntryStore.getRevisions(scope, isoDate) });
   });
 
   app.post('/api/cloud/entries/:date', async (req, res) => {
@@ -480,12 +577,11 @@ async function main() {
         res.status(400).json({ error: 'Invalid entry date.' });
         return;
       }
-      const settings = await desktopSyncSettings.getSettings();
-      const scope = {
-        userId: String(req.body?.userId || settings.userId || defaultCloudScope.userId),
-        libraryId: String(req.body?.libraryId || settings.libraryId || defaultCloudScope.libraryId),
-        deviceId: String(req.body?.deviceId || settings.deviceId || defaultCloudScope.deviceId)
-      };
+      const scope = await getActiveCloudScope({
+        userId: String(req.body?.userId || ''),
+        libraryId: String(req.body?.libraryId || ''),
+        deviceId: String(req.body?.deviceId || '')
+      });
       const result = await cloudEntryStore.saveEntry(scope, {
         isoDate,
         raw: typeof req.body?.raw === 'string' ? req.body.raw : '',
@@ -509,13 +605,168 @@ async function main() {
 
   app.post('/api/desktop/sync-settings', async (req, res) => {
     try {
-      const settings = await desktopSyncSettings.saveSettings(req.body?.settings || req.body || {});
+      const settings = await saveDesktopSettings(req.body?.settings || req.body || {});
+      await applyDesktopRuntimeSettings(settings);
       await syncService.appendChange('sync-settings.upsert', settings.deviceId || defaultCloudScope.deviceId, {
         settings
       });
       res.json({ ok: true, settings });
     } catch (error) {
       res.status(500).json({ error: error.message || 'Failed to save desktop sync settings.' });
+    }
+  });
+
+  app.get('/api/desktop/cloud/status', async (_req, res) => {
+    try {
+      res.json(await desktopCloudSync.status());
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error.message || 'Failed to read desktop cloud status.' });
+    }
+  });
+
+  app.post('/api/desktop/cloud/connect', async (req, res) => {
+    try {
+      const settings = req.body?.settings && typeof req.body.settings === 'object' ? req.body.settings : {};
+      if (Object.keys(settings).length) await saveDesktopSettings(settings);
+      const email = String(req.body?.email || '').trim();
+      const password = String(req.body?.password || '');
+      if (!email || !password) {
+        res.status(400).json({ ok: false, error: 'Email and password are required.' });
+        return;
+      }
+      const nextSettings = await desktopCloudSync.signIn({ email, password });
+      await syncService.appendChange('device.upsert', nextSettings.deviceId, {
+        deviceId: nextSettings.deviceId,
+        libraryId: nextSettings.libraryId,
+        source: 'desktop-cloud-connect'
+      });
+      res.json({ ok: true, settings: nextSettings, status: await desktopCloudSync.status() });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error.message || 'Failed to connect desktop to Book of Life Cloud.' });
+    }
+  });
+
+  app.post('/api/desktop/cloud/sync', async (_req, res) => {
+    try {
+      const result = await desktopCloudSync.syncEntries();
+      await syncService.appendChange('entry.cloud.pull', result.libraryId, result);
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error.message || 'Desktop cloud sync failed.' });
+    }
+  });
+
+  app.post('/api/desktop/cloud/signup', async (req, res) => {
+    try {
+      const settings = req.body?.settings && typeof req.body.settings === 'object' ? req.body.settings : {};
+      if (Object.keys(settings).length) await saveDesktopSettings(settings);
+      const email = String(req.body?.email || '').trim();
+      const password = String(req.body?.password || '');
+      if (!email || !password) {
+        res.status(400).json({ ok: false, error: 'Email and password are required.' });
+        return;
+      }
+      const nextSettings = await desktopCloudSync.signUp({ email, password });
+      await applyDesktopRuntimeSettings(nextSettings);
+      await syncService.appendChange('device.upsert', nextSettings.deviceId, {
+        deviceId: nextSettings.deviceId,
+        libraryId: nextSettings.libraryId,
+        source: 'desktop-cloud-signup'
+      });
+      res.status(201).json({ ok: true, settings: nextSettings, status: await desktopCloudSync.status() });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error.message || 'Failed to create Supabase account.' });
+    }
+  });
+
+  app.get('/api/desktop/index/status', (_req, res) => {
+    res.json({ ok: true, status: indexer.getRebuildStatus() });
+  });
+
+  app.post('/api/desktop/index/rebuild', (_req, res) => {
+    res.json(startIndexRebuild('desktop-manual'));
+  });
+
+  app.get('/api/desktop/onboarding/status', async (_req, res) => {
+    try {
+      const settings = await desktopSyncSettings.getSettings();
+      res.json(desktopOnboardingStatus({
+        settings,
+        indexer,
+        indexStatus: indexer.getRebuildStatus(),
+        cloudStatus: await desktopCloudSync.status().catch((error) => ({ error: error.message }))
+      }));
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error.message || 'Failed to read onboarding status.' });
+    }
+  });
+
+  app.post('/api/desktop/onboarding/complete', async (req, res) => {
+    try {
+      const body = req.body || {};
+      const currentSettings = await desktopSyncSettings.getSettings();
+      const storageMode = body.storageMode === DESKTOP_STORAGE_MODES.CLOUD_ORIGINALS
+        ? DESKTOP_STORAGE_MODES.CLOUD_ORIGINALS
+        : DESKTOP_STORAGE_MODES.DEVICE_ONLY;
+      const cloudStatus = await desktopCloudSync.status().catch(() => ({ signedIn: false }));
+      if (storageMode === DESKTOP_STORAGE_MODES.CLOUD_ORIGINALS && !cloudStatus.signedIn) {
+        res.status(400).json({ ok: false, error: 'Sign in before storing originals in the cloud.' });
+        return;
+      }
+
+      const entryImportMode = entryImportModeFromPayload(body);
+      const nextMediaFolders = normalizeOnboardingMediaFolders(body.mediaFolders || [], storageMode);
+      const nextSettings = {
+        ...currentSettings,
+        storageMode,
+        entryImportMode,
+        mediaFolders: nextMediaFolders,
+        localJournalMirrorPath: entryImportMode === ENTRY_IMPORT_MODES.MIRROR
+          ? String(body.journalMirrorPath || '').trim()
+          : currentSettings.localJournalMirrorPath,
+        onboardingCompletedAt: new Date().toISOString()
+      };
+
+      let importResult = { copied: 0, skipped: 0 };
+      if (entryImportMode === ENTRY_IMPORT_MODES.COPY && String(body.entryImportPath || '').trim()) {
+        importResult = await copyImportedEntries({
+          sourceDir: body.entryImportPath,
+          destinationJournalDir: currentJournalFolderPath(config)
+        });
+        nextSettings.importedEntriesAt = new Date().toISOString();
+      }
+
+      if (storageMode === DESKTOP_STORAGE_MODES.CLOUD_ORIGINALS) {
+        nextSettings.mediaFolders = nextSettings.mediaFolders.map((folder) => ({
+          ...folder,
+          cloudPolicy: MEDIA_CLOUD_POLICIES.ALL_ORIGINALS
+        }));
+      }
+
+      if (!hasOnboardingSource(nextSettings)) {
+        res.status(400).json({ ok: false, error: 'Add a media folder, import entries, or select a journal mirror before continuing.' });
+        return;
+      }
+      const savedSettings = await saveDesktopSettings(nextSettings);
+      await applyDesktopRuntimeSettings(savedSettings);
+      await syncService.appendChange('sync-settings.upsert', savedSettings.deviceId || defaultCloudScope.deviceId, {
+        settings: savedSettings,
+        source: 'desktop-onboarding'
+      });
+      const rebuild = startIndexRebuild('desktop-onboarding');
+      res.json({
+        ok: true,
+        import: importResult,
+        rebuild,
+        status: desktopOnboardingStatus({
+          settings: savedSettings,
+          indexer,
+          indexStatus: indexer.getRebuildStatus(),
+          cloudStatus: await desktopCloudSync.status().catch((error) => ({ error: error.message }))
+        })
+      });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error.message || 'Desktop onboarding failed.' });
     }
   });
 
@@ -716,7 +967,8 @@ async function main() {
       }
 
       const createIfMissing = req.query.create === '1';
-      const cloudEntry = cloudEntryStore.getEntry(defaultCloudScope, isoDate);
+      const activeCloudScope = await getActiveCloudScope();
+      const cloudEntry = cloudEntryStore.getEntry(activeCloudScope, isoDate);
       if (cloudEntry) {
         res.json({
           isoDate,
@@ -749,7 +1001,8 @@ async function main() {
       }
 
       const raw = typeof req.body?.raw === 'string' ? req.body.raw : '';
-      const cloudResult = await cloudEntryStore.saveEntry(defaultCloudScope, {
+      const activeCloudScope = await getActiveCloudScope();
+      const cloudResult = await cloudEntryStore.saveEntry(activeCloudScope, {
         isoDate,
         raw,
         baseCloudVersion: Number(req.body?.baseCloudVersion || 0)
@@ -1137,6 +1390,10 @@ async function main() {
 
   app.get('/desktop/settings', async (_req, res) => {
     sendNoStoreFile(res, path.join(distDir, 'desktop-settings.html'));
+  });
+
+  app.get('/desktop/onboarding', async (_req, res) => {
+    sendNoStoreFile(res, path.join(distDir, 'desktop-onboarding.html'));
   });
 
   app.get('/edit/:date', async (req, res) => {

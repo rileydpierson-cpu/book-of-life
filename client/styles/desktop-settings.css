@@ -129,9 +129,28 @@ select {
   margin: 16px 2px 0;
 }
 
+.status-line.compact {
+  font-size: 0.86rem;
+  margin-top: 10px;
+}
+
+.cloud-connect-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr 1fr;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
 @media (max-width: 900px) {
   .settings-grid,
-  .folder-row {
+  .folder-row,
+  .cloud-connect-grid {
     grid-template-columns: 1fr;
   }
 }

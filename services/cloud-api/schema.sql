@@ -56,6 +56,9 @@ create table if not exists media_items (
   has_preview boolean not null default false,
   original_in_cloud boolean not null default false,
   original_on_host boolean not null default true,
+  original_storage_path text not null default '',
+  original_size bigint not null default 0,
+  original_content_type text not null default '',
   updated_at timestamptz not null default now()
 );
 
@@ -85,6 +88,10 @@ alter table entry_revisions enable row level security;
 alter table media_items enable row level security;
 alter table sync_changes enable row level security;
 alter table sync_mutations enable row level security;
+
+insert into storage.buckets (id, name, public)
+values ('media-originals', 'media-originals', false)
+on conflict (id) do nothing;
 
 drop policy if exists "Users can read own libraries" on libraries;
 create policy "Users can read own libraries"
@@ -277,6 +284,50 @@ create policy "Users can create own sync mutations"
     exists (
       select 1 from libraries
       where libraries.id = sync_mutations.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can read own media originals" on storage.objects;
+create policy "Users can read own media originals"
+  on storage.objects for select
+  using (
+    bucket_id = 'media-originals'
+    and exists (
+      select 1 from libraries
+      where storage.objects.name like ('libraries/' || libraries.id || '/%')
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can upload own media originals" on storage.objects;
+create policy "Users can upload own media originals"
+  on storage.objects for insert
+  with check (
+    bucket_id = 'media-originals'
+    and exists (
+      select 1 from libraries
+      where storage.objects.name like ('libraries/' || libraries.id || '/%')
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can update own media originals" on storage.objects;
+create policy "Users can update own media originals"
+  on storage.objects for update
+  using (
+    bucket_id = 'media-originals'
+    and exists (
+      select 1 from libraries
+      where storage.objects.name like ('libraries/' || libraries.id || '/%')
+        and libraries.owner_user_id = auth.uid()
+    )
+  )
+  with check (
+    bucket_id = 'media-originals'
+    and exists (
+      select 1 from libraries
+      where storage.objects.name like ('libraries/' || libraries.id || '/%')
         and libraries.owner_user_id = auth.uid()
     )
   );

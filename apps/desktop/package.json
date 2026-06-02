@@ -1,0 +1,120 @@
+{
+  "name": "@book-of-life/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/main.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.cjs .",
+    "pack": "node node_modules/electron-builder/cli.js --dir",
+    "dist": "node node_modules/electron-builder/cli.js",
+    "dist:win": "node node_modules/electron-builder/cli.js --win nsis portable",
+    "dist:linux": "node node_modules/electron-builder/cli.js --linux deb tar.gz",
+    "dist:linux:appimage": "node node_modules/electron-builder/cli.js --linux AppImage",
+    "dist:mac": "node node_modules/electron-builder/cli.js --mac dmg zip"
+  },
+  "description": "Desktop host for Book of Life",
+  "author": {
+    "name": "Book of Life",
+    "email": "maintainer@bookoflife.local"
+  },
+  "devDependencies": {
+    "electron-builder": "^26.0.12",
+    "electron": "^42.3.0"
+  },
+  "build": {
+    "appId": "com.bookoflife.desktop",
+    "productName": "Book of Life",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../../",
+        "to": "local-server",
+        "filter": [
+          "server.js",
+          "config.json",
+          "index.html",
+          "editor.html",
+          "login.html",
+          "desktop-settings.html",
+          "desktop-onboarding.html",
+          "dist/**/*",
+          "src/**/*",
+          "shared/**/*",
+          "client/**/*",
+          "public/**/*",
+          "!**/*.test.js",
+          "!**/*.test.ts",
+          "!**/*.test.jsx",
+          "!**/*.test.tsx",
+          "!apps/**/*",
+          "!mobile/**/*",
+          "!storage/**/*",
+          "!docs/**/*",
+          "!release/**/*",
+          "!*.log",
+          "!.git/**/*",
+          "!.cache/**/*"
+        ]
+      },
+      {
+        "from": "../../node_modules",
+        "to": "local-server/node_modules",
+        "filter": [
+          "**/*",
+          "!electron/**/*",
+          "!electron-builder/**/*",
+          "!@electron/**/*",
+          "!app-builder-bin/**/*",
+          "!builder-util-runtime/**/*",
+          "!dmg-builder/**/*",
+          "!vite/**/*",
+          "!vitest/**/*",
+          "!@vitest/**/*",
+          "!localtunnel/**/*",
+          "!*.md",
+          "!**/*.map"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "artifactName": "${productName} Setup-${version}-${arch}.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "portable": {
+      "artifactName": "${productName} Portable-${version}-${arch}.${ext}"
+    },
+    "linux": {
+      "target": [
+        "deb",
+        "tar.gz"
+      ],
+      "category": "Utility",
+      "maintainer": "Book of Life <maintainer@bookoflife.local>",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.productivity",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    }
+  },
+  "homepage": "https://bookoflife.local"
+}

@@ -6,11 +6,20 @@ const saveButton = document.querySelector('#save-settings');
 const addFolderButton = document.querySelector('#add-folder');
 const folderList = document.querySelector('#media-folders');
 const statusLine = document.querySelector('#settings-status');
+const cloudStatusLine = document.querySelector('#cloud-status');
+const connectCloudButton = document.querySelector('#connect-cloud');
+const syncCloudButton = document.querySelector('#sync-cloud');
+const cloudEmailInput = document.querySelector('#cloud-email');
+const cloudPasswordInput = document.querySelector('#cloud-password');
 
 let settings = null;
 
 function setStatus(message) {
   statusLine.textContent = message;
+}
+
+function setCloudStatus(message) {
+  cloudStatusLine.textContent = message;
 }
 
 function folderTemplate(folder = {}) {
@@ -69,6 +78,7 @@ function hydrateForm(nextSettings) {
     element.value = settings[element.name] || '';
   }
   renderFolders();
+  if (settings.cloudSession?.email) cloudEmailInput.value = settings.cloudSession.email;
 }
 
 function collectSettings() {
@@ -91,9 +101,30 @@ function collectSettings() {
 }
 
 async function loadSettings() {
-  const payload = await fetchJson('/api/desktop/sync-settings');
+  const [payload, cloudStatus] = await Promise.all([
+    fetchJson('/api/desktop/sync-settings'),
+    fetchJson('/api/desktop/cloud/status').catch((error) => ({ error: error.message }))
+  ]);
   hydrateForm(payload.settings);
   setStatus('Settings loaded.');
+  renderCloudStatus(cloudStatus);
+}
+
+function renderCloudStatus(status) {
+  if (status?.error) {
+    setCloudStatus(status.error);
+    return;
+  }
+  if (!status?.configured) {
+    setCloudStatus('Book of Life Cloud is not configured for this desktop build.');
+    return;
+  }
+  if (!status?.signedIn) {
+    setCloudStatus('Sign in to connect this desktop to your Book of Life Cloud library.');
+    return;
+  }
+  const synced = status.lastCloudSyncAt ? ` Last sync ${new Date(status.lastCloudSyncAt).toLocaleString()}.` : '';
+  setCloudStatus(`Connected as ${status.email || status.userId}. Library ${status.libraryId || 'pending'}. Device ${status.deviceId || 'pending'}.${synced}`);
 }
 
 saveButton.addEventListener('click', async () => {
@@ -119,6 +150,41 @@ folderList.addEventListener('click', (event) => {
   if (!button) return;
   const row = button.closest('.folder-row');
   row.remove();
+});
+
+connectCloudButton.addEventListener('click', async () => {
+  try {
+    connectCloudButton.disabled = true;
+    setCloudStatus('Connecting desktop to Book of Life Cloud...');
+    const payload = await postJson('/api/desktop/cloud/connect', {
+      settings: collectSettings(),
+      email: cloudEmailInput.value.trim(),
+      password: cloudPasswordInput.value
+    });
+    cloudPasswordInput.value = '';
+    hydrateForm(payload.settings);
+    renderCloudStatus(payload.status);
+    setStatus('Cloud connection saved.');
+  } catch (error) {
+    setCloudStatus(error.message);
+  } finally {
+    connectCloudButton.disabled = false;
+  }
+});
+
+syncCloudButton.addEventListener('click', async () => {
+  try {
+    syncCloudButton.disabled = true;
+    setCloudStatus('Syncing entries with Book of Life Cloud...');
+    const result = await postJson('/api/desktop/cloud/sync', {});
+    const status = await fetchJson('/api/desktop/cloud/status');
+    renderCloudStatus(status);
+    setStatus(`Cloud sync complete. Pushed ${result.pushed}, pulled ${result.pulled}.`);
+  } catch (error) {
+    setCloudStatus(error.message);
+  } finally {
+    syncCloudButton.disabled = false;
+  }
 });
 
 loadSettings().catch((error) => setStatus(error.message));

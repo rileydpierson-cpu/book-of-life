@@ -37,6 +37,17 @@ const HOST_AVAILABILITY_MODES = Object.freeze({
   CLOUD_RELAY: 'cloud-relay'
 });
 
+const DESKTOP_STORAGE_MODES = Object.freeze({
+  DEVICE_ONLY: 'device-only',
+  CLOUD_ORIGINALS: 'cloud-originals'
+});
+
+const ENTRY_IMPORT_MODES = Object.freeze({
+  NONE: 'none',
+  COPY: 'copy',
+  MIRROR: 'mirror'
+});
+
 const DEVICE_PERMISSION_KEYS = Object.freeze([
   'canUploadMedia',
   'canEditEntries',
@@ -104,18 +115,39 @@ function normalizeDesktopSyncSettings(value = {}) {
   const hostAvailability = Object.values(HOST_AVAILABILITY_MODES).includes(settings.hostAvailability)
     ? settings.hostAvailability
     : HOST_AVAILABILITY_MODES.LOCAL_ONLY;
+  const storageMode = Object.values(DESKTOP_STORAGE_MODES).includes(settings.storageMode)
+    ? settings.storageMode
+    : DESKTOP_STORAGE_MODES.DEVICE_ONLY;
+  const entryImportMode = Object.values(ENTRY_IMPORT_MODES).includes(settings.entryImportMode)
+    ? settings.entryImportMode
+    : ENTRY_IMPORT_MODES.NONE;
   const mediaFolders = Array.isArray(settings.mediaFolders)
     ? settings.mediaFolders.map(normalizeMediaFolderSetting).filter(Boolean)
     : [];
   return {
     ...scope,
     libraryName: String(settings.libraryName || '').trim(),
+    deviceName: String(settings.deviceName || '').trim(),
+    cloudApiBaseUrl: String(settings.cloudApiBaseUrl || '').trim(),
+    supabaseUrl: String(settings.supabaseUrl || '').trim(),
+    supabasePublishableKey: String(settings.supabasePublishableKey || '').trim(),
+    cloudSession: isObject(settings.cloudSession) ? {
+      accessToken: String(settings.cloudSession.accessToken || '').trim(),
+      refreshToken: String(settings.cloudSession.refreshToken || '').trim(),
+      expiresAt: Number(settings.cloudSession.expiresAt || 0),
+      email: String(settings.cloudSession.email || '').trim()
+    } : null,
     localJournalMirrorPath: String(settings.localJournalMirrorPath || '').trim(),
     markdownDateFormat: String(settings.markdownDateFormat || 'MMMM D, YYYY').trim() || 'MMMM D, YYYY',
     externalEditConflictBehavior: String(settings.externalEditConflictBehavior || 'cloud-version-with-revision').trim(),
     deviceUploadDestinationPath: String(settings.deviceUploadDestinationPath || '').trim(),
     mediaFolders,
     hostAvailability,
+    storageMode,
+    entryImportMode,
+    onboardingCompletedAt: String(settings.onboardingCompletedAt || '').trim(),
+    importedEntriesAt: String(settings.importedEntriesAt || '').trim(),
+    lastCloudSyncAt: String(settings.lastCloudSyncAt || '').trim(),
     thumbnail: {
       uploadDerivatives: settings.thumbnail?.uploadDerivatives !== false,
       imageMaxEdge: Number(settings.thumbnail?.imageMaxEdge || 1600),
@@ -199,6 +231,8 @@ module.exports = {
   CHANGE_TYPES,
   MEDIA_CLOUD_POLICIES,
   HOST_AVAILABILITY_MODES,
+  DESKTOP_STORAGE_MODES,
+  ENTRY_IMPORT_MODES,
   DEVICE_PERMISSION_KEYS,
   normalizeMutationEnvelope,
   normalizeDesktopSyncSettings,

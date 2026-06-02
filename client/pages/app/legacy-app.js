@@ -149,6 +149,7 @@ const state = {
   settingsOpen: false,
   authEnabled: false,
   sessionUsername: '',
+  desktopCloudSignedIn: true,
   calendarModal: {
     isOpen: false,
     busy: false,
@@ -3306,6 +3307,15 @@ function syncSettingsAccountUi() {
   if (dom.settingsAccountName) {
     dom.settingsAccountName.textContent = state.sessionUsername ? `Signed in as ${state.sessionUsername}` : '';
   }
+}
+
+async function openProfileMenu(event) {
+  event?.preventDefault?.();
+  if (!state.desktopCloudSignedIn) {
+    window.location.href = '/desktop/onboarding?force=splash';
+    return;
+  }
+  openSettings();
 }
 
 async function changePassword() {
@@ -7317,7 +7327,7 @@ function attachEvents() {
   });
   dom.searchDetailPrevResult?.addEventListener('click', () => focusSearchDetailResult(state.searchDetailResultIndex - 1));
   dom.searchDetailNextResult?.addEventListener('click', () => focusSearchDetailResult(state.searchDetailResultIndex + 1));
-  dom.settingsButton.addEventListener('click', openSettings);
+  dom.settingsButton.addEventListener('click', openProfileMenu);
   dom.settingsCloseButton.addEventListener('click', closeSettings);
   dom.settingsModal.querySelector('.settings-backdrop').addEventListener('click', closeSettings);
   dom.settingsHomeButton?.addEventListener('click', () => {
@@ -8144,6 +8154,10 @@ async function bootstrapApp() {
   const authStatus = await fetchJson('/api/auth/status');
   state.authEnabled = Boolean(authStatus?.enabled);
   state.sessionUsername = typeof authStatus?.username === 'string' ? authStatus.username : '';
+  const desktopStatus = await fetchJson('/api/desktop/onboarding/status').catch(() => null);
+  if (desktopStatus?.desktop) {
+    state.desktopCloudSignedIn = Boolean(desktopStatus.cloud?.signedIn);
+  }
   syncSettingsAccountUi();
   state.bootstrap = await fetchJson('/api/bootstrap');
   state.totalDays = state.bootstrap.totalDays;

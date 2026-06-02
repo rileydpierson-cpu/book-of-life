@@ -1,5 +1,9 @@
 const fs = require('fs');
 const path = require('path');
+const {
+  BOOK_OF_LIFE_SUPABASE_URL,
+  BOOK_OF_LIFE_SUPABASE_PUBLISHABLE_KEY
+} = require('./cloud-config');
 const { ensureDirSync } = require('./utils');
 
 function loadDotEnv(projectRoot) {
@@ -193,6 +197,16 @@ function loadConfig(projectRoot) {
     cloud: {
       enabled: parseBoolean(getConfigValue(config.cloud?.enabled, 'BOOK_OF_LIFE_CLOUD_ENABLED'), false),
       apiBaseUrl: String(getConfigValue(config.cloud?.apiBaseUrl, 'BOOK_OF_LIFE_CLOUD_API_BASE_URL', '') || '').trim(),
+      supabaseUrl: String(getConfigValue(
+        config.cloud?.supabaseUrl,
+        'BOOK_OF_LIFE_SUPABASE_URL',
+        process.env.NEXT_PUBLIC_SUPABASE_URL || BOOK_OF_LIFE_SUPABASE_URL
+      ) || '').trim(),
+      supabasePublishableKey: String(getConfigValue(
+        config.cloud?.supabasePublishableKey,
+        'BOOK_OF_LIFE_SUPABASE_PUBLISHABLE_KEY',
+        process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || BOOK_OF_LIFE_SUPABASE_PUBLISHABLE_KEY
+      ) || '').trim(),
       userId: String(getConfigValue(config.cloud?.userId, 'BOOK_OF_LIFE_USER_ID', 'local-user') || 'local-user').trim(),
       libraryId: String(getConfigValue(config.cloud?.libraryId, 'BOOK_OF_LIFE_LIBRARY_ID', 'default-library') || 'default-library').trim(),
       deviceId: String(getConfigValue(config.cloud?.deviceId, 'BOOK_OF_LIFE_DEVICE_ID', 'local-desktop') || 'local-desktop').trim()

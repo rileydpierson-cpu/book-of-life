@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MUTATION_TYPES, normalizeDesktopSyncSettings, validateMutationEnvelope } from './sync-contracts.js';
+import { DESKTOP_STORAGE_MODES, ENTRY_IMPORT_MODES, MUTATION_TYPES, normalizeDesktopSyncSettings, validateMutationEnvelope } from './sync-contracts.js';
 
 describe('sync contracts', () => {
   it('accepts a valid entry save mutation', () => {
@@ -55,6 +55,19 @@ describe('sync contracts', () => {
     expect(settings.mediaFolders[0].cloudPolicy).toBe('selected-originals');
     expect(settings.devicePermissions.phone.canUploadMedia).toBe(true);
     expect(settings.devicePermissions.phone.canEditEntries).toBe(false);
+  });
+
+  it('normalizes desktop onboarding metadata', () => {
+    const settings = normalizeDesktopSyncSettings({
+      storageMode: DESKTOP_STORAGE_MODES.CLOUD_ORIGINALS,
+      entryImportMode: ENTRY_IMPORT_MODES.COPY,
+      onboardingCompletedAt: '2026-06-02T18:00:00.000Z',
+      importedEntriesAt: '2026-06-02T18:01:00.000Z'
+    });
+    expect(settings.storageMode).toBe(DESKTOP_STORAGE_MODES.CLOUD_ORIGINALS);
+    expect(settings.entryImportMode).toBe(ENTRY_IMPORT_MODES.COPY);
+    expect(settings.onboardingCompletedAt).toContain('2026-06-02');
+    expect(settings.importedEntriesAt).toContain('2026-06-02');
   });
 
   it('accepts cloud scoped entry save mutations', () => {
