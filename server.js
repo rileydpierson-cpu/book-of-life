@@ -245,6 +245,7 @@ async function main() {
     indexer
   });
   const appCloudSettings = {
+    cloudApiBaseUrl: config.cloud.apiBaseUrl,
     supabaseUrl: config.cloud.supabaseUrl,
     supabasePublishableKey: config.cloud.supabasePublishableKey
   };

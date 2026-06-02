@@ -1,4 +1,4 @@
-import { createClient, isServerSupabaseConfigured } from '../utils/supabase/server.js';
+import { createBearerClient, createClient, isServerSupabaseConfigured } from '../utils/supabase/server.js';
 
 export function setupResponse() {
   return Response.json({
@@ -8,8 +8,24 @@ export function setupResponse() {
   }, { status: 503 });
 }
 
-export async function requireUser() {
+function bearerTokenFromRequest(request) {
+  const header = String(request?.headers?.get?.('authorization') || '');
+  return header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : '';
+}
+
+export async function requireUser(request) {
   if (!isServerSupabaseConfigured()) return { response: setupResponse() };
+  const bearerToken = bearerTokenFromRequest(request);
+  if (bearerToken) {
+    const supabase = createBearerClient(bearerToken);
+    const { data, error } = await supabase.auth.getUser(bearerToken);
+    if (error || !data.user) {
+      return {
+        response: Response.json({ ok: false, error: 'Sign in required.' }, { status: 401 })
+      };
+    }
+    return { supabase, user: data.user, authMode: 'bearer' };
+  }
   const supabase = await createClient();
   const { data, error } = await supabase.auth.getUser();
   if (error || !data.user) {

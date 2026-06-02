@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const {
+  BOOK_OF_LIFE_CLOUD_API_BASE_URL,
   BOOK_OF_LIFE_SUPABASE_URL,
   BOOK_OF_LIFE_SUPABASE_PUBLISHABLE_KEY
 } = require('./cloud-config');
@@ -196,7 +197,7 @@ function loadConfig(projectRoot) {
     },
     cloud: {
       enabled: parseBoolean(getConfigValue(config.cloud?.enabled, 'BOOK_OF_LIFE_CLOUD_ENABLED'), false),
-      apiBaseUrl: String(getConfigValue(config.cloud?.apiBaseUrl, 'BOOK_OF_LIFE_CLOUD_API_BASE_URL', '') || '').trim(),
+      apiBaseUrl: String(getConfigValue(config.cloud?.apiBaseUrl, 'BOOK_OF_LIFE_CLOUD_API_BASE_URL', BOOK_OF_LIFE_CLOUD_API_BASE_URL) || '').trim(),
       supabaseUrl: String(getConfigValue(
         config.cloud?.supabaseUrl,
         'BOOK_OF_LIFE_SUPABASE_URL',

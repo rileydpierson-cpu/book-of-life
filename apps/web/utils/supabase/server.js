@@ -1,4 +1,5 @@
 import { createServerClient } from '@supabase/ssr';
+import { createClient as createSupabaseClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 
 export function isServerSupabaseConfigured() {
@@ -27,6 +28,24 @@ export async function createClient() {
           } catch {
             // Server Components cannot write cookies directly. Middleware refreshes sessions.
           }
+        }
+      }
+    }
+  );
+}
+
+export function createBearerClient(accessToken) {
+  return createSupabaseClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL,
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
+    {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      },
+      global: {
+        headers: {
+          Authorization: `Bearer ${accessToken}`
         }
       }
     }

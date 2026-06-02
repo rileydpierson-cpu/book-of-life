@@ -50,7 +50,11 @@ export async function POST(request) {
       has_thumb: Boolean(body.hasThumb),
       has_preview: Boolean(body.hasPreview),
       original_in_cloud: Boolean(body.originalInCloud),
-      original_on_host: body.originalOnHost !== false
+      original_on_host: body.originalOnHost !== false,
+      original_storage_path: body.originalStoragePath || null,
+      original_size: Number(body.originalSize || 0) || null,
+      original_content_type: body.originalContentType || null,
+      updated_at: new Date().toISOString()
     })
     .select('*')
     .single();
