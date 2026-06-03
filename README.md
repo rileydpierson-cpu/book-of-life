@@ -221,9 +221,10 @@ Markdown files remain the source of truth. Saving writes directly to the correct
 - Journal dates come from the markdown filename only.
 - Photo dates are determined in this order:
   1. manual date override saved by the app
-  2. EXIF capture date
-  3. filesystem created date
+  2. EXIF modified date
+  3. EXIF capture date
   4. filesystem modified date
+  5. filesystem created date
 - The upload dialog can stamp the selected day into the real image EXIF metadata instead of renaming files.
 - If you have older photos whose dates only live in the filename, run `node scripts/apply-filename-date-overrides.js` to copy that date into EXIF on supported image types.
 - `.heic` and `.heif` files are converted once and cached before browser delivery.

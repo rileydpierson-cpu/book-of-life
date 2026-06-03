@@ -272,48 +272,149 @@
       <div class="settings-backdrop"></div>
       <div class="settings-window">
         <div class="settings-window-head">
-          <h2>Settings</h2>
+          <div>
+            <p class="settings-kicker">Book of Life</p>
+            <h2>Settings</h2>
+          </div>
           <button id="settingsCloseButton" class="ghost-button icon-button" type="button" aria-label="Close settings"><i class="ph-bold ph-x"></i></button>
         </div>
-        <div class="settings-layout">
-          <section class="settings-hero">
-            <span class="settings-avatar" aria-hidden="true">BoL</span>
-            <div class="settings-hero-copy">
-              <h3>Book of Life</h3>
-              <p>Quick controls for browsing, capturing, and customizing your journal.</p>
-            </div>
-          </section>
+        <div class="settings-layout settings-layout-fresh">
+          <aside class="settings-rail" aria-label="Settings sections">
+            <section class="settings-profile-summary">
+              <span id="settingsProfileAvatar" class="settings-avatar" aria-hidden="true">BoL</span>
+              <div class="settings-profile-copy">
+                <strong id="settingsProfileName">Book of Life</strong>
+                <span id="settingsProfileEmail">Local library</span>
+              </div>
+            </section>
+            <nav id="settingsPanelTabs" class="settings-panel-tabs" aria-label="Settings panels">
+              <button class="settings-tab is-active" type="button" data-settings-panel="account"><i class="ph-duotone ph-user-circle"></i><span>Account</span></button>
+              <button class="settings-tab" type="button" data-settings-panel="appearance"><i class="ph-duotone ph-palette"></i><span>Appearance</span></button>
+              <button class="settings-tab" type="button" data-settings-panel="devices"><i class="ph-duotone ph-hard-drives"></i><span>Devices &amp; Media</span></button>
+            </nav>
+            <button id="logoutButton" class="settings-logout-button" type="button"><i class="ph-bold ph-sign-out"></i><span>Logout</span></button>
+          </aside>
 
-          <div class="settings-grid">
-            <section class="settings-panel">
-              <div class="settings-label">Quick Actions</div>
-              <div class="settings-action-list">
+          <section class="settings-content">
+            <section class="settings-section" data-settings-section="account">
+              <div class="settings-section-head">
+                <div>
+                  <p class="settings-label">Account</p>
+                  <h3>Profile and plan</h3>
+                </div>
+              </div>
+              <div class="settings-profile-card">
+                <span id="settingsAccountAvatar" class="settings-avatar large" aria-hidden="true">BoL</span>
+                <div class="settings-profile-details">
+                  <strong id="settingsAccountName">Book of Life</strong>
+                  <span id="settingsAccountEmail">Local library</span>
+                  <span id="settingsAccountLibrary">Library details loading...</span>
+                </div>
+              </div>
+              <div class="settings-plan-grid" aria-label="Plans">
+                <article class="settings-plan-card is-active">
+                  <div>
+                    <span class="settings-plan-label">Basic</span>
+                    <strong>Current plan</strong>
+                  </div>
+                  <p>Local library, timeline browsing, desktop-hosted media, and manual sync controls.</p>
+                </article>
+                <article class="settings-plan-card">
+                  <div>
+                    <span class="settings-plan-label">Pro</span>
+                    <strong>Coming soon</strong>
+                  </div>
+                  <p>Expanded cloud storage, richer device automation, and more background sync controls.</p>
+                </article>
+              </div>
+              <div class="settings-action-list settings-shortcuts">
                 <button id="settingsHomeButton" class="settings-action-button" type="button"><i class="ph-fill ph-house"></i><span>Newest entry</span></button>
                 <button id="settingsTodayButton" class="settings-action-button" type="button"><i class="ph-duotone ph-calendar-dots"></i><span>Open today</span></button>
                 <button id="settingsJumpButton" class="settings-action-button" type="button"><i class="ph-duotone ph-calendar-blank"></i><span>Jump to date</span></button>
                 <button id="settingsUploadButton" class="settings-action-button" type="button"><i class="ph-duotone ph-images-square"></i><span>Upload files</span></button>
+                <button id="changePasswordButton" class="settings-action-button hidden" type="button"><i class="ph-bold ph-password"></i><span>Change password</span></button>
               </div>
             </section>
 
-            <section class="settings-panel">
-              <div class="settings-label">Appearance</div>
-              <div class="theme-choice-row">
-                <button id="themeLight" class="theme-choice" type="button" data-theme-choice="light">Light</button>
-                <button id="themeDark" class="theme-choice" type="button" data-theme-choice="dark">Dark</button>
-                <button id="themeSepia" class="theme-choice" type="button" data-theme-choice="sepia">Sepia</button>
-                <button id="themeForest" class="theme-choice" type="button" data-theme-choice="forest">Forest</button>
-                <button id="themeOcean" class="theme-choice" type="button" data-theme-choice="ocean">Ocean</button>
-                <button id="themeRose" class="theme-choice" type="button" data-theme-choice="rose">Rose</button>
+            <section class="settings-section hidden" data-settings-section="appearance">
+              <div class="settings-section-head">
+                <div>
+                  <p class="settings-label">Appearance</p>
+                  <h3>Customize the workspace</h3>
+                </div>
+              </div>
+              <div class="settings-control-group">
+                <h4>Theme</h4>
+                <div class="theme-choice-row">
+                  <button id="themeLight" class="theme-choice" type="button" data-theme-choice="light">Light</button>
+                  <button id="themeDark" class="theme-choice" type="button" data-theme-choice="dark">Dark</button>
+                  <button id="themeSepia" class="theme-choice" type="button" data-theme-choice="sepia">Sepia</button>
+                  <button id="themeForest" class="theme-choice" type="button" data-theme-choice="forest">Forest</button>
+                  <button id="themeOcean" class="theme-choice" type="button" data-theme-choice="ocean">Ocean</button>
+                  <button id="themeRose" class="theme-choice" type="button" data-theme-choice="rose">Rose</button>
+                </div>
+              </div>
+              <div class="settings-control-group">
+                <h4>Background</h4>
+                <div id="backgroundChoices" class="background-choice-grid">
+                  <button class="background-choice is-active" type="button" data-background-choice="none"><span class="background-preview none"></span><strong>None</strong></button>
+                  <button class="background-choice" type="button" data-background-choice="paper"><span class="background-preview paper"></span><strong>Paper</strong></button>
+                  <button class="background-choice" type="button" data-background-choice="sunrise"><span class="background-preview sunrise"></span><strong>Sunrise</strong></button>
+                  <button class="background-choice" type="button" data-background-choice="forest"><span class="background-preview forest"></span><strong>Forest</strong></button>
+                  <button class="background-choice" type="button" data-background-choice="ocean"><span class="background-preview ocean"></span><strong>Ocean</strong></button>
+                </div>
               </div>
             </section>
 
-            <section class="settings-panel">
-              <div class="settings-label">Account</div>
-              <p id="settingsAccountName" class="settings-account-note hidden"></p>
-              <button id="changePasswordButton" class="theme-choice settings-account-button hidden" type="button"><i class="ph-bold ph-password"></i> Change password</button>
-              <button id="logoutButton" class="theme-choice settings-logout" type="button"><i class="ph-bold ph-sign-out"></i> Logout</button>
+            <section class="settings-section hidden" data-settings-section="devices">
+              <div class="settings-section-head">
+                <div>
+                  <p class="settings-label">Devices &amp; Media</p>
+                  <h3>Sources and connections</h3>
+                </div>
+                <button id="settingsSyncNowButton" class="settings-secondary-button" type="button"><i class="ph-duotone ph-arrows-clockwise"></i><span>Sync now</span></button>
+              </div>
+              <p id="settingsDevicesStatus" class="settings-status-line">Loading desktop settings...</p>
+              <div class="settings-device-grid">
+                <label>
+                  Desktop name
+                  <input id="settingsDeviceNameInput" autocomplete="off" placeholder="Book of Life Desktop" />
+                </label>
+                <label>
+                  Host availability
+                  <select id="settingsHostAvailabilityInput">
+                    <option value="local-only">Local only</option>
+                    <option value="lan">LAN</option>
+                    <option value="cloud-relay">Cloud relay</option>
+                  </select>
+                </label>
+                <label class="settings-path-field">
+                  Local journal mirror
+                  <span>
+                    <input id="settingsJournalMirrorPathInput" autocomplete="off" />
+                    <button id="settingsPickJournalMirror" class="icon-button" type="button" title="Choose folder"><i class="ph-bold ph-folder-open"></i></button>
+                  </span>
+                </label>
+                <label class="settings-path-field">
+                  Device upload destination
+                  <span>
+                    <input id="settingsUploadDestinationInput" autocomplete="off" />
+                    <button id="settingsPickUploadDestination" class="icon-button" type="button" title="Choose folder"><i class="ph-bold ph-folder-open"></i></button>
+                  </span>
+                </label>
+              </div>
+              <div class="settings-host-summary" id="settingsHostSummary"></div>
+              <div class="settings-section-head compact">
+                <div>
+                  <p class="settings-label">Media folders</p>
+                  <h3>Photo sources</h3>
+                </div>
+                <button id="settingsAddMediaFolder" class="settings-secondary-button" type="button"><i class="ph-bold ph-plus"></i><span>Add folder</span></button>
+              </div>
+              <div id="settingsMediaFolders" class="settings-media-folders"></div>
+              <button id="settingsSaveDevicesButton" class="settings-primary-button" type="button"><i class="ph-bold ph-floppy-disk"></i><span>Save devices &amp; media</span></button>
             </section>
-          </div>
+          </section>
         </div>
       </div>
     </div>

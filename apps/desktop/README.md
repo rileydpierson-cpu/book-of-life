@@ -25,6 +25,8 @@ Use the app menu:
 Book of Life > Desktop Sync Settings
 ```
 
+The desktop app also keeps a status icon in the system tray while the local service is running. Click it to reopen Book of Life, open onboarding, open hosting settings, restart the local service, or quit the background service.
+
 
 ## Build Installers
 
@@ -44,6 +46,33 @@ The Linux build writes these files to `apps/desktop/release/`:
 
 - `.deb`
 - `.tar.gz`
+
+The build also runs a packaged smoke test that starts the bundled local server and confirms the desktop cloud configuration is present. Run it again after any packaging change with:
+
+```bash
+npm run desktop:verify:linux
+```
+
+Do not run the `.deb` file directly; it is an installer package. Install it from the repo root with:
+
+```bash
+sudo apt install ./apps/desktop/release/Book\ of\ Life-0.1.0-amd64.deb
+```
+
+Then launch Book of Life from the app menu. To try the unpacked Linux build without installing it, run:
+
+```bash
+./apps/desktop/release/linux-unpacked/@book-of-lifedesktop
+```
+
+The tarball contains the same unpacked app and can be extracted before running the bundled executable:
+
+```bash
+tar -xzf ./apps/desktop/release/Book\ of\ Life-0.1.0-x64.tar.gz -C /tmp/book-of-life-desktop
+/tmp/book-of-life-desktop/@book-of-lifedesktop
+```
+
+Rebuild the Linux artifacts whenever cloud config or local-server files change so `resources/local-server/` contains the current source.
 
 AppImage packaging is also configured as an optional target:
 

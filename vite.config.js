@@ -15,7 +15,8 @@ module.exports = defineConfig({
         editor: path.resolve(__dirname, 'editor.html'),
         login: path.resolve(__dirname, 'login.html'),
         desktopSettings: path.resolve(__dirname, 'desktop-settings.html'),
-        desktopOnboarding: path.resolve(__dirname, 'desktop-onboarding.html')
+        desktopOnboarding: path.resolve(__dirname, 'desktop-onboarding.html'),
+        desktopTray: path.resolve(__dirname, 'desktop-tray.html')
       }
     }
   }

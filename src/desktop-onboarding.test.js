@@ -45,6 +45,15 @@ describe('desktop onboarding', () => {
     expect(folders[0].cloudPolicy).toBe('all-originals');
   });
 
+  it('preserves explicit per-folder cloud policies', () => {
+    const folders = normalizeOnboardingMediaFolders([
+      { path: '/Cloud Photos', cloudPolicy: 'all-originals' },
+      { path: '/Local Photos', cloudPolicy: 'metadata-only' }
+    ], 'device-only');
+    expect(folders[0].cloudPolicy).toBe('all-originals');
+    expect(folders[1].cloudPolicy).toBe('metadata-only');
+  });
+
   it('copies markdown entries into app journal filenames', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bol-onboarding-'));
     const source = path.join(root, 'source');

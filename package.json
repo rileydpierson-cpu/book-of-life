@@ -19,7 +19,8 @@
     "desktop:dist": "npm run build && npm --prefix apps/desktop run dist",
     "desktop:dist:win": "npm run desktop:prepare:win-deps && npm run build && npm --prefix apps/desktop run dist:win",
     "desktop:prepare:win-deps": "npm install --no-save --force @img/sharp-win32-x64@0.33.5",
-    "desktop:dist:linux": "npm run build && npm --prefix apps/desktop run dist:linux",
+    "desktop:dist:linux": "npm run build && npm --prefix apps/desktop run dist:linux && npm run desktop:verify:linux",
+    "desktop:verify:linux": "npm --prefix apps/desktop run verify:linux",
     "desktop:dist:mac": "npm run build && npm --prefix apps/desktop run dist:mac"
   },
   "dependencies": {

@@ -12,100 +12,107 @@
   </head>
   <body>
     <main class="desktop-onboarding-shell">
-      <section id="splashStep" class="onboarding-panel onboarding-splash">
-        <div class="brand-mark"><i class="ph-fill ph-book-open"></i></div>
-        <p class="eyebrow">Book of Life Desktop</p>
-        <h1>Open your library</h1>
-        <p class="lede">Sign in to Book of Life Cloud or set up this desktop locally. Your database connection is handled by the app.</p>
+      <div class="window-bar">
+        <div class="window-drag"></div>
+        <button id="minimizeWindow" class="window-button" type="button" aria-label="Minimize"><i class="ph-bold ph-minus"></i></button>
+        <button id="closeWindow" class="window-button" type="button" aria-label="Close"><i class="ph-bold ph-x"></i></button>
+      </div>
 
-        <div class="auth-card">
-          <div class="mode-tabs" role="tablist" aria-label="Cloud account mode">
-            <button class="mode-tab is-active" type="button" data-auth-mode="login">Log in</button>
-            <button class="mode-tab" type="button" data-auth-mode="signup">Sign up</button>
-          </div>
-          <div class="field-grid">
-            <label>Email<input id="cloudEmail" type="email" autocomplete="username" /></label>
-            <label>Password<input id="cloudPassword" type="password" autocomplete="current-password" /></label>
-          </div>
-          <p id="cloudConfigStatus" class="cloud-config-status">Checking Book of Life Cloud...</p>
-          <div class="button-row">
-            <button id="cloudAuthButton" class="primary-button" type="button"><i class="ph-bold ph-sign-in"></i><span>Log in</span></button>
-            <button id="localOnlyButton" class="secondary-button" type="button">Continue without logging in</button>
-          </div>
-          <p id="authStatus" class="status-line">Cloud sync is optional. Local setup keeps your entries and originals on this desktop.</p>
-        </div>
-      </section>
+      <section class="onboarding-viewport" aria-live="polite">
+        <div id="panelTrack" class="panel-track" data-panel="auth">
+          <article class="onboarding-panel auth-panel" data-step="auth">
+            <img class="app-logo" src="/desktop/assets/icon.png" alt="" />
+            <h1>Book of Life</h1>
+            <p class="lede">The solution to your unending camera roll.</p>
 
-      <section id="configStep" class="onboarding-panel hidden">
-        <header class="panel-header">
-          <div>
-            <p class="eyebrow">Library setup</p>
-            <h1>Choose what this desktop can see</h1>
-          </div>
-          <button id="backToSplash" class="ghost-button" type="button"><i class="ph-bold ph-caret-left"></i>Back</button>
-        </header>
+            <form id="authForm" class="auth-form">
+              <label id="nameField" class="hidden">Name<input id="cloudName" type="text" autocomplete="name" /></label>
+              <label>Email<input id="cloudEmail" type="email" autocomplete="username" /></label>
+              <label>Password<input id="cloudPassword" type="password" autocomplete="current-password" /></label>
+              <label id="confirmField" class="hidden">Confirm password<input id="confirmPassword" type="password" autocomplete="new-password" /></label>
+              <button id="cloudAuthButton" class="primary-button" type="submit"><i class="ph-bold ph-sign-in"></i><span>Log in</span></button>
+              <p id="authStatus" class="status-line" role="alert"></p>
+            </form>
 
-        <div class="setup-grid">
-          <section class="setup-section">
-            <div class="section-heading">
-              <h2>Photo folders</h2>
-              <button id="addMediaFolder" class="icon-text-button" type="button"><i class="ph-bold ph-plus"></i>Add folder</button>
-            </div>
+            <button id="toggleAuthMode" class="text-button auth-toggle" type="button">Sign up</button>
+            <button id="localOnlyButton" class="text-button local-only-button" type="button"><i class="ph-bold ph-door-open"></i><span>Continue without login</span></button>
+          </article>
+
+          <article class="onboarding-panel action-panel" data-step="action">
+            <div class="action-orbit"><i class="ph-duotone ph-cloud-arrow-up"></i></div>
+            <p id="actionEyebrow" class="eyebrow">Connecting</p>
+            <h2 id="actionTitle">Signing in</h2>
+            <p id="actionStatus" class="status-line">Securing your library connection.</p>
+          </article>
+
+          <article class="onboarding-panel folders-panel" data-step="folders">
+            <header class="panel-header">
+              <div>
+                <p class="eyebrow">Media</p>
+                <h2>Choose Media Folders</h2>
+                <p class="panel-copy">Book of Life keeps you in control of your camera roll. Choose the photo folders you want to sync.</p>
+              </div>
+              <button id="addMediaFolder" class="icon-text-button" type="button"><i class="ph-bold ph-plus"></i><span>Add folder</span></button>
+            </header>
             <div id="mediaFolders" class="folder-list"></div>
-          </section>
+            <footer class="panel-footer">
+              <p id="foldersStatus" class="status-line">Add the folders Book of Life should watch.</p>
+              <button id="foldersNextButton" class="primary-button" type="button">Continue</button>
+            </footer>
+          </article>
 
-          <section class="setup-section">
-            <h2>Entries</h2>
-            <div class="option-stack">
-              <label class="option-row">
-                <input type="radio" name="entryMode" value="none" checked />
-                <span><strong>No entry import right now</strong><small>Start with photos or an empty journal.</small></span>
-              </label>
-              <label class="option-row">
-                <input type="radio" name="entryMode" value="copy" />
-                <span><strong>Import entries</strong><small>Copy Markdown files into this app's journal folder.</small></span>
-              </label>
-              <div class="path-row" data-entry-path="copy">
-                <input id="entryImportPath" placeholder="Choose a Markdown entry folder" readonly />
-                <button class="icon-button" type="button" data-pick-target="entryImportPath" title="Choose folder"><i class="ph-bold ph-folder-open"></i></button>
+          <article class="onboarding-panel notes-panel" data-step="notes">
+            <header class="panel-header">
+              <div>
+                <p class="eyebrow">Journal</p>
+                <h2>Import Notes</h2>
               </div>
-              <label class="option-row">
-                <input type="radio" name="entryMode" value="mirror" />
-                <span><strong>Use a live journal mirror</strong><small>Edit the selected Markdown folder in place.</small></span>
-              </label>
-              <div class="path-row" data-entry-path="mirror">
-                <input id="journalMirrorPath" placeholder="Choose a Markdown mirror folder" readonly />
-                <button class="icon-button" type="button" data-pick-target="journalMirrorPath" title="Choose folder"><i class="ph-bold ph-folder-open"></i></button>
-              </div>
+            </header>
+            <div class="notes-picker">
+              <input id="notesPath" placeholder="Choose a Markdown notes folder" readonly />
+              <button id="pickNotesFolder" class="icon-button" type="button" title="Choose folder"><i class="ph-bold ph-folder-open"></i></button>
             </div>
-          </section>
+            <div class="option-switch" role="radiogroup" aria-label="Notes import mode">
+              <button class="option-card is-active" type="button" data-entry-mode="copy">
+                <i class="ph-duotone ph-download-simple"></i>
+                <span><strong>Import</strong><small>Copy Markdown files into Book of Life.</small></span>
+              </button>
+              <button class="option-card" type="button" data-entry-mode="mirror">
+                <i class="ph-duotone ph-link"></i>
+                <span><strong>Link</strong><small>Use this folder as the live journal mirror.</small></span>
+              </button>
+            </div>
+            <footer class="panel-footer">
+              <button id="skipNotesButton" class="skip-button" type="button">Skip</button>
+              <p id="configStatus" class="status-line">Choose a notes folder, or skip this for now.</p>
+              <button id="completeButton" class="primary-button" type="button">Import</button>
+            </footer>
+          </article>
 
-          <section class="setup-section storage-section">
-            <h2>Storage</h2>
-            <label class="option-row">
-              <input type="radio" name="storageMode" value="device-only" checked />
-              <span><strong>Just on this device</strong><small>Keep originals local. You can change this later.</small></span>
-            </label>
-            <label class="option-row">
-              <input type="radio" name="storageMode" value="cloud-originals" />
-              <span><strong>Store originals in the cloud</strong><small>Upload full media files after indexing.</small></span>
-            </label>
-          </section>
+          <article class="onboarding-panel progress-panel" data-step="progress">
+            <div class="action-orbit"><i class="ph-duotone ph-clock-counter-clockwise"></i></div>
+            <p id="loaderMessage" class="eyebrow">Mapping your life</p>
+            <h2 id="loaderStage">Preparing library</h2>
+            <div class="progress-track"><span id="progressFill"></span></div>
+            <p id="loaderStatus" class="status-line">Saving setup.</p>
+            <button id="openLibraryButton" class="primary-button hidden" type="button">Open Book of Life</button>
+          </article>
         </div>
-
-        <footer class="onboarding-footer">
-          <p id="configStatus" class="status-line">Add a photo folder, import entries, or select a journal mirror.</p>
-          <button id="continueButton" class="primary-button" type="button">Continue</button>
-        </footer>
       </section>
 
-      <section id="loaderStep" class="onboarding-panel loader-panel hidden">
-        <div class="loader-orbit"><i class="ph-duotone ph-clock-counter-clockwise"></i></div>
-        <p id="loaderMessage" class="eyebrow">Mapping your life</p>
-        <h1 id="loaderStage">Preparing library</h1>
-        <div class="progress-track"><span id="progressFill"></span></div>
-        <p id="loaderStatus" class="status-line">Indexing your entries and media.</p>
-      </section>
+      <dialog id="folderDialog" class="folder-dialog">
+        <form method="dialog" class="folder-dialog-card">
+          <h3>Folder Settings</h3>
+          <label>Name<input id="folderLabelInput" type="text" /></label>
+          <label>Path<input id="folderPathInput" type="text" readonly /></label>
+          <button id="changeFolderPath" class="secondary-button" type="button"><i class="ph-bold ph-folder-open"></i><span>Choose folder</span></button>
+          <label>Status<select id="folderPolicyInput"></select></label>
+          <div class="dialog-actions">
+            <button id="cancelFolderEdit" class="secondary-button" type="button">Cancel</button>
+            <button id="saveFolderEdit" class="primary-button" type="button">Save</button>
+          </div>
+        </form>
+      </dialog>
     </main>
   </body>
 </html>

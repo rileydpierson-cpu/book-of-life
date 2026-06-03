@@ -356,6 +356,34 @@ class SupabaseDesktopSync {
     return { ok: true, uploaded, failed, skipped };
   }
 
+  async storageUsage(settings = null) {
+    const current = settings || await this.settingsStore.getSettings();
+    if (!current.cloudSession?.accessToken || !current.libraryId) {
+      return { available: false, usedBytes: 0 };
+    }
+    try {
+      const payload = await cloudApiFetch(current, `/api/media/storage-usage?libraryId=${encodeURIComponent(current.libraryId)}`);
+      return {
+        available: true,
+        usedBytes: Number(payload.storage?.usedBytes || 0),
+        limitBytes: Number(payload.storage?.limitBytes || 0) || undefined,
+        percent: Number(payload.storage?.percent || 0)
+      };
+    } catch (error) {
+      if (/404|not found/i.test(String(error.message || ''))) {
+        return {
+          available: false,
+          usedBytes: 0
+        };
+      }
+      return {
+        available: false,
+        usedBytes: 0,
+        error: error.message || 'Cloud storage usage unavailable.'
+      };
+    }
+  }
+
   async status() {
     const settings = await this.settingsStore.getSettings();
     return {

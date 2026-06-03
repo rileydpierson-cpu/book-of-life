@@ -51,16 +51,20 @@ function normalizeOnboardingMediaFolders(folders = [], storageMode = DESKTOP_STO
   const cloudPolicy = storageMode === DESKTOP_STORAGE_MODES.CLOUD_ORIGINALS
     ? MEDIA_CLOUD_POLICIES.ALL_ORIGINALS
     : MEDIA_CLOUD_POLICIES.METADATA_ONLY;
+  const validPolicies = new Set(Object.values(MEDIA_CLOUD_POLICIES));
   return folders
     .map((folder, index) => {
       const folderPath = String(folder?.path || '').trim();
       if (!folderPath) return null;
+      const folderPolicy = validPolicies.has(folder?.cloudPolicy)
+        ? folder.cloudPolicy
+        : cloudPolicy;
       return {
         id: String(folder?.id || `media-${Date.now()}-${index}`),
         label: String(folder?.label || '').trim() || path.basename(folderPath) || folderPath,
         path: folderPath,
         enabled: folder?.enabled !== false,
-        cloudPolicy: folder?.cloudPolicy || cloudPolicy
+        cloudPolicy: folderPolicy
       };
     })
     .filter(Boolean);

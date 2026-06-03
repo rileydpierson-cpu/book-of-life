@@ -1333,7 +1333,7 @@ async function extractUploadMetadataDate(file, fallbackIsoDate) {
   if (isImage && exifr?.parse) {
     try {
       const exif = await exifr.parse(file, { pick: ['DateTimeOriginal', 'CreateDate', 'ModifyDate'] });
-      const exifDate = exif?.DateTimeOriginal || exif?.CreateDate || exif?.ModifyDate;
+      const exifDate = exif?.ModifyDate || exif?.DateTimeOriginal || exif?.CreateDate;
       const exifIsoDate = fileDateToLocalIso(exifDate);
       const exifCapturedAt = fileDateToLocalCapturedAt(exifDate);
       if (exifIsoDate) return { isoDate: exifIsoDate, capturedAt: exifCapturedAt, dateSource: 'exif' };

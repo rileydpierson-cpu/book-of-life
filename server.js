@@ -18,6 +18,7 @@ const { CloudEntryStore } = require('./src/cloud-entry-store');
 const { DesktopSyncSettingsStore } = require('./src/desktop-sync-settings');
 const { JournalCloudSync } = require('./src/journal-cloud-sync');
 const { SupabaseDesktopSync } = require('./src/supabase-desktop-sync');
+const { desktopTrayStatus } = require('./src/desktop-tray-status');
 const { DESKTOP_STORAGE_MODES, ENTRY_IMPORT_MODES, MEDIA_CLOUD_POLICIES } = require('./shared/sync-contracts');
 const {
   copyImportedEntries,
@@ -231,6 +232,10 @@ async function main() {
   const projectRoot = __dirname;
   const publicDir = path.join(projectRoot, 'public');
   const distDir = path.join(projectRoot, 'dist');
+  const desktopIconPath = [
+    process.env.BOOK_OF_LIFE_DESKTOP_ICON_PATH,
+    path.join(projectRoot, 'apps', 'desktop', 'assets', 'icon.png')
+  ].find((candidate) => candidate && fs.existsSync(candidate));
   const config = loadConfig(projectRoot);
   const app = express();
   const indexer = new TimelineIndexer(config);
@@ -418,6 +423,15 @@ async function main() {
     etag: true,
     maxAge: '1d'
   }));
+
+  app.get('/desktop/assets/icon.png', (_req, res) => {
+    if (!desktopIconPath) {
+      res.status(404).send('Desktop icon unavailable.');
+      return;
+    }
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.sendFile(desktopIconPath);
+  });
 
   app.get('/login', (req, res) => {
     if (!auth.enabled) {
@@ -688,6 +702,29 @@ async function main() {
     res.json(startIndexRebuild('desktop-manual'));
   });
 
+  app.get('/api/desktop/tray/status', async (_req, res) => {
+    try {
+      const cloudStatus = await desktopCloudSync.status().catch((error) => ({ error: error.message }));
+      const storageUsage = await desktopCloudSync.storageUsage().catch((error) => ({
+        available: false,
+        usedBytes: 0,
+        error: error.message
+      }));
+      res.json(desktopTrayStatus({
+        localService: {
+          running: true,
+          port: config.server.port,
+          url: `http://127.0.0.1:${config.server.port}`
+        },
+        cloudStatus,
+        indexStatus: indexer.getRebuildStatus(),
+        storageUsage
+      }));
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error.message || 'Failed to read tray status.' });
+    }
+  });
+
   app.get('/api/desktop/onboarding/status', async (_req, res) => {
     try {
       const settings = await desktopSyncSettings.getSettings();
@@ -706,14 +743,18 @@ async function main() {
     try {
       const body = req.body || {};
       const currentSettings = await desktopSyncSettings.getSettings();
-      const storageMode = body.storageMode === DESKTOP_STORAGE_MODES.CLOUD_ORIGINALS
+      let storageMode = body.storageMode === DESKTOP_STORAGE_MODES.CLOUD_ORIGINALS
         ? DESKTOP_STORAGE_MODES.CLOUD_ORIGINALS
         : DESKTOP_STORAGE_MODES.DEVICE_ONLY;
       const cloudStatus = await desktopCloudSync.status().catch(() => ({ signedIn: false }));
-      if (storageMode === DESKTOP_STORAGE_MODES.CLOUD_ORIGINALS && !cloudStatus.signedIn) {
+      const requestedFolders = Array.isArray(body.mediaFolders) ? body.mediaFolders : [];
+      const requestsCloudOriginals = requestedFolders.some((folder) => folder?.cloudPolicy === MEDIA_CLOUD_POLICIES.ALL_ORIGINALS) ||
+        storageMode === DESKTOP_STORAGE_MODES.CLOUD_ORIGINALS;
+      if (requestsCloudOriginals && !cloudStatus.signedIn) {
         res.status(400).json({ ok: false, error: 'Sign in before storing originals in the cloud.' });
         return;
       }
+      if (requestsCloudOriginals) storageMode = DESKTOP_STORAGE_MODES.CLOUD_ORIGINALS;
 
       const entryImportMode = entryImportModeFromPayload(body);
       const nextMediaFolders = normalizeOnboardingMediaFolders(body.mediaFolders || [], storageMode);
@@ -735,13 +776,6 @@ async function main() {
           destinationJournalDir: currentJournalFolderPath(config)
         });
         nextSettings.importedEntriesAt = new Date().toISOString();
-      }
-
-      if (storageMode === DESKTOP_STORAGE_MODES.CLOUD_ORIGINALS) {
-        nextSettings.mediaFolders = nextSettings.mediaFolders.map((folder) => ({
-          ...folder,
-          cloudPolicy: MEDIA_CLOUD_POLICIES.ALL_ORIGINALS
-        }));
       }
 
       if (!hasOnboardingSource(nextSettings)) {
@@ -1395,6 +1429,10 @@ async function main() {
 
   app.get('/desktop/onboarding', async (_req, res) => {
     sendNoStoreFile(res, path.join(distDir, 'desktop-onboarding.html'));
+  });
+
+  app.get('/desktop/tray', async (_req, res) => {
+    sendNoStoreFile(res, path.join(distDir, 'desktop-tray.html'));
   });
 
   app.get('/edit/:date', async (req, res) => {

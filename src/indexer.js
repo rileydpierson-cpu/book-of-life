@@ -35,6 +35,36 @@ const markdown = new MarkdownIt({
   breaks: true
 });
 
+function validDate(value) {
+  return value instanceof Date && !Number.isNaN(value.getTime()) ? value : null;
+}
+
+function selectImageExifDateInfo(exif) {
+  const modifiedDate = validDate(exif?.ModifyDate);
+  if (modifiedDate) {
+    return {
+      capturedAtDate: modifiedDate,
+      modifiedAtDate: modifiedDate,
+      source: 'exif-modified'
+    };
+  }
+
+  const capturedDate = validDate(exif?.DateTimeOriginal) || validDate(exif?.CreateDate);
+  if (capturedDate) {
+    return {
+      capturedAtDate: capturedDate,
+      modifiedAtDate: null,
+      source: 'exif-captured'
+    };
+  }
+
+  return {
+    capturedAtDate: null,
+    modifiedAtDate: null,
+    source: null
+  };
+}
+
 class TimelineIndexer {
   constructor(config) {
     this.config = config;
@@ -469,7 +499,9 @@ class TimelineIndexer {
   }
 
   shouldRefreshCachedDateInfo(cachedDateInfo) {
-    return Boolean(cachedDateInfo && cachedDateInfo.source === 'filename');
+    if (!cachedDateInfo) return false;
+    const source = String(cachedDateInfo.source || '');
+    return !source || source === 'filename' || source === 'exif' || source === 'filesystem-created';
   }
 
   async extractMediaDateInfo(filePath, stat) {
@@ -481,17 +513,10 @@ class TimelineIndexer {
       try {
         const fileBuffer = await fs.promises.readFile(filePath);
         const exif = await exifr.parse(fileBuffer, { pick: ['DateTimeOriginal', 'CreateDate', 'ModifyDate'] });
-        const exifCapturedDate = exif?.DateTimeOriginal || exif?.CreateDate;
-        const exifModifiedDate = exif?.ModifyDate;
-        
-        if (exifCapturedDate instanceof Date && !Number.isNaN(exifCapturedDate.getTime())) {
-          capturedAtDate = exifCapturedDate;
-          dateSource = 'exif';
-        }
-        
-        if (exifModifiedDate instanceof Date && !Number.isNaN(exifModifiedDate.getTime())) {
-          modifiedAtDate = exifModifiedDate;
-        }
+        const exifDateInfo = selectImageExifDateInfo(exif);
+        capturedAtDate = exifDateInfo.capturedAtDate;
+        modifiedAtDate = exifDateInfo.modifiedAtDate;
+        dateSource = exifDateInfo.source;
       } catch (error) {
         // Many exported or edited images have no EXIF. Ignore and fall through.
       }
@@ -506,18 +531,18 @@ class TimelineIndexer {
     }
 
     if (!capturedAtDate) {
-      const created = stat.birthtimeMs ? new Date(stat.birthtimeMs) : null;
-      if (created && !Number.isNaN(created.getTime())) {
-        capturedAtDate = created;
-        dateSource = 'filesystem-created';
-      }
-    }
-
-    if (!capturedAtDate) {
       const modified = new Date(stat.mtimeMs);
       if (!Number.isNaN(modified.getTime())) {
         capturedAtDate = modified;
         dateSource = 'filesystem-modified';
+      }
+    }
+
+    if (!capturedAtDate) {
+      const created = stat.birthtimeMs ? new Date(stat.birthtimeMs) : null;
+      if (created && !Number.isNaN(created.getTime())) {
+        capturedAtDate = created;
+        dateSource = 'filesystem-created';
       }
     }
 
@@ -2008,4 +2033,4 @@ class StartupProgressRenderer {
   }
 }
 
-module.exports = { TimelineIndexer };
+module.exports = { TimelineIndexer, selectImageExifDateInfo };

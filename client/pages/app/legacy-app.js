@@ -16,6 +16,7 @@ const GALLERY_LAYOUT_STORAGE_KEY = 'lifeserver-gallery-layout-v1';
 const FOLDER_VIEW_MODE_STORAGE_KEY = 'lifeserver-folder-view-mode-v1';
 const TIMELINE_MEDIA_SCALE_STORAGE_KEY = 'lifeserver-timeline-media-scale-v1';
 const GALLERY_MEDIA_SCALE_STORAGE_KEY = 'lifeserver-gallery-media-scale-v1';
+const BACKGROUND_STORAGE_KEY = 'lifeserver-background';
 
 function loadStoredGalleryLayoutMode() {
   const value = String(localStorage.getItem(GALLERY_LAYOUT_STORAGE_KEY) || 'grid');
@@ -43,6 +44,11 @@ function loadStoredUploadTarget() {
   } catch (error) {
     return { rootId: '0', relativePath: '' };
   }
+}
+
+function loadStoredBackgroundPreset() {
+  const value = String(localStorage.getItem(BACKGROUND_STORAGE_KEY) || 'none');
+  return ['none', 'paper', 'sunrise', 'forest', 'ocean'].includes(value) ? value : 'none';
 }
 
 const state = {
@@ -147,9 +153,13 @@ const state = {
   folderViewMode: loadStoredFolderViewMode(),
   folderViewSelection: { rootId: '0', relativePath: '.' },
   settingsOpen: false,
+  settingsPanel: 'account',
   authEnabled: false,
   sessionUsername: '',
   desktopCloudSignedIn: true,
+  desktopSettings: null,
+  desktopCloudStatus: null,
+  desktopOnboardingStatus: null,
   calendarModal: {
     isOpen: false,
     busy: false,
@@ -218,6 +228,7 @@ const state = {
   timelineAverageHeight: 280,
   timelineCorrectionSuppressedUntil: 0,
   theme: localStorage.getItem('lifeserver-theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'),
+  backgroundPreset: loadStoredBackgroundPreset(),
   timelineMediaScale: loadStoredMediaScale(TIMELINE_MEDIA_SCALE_STORAGE_KEY),
   openScalePanel: null
 };
@@ -228,6 +239,7 @@ const TIME_PERIOD_VALUES = ['AM', 'PM'];
 const TIME_SPINNER_REPEAT_COUNT = 5;
 const TIME_SPINNER_CENTER_REPEAT = Math.floor(TIME_SPINNER_REPEAT_COUNT / 2);
 const AVAILABLE_THEMES = new Set(['light', 'dark', 'sepia', 'forest', 'ocean', 'rose']);
+const AVAILABLE_BACKGROUNDS = new Set(['none', 'paper', 'sunrise', 'forest', 'ocean']);
 const MEDIA_LIKE_SAVE_DELAY_MS = 200;
 const pendingMediaLikeSaves = new Map();
 const mediaLikeSaveVersions = new Map();
@@ -258,10 +270,32 @@ const dom = {
   settingsUploadButton: document.getElementById('settingsUploadButton'),
   settingsModal: document.getElementById('settingsModal'),
   settingsCloseButton: document.getElementById('settingsCloseButton'),
+  settingsPanelTabs: document.getElementById('settingsPanelTabs'),
+  settingsPanelButtons: Array.from(document.querySelectorAll('[data-settings-panel]')),
+  settingsSections: Array.from(document.querySelectorAll('[data-settings-section]')),
+  settingsProfileAvatar: document.getElementById('settingsProfileAvatar'),
+  settingsProfileName: document.getElementById('settingsProfileName'),
+  settingsProfileEmail: document.getElementById('settingsProfileEmail'),
+  settingsAccountAvatar: document.getElementById('settingsAccountAvatar'),
   settingsAccountName: document.getElementById('settingsAccountName'),
+  settingsAccountEmail: document.getElementById('settingsAccountEmail'),
+  settingsAccountLibrary: document.getElementById('settingsAccountLibrary'),
   changePasswordButton: document.getElementById('changePasswordButton'),
   logoutButton: document.getElementById('logoutButton'),
   themeChoices: Array.from(document.querySelectorAll('[data-theme-choice]')),
+  backgroundChoices: Array.from(document.querySelectorAll('[data-background-choice]')),
+  settingsDevicesStatus: document.getElementById('settingsDevicesStatus'),
+  settingsDeviceNameInput: document.getElementById('settingsDeviceNameInput'),
+  settingsHostAvailabilityInput: document.getElementById('settingsHostAvailabilityInput'),
+  settingsJournalMirrorPathInput: document.getElementById('settingsJournalMirrorPathInput'),
+  settingsUploadDestinationInput: document.getElementById('settingsUploadDestinationInput'),
+  settingsPickJournalMirror: document.getElementById('settingsPickJournalMirror'),
+  settingsPickUploadDestination: document.getElementById('settingsPickUploadDestination'),
+  settingsHostSummary: document.getElementById('settingsHostSummary'),
+  settingsMediaFolders: document.getElementById('settingsMediaFolders'),
+  settingsAddMediaFolder: document.getElementById('settingsAddMediaFolder'),
+  settingsSaveDevicesButton: document.getElementById('settingsSaveDevicesButton'),
+  settingsSyncNowButton: document.getElementById('settingsSyncNowButton'),
   yearSection: document.getElementById('yearSection'),
   yearSectionTitle: document.getElementById('yearSectionTitle'),
   yearSectionSubtitle: document.getElementById('yearSectionSubtitle'),
@@ -618,6 +652,18 @@ function fetchJson(url, options) {
     }
     if (!response.ok) throw new Error(payload.error || `Request failed: ${response.status}`);
     return payload;
+  });
+}
+
+function postJson(url, body, options = {}) {
+  return fetchJson(url, {
+    ...options,
+    method: options.method || 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    },
+    body: JSON.stringify(body)
   });
 }
 
@@ -1456,7 +1502,7 @@ async function extractUploadMetadataDate(file, fallbackIsoDate) {
   if (isImage && exifr?.parse) {
     try {
       const exif = await exifr.parse(file, { pick: ['DateTimeOriginal', 'CreateDate', 'ModifyDate'] });
-      const exifDate = exif?.DateTimeOriginal || exif?.CreateDate || exif?.ModifyDate;
+      const exifDate = exif?.ModifyDate || exif?.DateTimeOriginal || exif?.CreateDate;
       const exifIsoDate = fileDateToLocalIso(exifDate);
       const exifCapturedAt = fileDateToLocalCapturedAt(exifDate);
       if (exifIsoDate) return { isoDate: exifIsoDate, capturedAt: exifCapturedAt, dateSource: 'exif' };
@@ -2010,8 +2056,68 @@ function applyTheme(theme) {
   });
 }
 
+function applyBackgroundPreset(preset) {
+  state.backgroundPreset = AVAILABLE_BACKGROUNDS.has(preset) ? preset : 'none';
+  dom.body.dataset.background = state.backgroundPreset;
+  localStorage.setItem(BACKGROUND_STORAGE_KEY, state.backgroundPreset);
+  dom.backgroundChoices.forEach((button) => {
+    button.classList.toggle('is-active', button.dataset.backgroundChoice === state.backgroundPreset);
+  });
+}
+
 function setThemeChoice(theme) {
   applyTheme(theme);
+}
+
+function setBackgroundChoice(preset) {
+  applyBackgroundPreset(preset);
+}
+
+function setSettingsPanel(panel) {
+  state.settingsPanel = ['account', 'appearance', 'devices'].includes(panel) ? panel : 'account';
+  dom.settingsPanelButtons.forEach((button) => {
+    const active = button.dataset.settingsPanel === state.settingsPanel;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  dom.settingsSections.forEach((section) => {
+    section.classList.toggle('hidden', section.dataset.settingsSection !== state.settingsPanel);
+  });
+  if (state.settingsPanel === 'devices') {
+    loadDesktopSettings().catch((error) => setSettingsDevicesStatus(error.message));
+  }
+}
+
+function initialsFromName(value) {
+  const words = String(value || 'Book of Life').trim().split(/\s+/).filter(Boolean);
+  const initials = words.slice(0, 2).map((word) => word[0]?.toUpperCase()).join('');
+  return initials || 'BoL';
+}
+
+function desktopDisplayName() {
+  return state.desktopSettings?.deviceName || state.sessionUsername || state.desktopCloudStatus?.email || 'Book of Life';
+}
+
+function accountEmailLabel() {
+  return state.desktopCloudStatus?.email || state.desktopSettings?.cloudSession?.email || state.sessionUsername || 'Local library';
+}
+
+function updateSettingsProfileUi() {
+  const displayName = desktopDisplayName();
+  const email = accountEmailLabel();
+  const libraryName = state.desktopSettings?.libraryName || 'Book of Life';
+  const deviceName = state.desktopSettings?.deviceName || 'This desktop';
+  const initials = initialsFromName(displayName);
+  if (dom.settingsProfileAvatar) dom.settingsProfileAvatar.textContent = initials;
+  if (dom.settingsAccountAvatar) dom.settingsAccountAvatar.textContent = initials;
+  if (dom.settingsProfileName) dom.settingsProfileName.textContent = displayName;
+  if (dom.settingsProfileEmail) dom.settingsProfileEmail.textContent = email;
+  if (dom.settingsAccountName) dom.settingsAccountName.textContent = displayName;
+  if (dom.settingsAccountEmail) dom.settingsAccountEmail.textContent = email;
+  if (dom.settingsAccountLibrary) {
+    const signedIn = state.desktopCloudStatus?.signedIn ? 'Cloud connected' : 'Device local';
+    dom.settingsAccountLibrary.textContent = `${libraryName} · ${deviceName} · ${signedIn}`;
+  }
 }
 
 function gridColumnBounds() {
@@ -3283,6 +3389,8 @@ function openSettings({ pushHistory = true } = {}) {
   state.settingsOpen = true;
   dom.settingsModal.classList.remove('hidden');
   dom.body.classList.add('viewer-open');
+  setSettingsPanel(state.settingsPanel || 'account');
+  loadDesktopSettings().catch((error) => setSettingsDevicesStatus(error.message));
   if (pushHistory) {
     const base = history.state?.viewer ? { ...history.state } : { ...(history.state || {}), ...(state.route || {}) };
     pushAppHistory({ ...base, settingsOpen: true });
@@ -3300,21 +3408,174 @@ function closeSettings({ fromHistory = false } = {}) {
   syncOverlayBodyState();
 }
 
+function setSettingsDevicesStatus(message) {
+  if (dom.settingsDevicesStatus) dom.settingsDevicesStatus.textContent = message || '';
+}
+
+function desktopFolderTemplate(folder = {}) {
+  return {
+    id: folder.id || `media-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    label: folder.label || '',
+    path: folder.path || '',
+    enabled: folder.enabled !== false,
+    cloudPolicy: folder.cloudPolicy || 'derivatives'
+  };
+}
+
+function renderSettingsMediaFolders() {
+  if (!dom.settingsMediaFolders) return;
+  const folders = Array.isArray(state.desktopSettings?.mediaFolders) ? state.desktopSettings.mediaFolders : [];
+  dom.settingsMediaFolders.innerHTML = folders.map((folder) => `
+    <div class="settings-media-folder" data-folder-id="${escapeHtml(folder.id)}">
+      <label>
+        Label
+        <input data-field="label" value="${escapeHtml(folder.label || '')}" />
+      </label>
+      <label class="settings-path-field">
+        Folder path
+        <span>
+          <input data-field="path" value="${escapeHtml(folder.path || '')}" />
+          <button class="icon-button" type="button" data-action="pick-folder" title="Choose folder"><i class="ph-bold ph-folder-open"></i></button>
+        </span>
+      </label>
+      <label>
+        Cloud policy
+        <select data-field="cloudPolicy">
+          <option value="metadata-only">Metadata only</option>
+          <option value="derivatives">Thumbnails/previews</option>
+          <option value="selected-originals">Selected originals</option>
+          <option value="all-originals">All originals</option>
+        </select>
+      </label>
+      <label class="settings-inline-check">
+        <input data-field="enabled" type="checkbox" ${folder.enabled !== false ? 'checked' : ''} />
+        Enabled
+      </label>
+      <button class="settings-remove-button" type="button" data-action="remove-folder"><i class="ph-bold ph-trash"></i><span>Remove</span></button>
+    </div>
+  `).join('');
+  dom.settingsMediaFolders.querySelectorAll('.settings-media-folder').forEach((row) => {
+    const folder = folders.find((item) => item.id === row.dataset.folderId) || {};
+    row.querySelector('[data-field="cloudPolicy"]').value = folder.cloudPolicy || 'derivatives';
+  });
+}
+
+function renderSettingsHostSummary() {
+  if (!dom.settingsHostSummary) return;
+  const settings = state.desktopSettings || {};
+  const cloud = state.desktopCloudStatus || {};
+  const onboarding = state.desktopOnboardingStatus || {};
+  const mediaCount = Number(onboarding.sourceCounts?.mediaFolders || settings.mediaFolders?.length || 0);
+  const uploadDestination = settings.deviceUploadDestinationPath || 'Default device uploads folder';
+  const journalMirror = settings.localJournalMirrorPath || 'Not configured';
+  const signedIn = cloud.signedIn ? `Connected as ${cloud.email || cloud.userId || 'cloud account'}` : 'Not connected to cloud';
+  const hostMode = settings.hostAvailability || 'local-only';
+  const lastSync = cloud.lastCloudSyncAt ? new Date(cloud.lastCloudSyncAt).toLocaleString() : 'Not synced yet';
+  dom.settingsHostSummary.innerHTML = `
+    <div><span>Cloud</span><strong>${escapeHtml(signedIn)}</strong></div>
+    <div><span>Media host</span><strong>${escapeHtml(hostMode)}</strong></div>
+    <div><span>Photo sources</span><strong>${mediaCount}</strong></div>
+    <div><span>Device uploads</span><strong>${escapeHtml(uploadDestination)}</strong></div>
+    <div><span>Journal mirror</span><strong>${escapeHtml(journalMirror)}</strong></div>
+    <div><span>Last sync</span><strong>${escapeHtml(lastSync)}</strong></div>
+  `;
+}
+
+function hydrateDesktopSettingsForm() {
+  const settings = state.desktopSettings || {};
+  if (dom.settingsDeviceNameInput) dom.settingsDeviceNameInput.value = settings.deviceName || '';
+  if (dom.settingsHostAvailabilityInput) dom.settingsHostAvailabilityInput.value = settings.hostAvailability || 'local-only';
+  if (dom.settingsJournalMirrorPathInput) dom.settingsJournalMirrorPathInput.value = settings.localJournalMirrorPath || '';
+  if (dom.settingsUploadDestinationInput) dom.settingsUploadDestinationInput.value = settings.deviceUploadDestinationPath || '';
+  renderSettingsMediaFolders();
+  renderSettingsHostSummary();
+  updateSettingsProfileUi();
+}
+
+async function loadDesktopSettings() {
+  setSettingsDevicesStatus('Loading desktop settings...');
+  const [settingsPayload, cloudStatus, onboardingStatus] = await Promise.all([
+    fetchJson('/api/desktop/sync-settings'),
+    fetchJson('/api/desktop/cloud/status').catch((error) => ({ error: error.message })),
+    fetchJson('/api/desktop/onboarding/status').catch((error) => ({ error: error.message }))
+  ]);
+  state.desktopSettings = settingsPayload.settings || {};
+  state.desktopCloudStatus = cloudStatus;
+  state.desktopOnboardingStatus = onboardingStatus;
+  state.desktopCloudSignedIn = Boolean(cloudStatus?.signedIn);
+  hydrateDesktopSettingsForm();
+  if (cloudStatus?.error) setSettingsDevicesStatus(cloudStatus.error);
+  else setSettingsDevicesStatus(cloudStatus?.signedIn ? 'Desktop cloud connection is active.' : 'Desktop is running locally. Sign in from onboarding to connect cloud sync.');
+}
+
+function collectDesktopSettings() {
+  const current = state.desktopSettings || {};
+  const folders = Array.from(dom.settingsMediaFolders?.querySelectorAll('.settings-media-folder') || []).map((row) => desktopFolderTemplate({
+    id: row.dataset.folderId,
+    label: row.querySelector('[data-field="label"]').value.trim(),
+    path: row.querySelector('[data-field="path"]').value.trim(),
+    cloudPolicy: row.querySelector('[data-field="cloudPolicy"]').value,
+    enabled: row.querySelector('[data-field="enabled"]').checked
+  })).filter((folder) => folder.path);
+  return {
+    ...current,
+    deviceName: dom.settingsDeviceNameInput?.value.trim() || current.deviceName || '',
+    hostAvailability: dom.settingsHostAvailabilityInput?.value || current.hostAvailability || 'local-only',
+    localJournalMirrorPath: dom.settingsJournalMirrorPathInput?.value.trim() || '',
+    deviceUploadDestinationPath: dom.settingsUploadDestinationInput?.value.trim() || '',
+    mediaFolders: folders
+  };
+}
+
+async function saveDesktopSettingsFromPanel() {
+  if (!dom.settingsSaveDevicesButton) return;
+  try {
+    dom.settingsSaveDevicesButton.disabled = true;
+    setSettingsDevicesStatus('Saving devices and media settings...');
+    const payload = await postJson('/api/desktop/sync-settings', { settings: collectDesktopSettings() });
+    state.desktopSettings = payload.settings || state.desktopSettings;
+    hydrateDesktopSettingsForm();
+    setSettingsDevicesStatus(`Saved at ${new Date().toLocaleTimeString()}.`);
+  } catch (error) {
+    setSettingsDevicesStatus(error.message);
+  } finally {
+    dom.settingsSaveDevicesButton.disabled = false;
+  }
+}
+
+async function syncDesktopCloudFromPanel() {
+  if (!dom.settingsSyncNowButton) return;
+  try {
+    dom.settingsSyncNowButton.disabled = true;
+    setSettingsDevicesStatus('Syncing with Book of Life Cloud...');
+    const result = await postJson('/api/desktop/cloud/sync', {});
+    state.desktopCloudStatus = await fetchJson('/api/desktop/cloud/status');
+    renderSettingsHostSummary();
+    updateSettingsProfileUi();
+    setSettingsDevicesStatus(`Cloud sync complete. Pushed ${result.pushed || 0}, pulled ${result.pulled || 0}.`);
+  } catch (error) {
+    setSettingsDevicesStatus(error.message);
+  } finally {
+    dom.settingsSyncNowButton.disabled = false;
+  }
+}
+
+async function pickSettingsDirectory() {
+  if (window.bookOfLifeDesktop?.pickDirectory) {
+    const result = await window.bookOfLifeDesktop.pickDirectory();
+    return result?.canceled ? '' : result?.path || '';
+  }
+  return window.prompt('Enter the folder path') || '';
+}
+
 function syncSettingsAccountUi() {
   const accountEnabled = Boolean(state.authEnabled);
   dom.changePasswordButton?.classList.toggle('hidden', !accountEnabled);
-  dom.settingsAccountName?.classList.toggle('hidden', !accountEnabled || !state.sessionUsername);
-  if (dom.settingsAccountName) {
-    dom.settingsAccountName.textContent = state.sessionUsername ? `Signed in as ${state.sessionUsername}` : '';
-  }
+  updateSettingsProfileUi();
 }
 
 async function openProfileMenu(event) {
   event?.preventDefault?.();
-  if (!state.desktopCloudSignedIn) {
-    window.location.href = '/desktop/onboarding?force=splash';
-    return;
-  }
   openSettings();
 }
 
@@ -7330,6 +7591,9 @@ function attachEvents() {
   dom.settingsButton.addEventListener('click', openProfileMenu);
   dom.settingsCloseButton.addEventListener('click', closeSettings);
   dom.settingsModal.querySelector('.settings-backdrop').addEventListener('click', closeSettings);
+  dom.settingsPanelButtons.forEach((button) => {
+    button.addEventListener('click', () => setSettingsPanel(button.dataset.settingsPanel));
+  });
   dom.settingsHomeButton?.addEventListener('click', () => {
     closeSettings();
     goToNewestTop().catch(console.error);
@@ -7352,7 +7616,48 @@ function attachEvents() {
   dom.themeChoices.forEach((button) => {
     button.addEventListener('click', () => setThemeChoice(button.dataset.themeChoice));
   });
+  dom.backgroundChoices.forEach((button) => {
+    button.addEventListener('click', () => setBackgroundChoice(button.dataset.backgroundChoice));
+  });
+  dom.settingsAddMediaFolder?.addEventListener('click', () => {
+    state.desktopSettings = state.desktopSettings || {};
+    state.desktopSettings.mediaFolders = [...(state.desktopSettings.mediaFolders || []), desktopFolderTemplate()];
+    renderSettingsMediaFolders();
+  });
+  dom.settingsMediaFolders?.addEventListener('click', async (event) => {
+    const removeButton = event.target.closest('[data-action="remove-folder"]');
+    if (removeButton) {
+      removeButton.closest('.settings-media-folder')?.remove();
+      return;
+    }
+    const pickButton = event.target.closest('[data-action="pick-folder"]');
+    if (pickButton) {
+      const row = pickButton.closest('.settings-media-folder');
+      const folder = await pickSettingsDirectory();
+      if (folder) {
+        row.querySelector('[data-field="path"]').value = folder;
+        const label = row.querySelector('[data-field="label"]');
+        if (!label.value.trim()) label.value = folder.split(/[\\/]/).filter(Boolean).pop() || folder;
+      }
+    }
+  });
+  dom.settingsPickJournalMirror?.addEventListener('click', async () => {
+    const folder = await pickSettingsDirectory();
+    if (folder && dom.settingsJournalMirrorPathInput) dom.settingsJournalMirrorPathInput.value = folder;
+  });
+  dom.settingsPickUploadDestination?.addEventListener('click', async () => {
+    const folder = await pickSettingsDirectory();
+    if (folder && dom.settingsUploadDestinationInput) dom.settingsUploadDestinationInput.value = folder;
+  });
+  dom.settingsSaveDevicesButton?.addEventListener('click', () => {
+    saveDesktopSettingsFromPanel().catch(console.error);
+  });
+  dom.settingsSyncNowButton?.addEventListener('click', () => {
+    syncDesktopCloudFromPanel().catch(console.error);
+  });
   dom.logoutButton?.addEventListener('click', async () => {
+    const confirmed = window.confirm('Sign out of Book of Life? Images or entries may still be syncing. Make sure everything has finished before signing out.');
+    if (!confirmed) return;
     try {
       await fetchJson('/auth/logout', { method: 'POST' });
     } catch (error) {
@@ -8138,6 +8443,7 @@ function parseInitialRoute() {
 async function bootstrapApp() {
   renderTimelineLoadingState();
   applyTheme(state.theme);
+  applyBackgroundPreset(state.backgroundPreset);
   applyTimelineMediaScale(state.timelineMediaScale);
   normalizeGalleryLayoutControls();
   removeGalleryDetailControls();
@@ -8156,6 +8462,9 @@ async function bootstrapApp() {
   state.sessionUsername = typeof authStatus?.username === 'string' ? authStatus.username : '';
   const desktopStatus = await fetchJson('/api/desktop/onboarding/status').catch(() => null);
   if (desktopStatus?.desktop) {
+    state.desktopOnboardingStatus = desktopStatus;
+    state.desktopCloudStatus = desktopStatus.cloud || null;
+    state.desktopSettings = desktopStatus.settings || null;
     state.desktopCloudSignedIn = Boolean(desktopStatus.cloud?.signedIn);
   }
   syncSettingsAccountUi();

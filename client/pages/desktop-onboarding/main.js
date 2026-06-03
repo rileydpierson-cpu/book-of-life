@@ -1,29 +1,54 @@
 import '../../styles/desktop-onboarding.css';
 import { fetchJson, postJson } from '../../core/api.js';
 
-const steps = {
-  splash: document.querySelector('#splashStep'),
-  config: document.querySelector('#configStep'),
-  loader: document.querySelector('#loaderStep')
-};
-const authModeButtons = Array.from(document.querySelectorAll('[data-auth-mode]'));
-const cloudAuthButton = document.querySelector('#cloudAuthButton');
-const localOnlyButton = document.querySelector('#localOnlyButton');
-const backToSplash = document.querySelector('#backToSplash');
-const authStatus = document.querySelector('#authStatus');
-const configStatus = document.querySelector('#configStatus');
-const cloudConfigStatus = document.querySelector('#cloudConfigStatus');
+const panelTrack = document.querySelector('#panelTrack');
+const minimizeWindow = document.querySelector('#minimizeWindow');
+const closeWindow = document.querySelector('#closeWindow');
+const authForm = document.querySelector('#authForm');
+const cloudName = document.querySelector('#cloudName');
 const cloudEmail = document.querySelector('#cloudEmail');
 const cloudPassword = document.querySelector('#cloudPassword');
+const confirmPassword = document.querySelector('#confirmPassword');
+const nameField = document.querySelector('#nameField');
+const confirmField = document.querySelector('#confirmField');
+const cloudAuthButton = document.querySelector('#cloudAuthButton');
+const toggleAuthMode = document.querySelector('#toggleAuthMode');
+const localOnlyButton = document.querySelector('#localOnlyButton');
+const authStatus = document.querySelector('#authStatus');
+const actionEyebrow = document.querySelector('#actionEyebrow');
+const actionTitle = document.querySelector('#actionTitle');
+const actionStatus = document.querySelector('#actionStatus');
+const cloudConfigStatus = document.querySelector('#cloudConfigStatus');
 const mediaFolders = document.querySelector('#mediaFolders');
 const addMediaFolder = document.querySelector('#addMediaFolder');
-const continueButton = document.querySelector('#continueButton');
-const entryImportPath = document.querySelector('#entryImportPath');
-const journalMirrorPath = document.querySelector('#journalMirrorPath');
+const foldersNextButton = document.querySelector('#foldersNextButton');
+const foldersStatus = document.querySelector('#foldersStatus');
+const notesPath = document.querySelector('#notesPath');
+const pickNotesFolder = document.querySelector('#pickNotesFolder');
+const entryModeButtons = Array.from(document.querySelectorAll('[data-entry-mode]'));
+const skipNotesButton = document.querySelector('#skipNotesButton');
+const completeButton = document.querySelector('#completeButton');
+const configStatus = document.querySelector('#configStatus');
 const loaderMessage = document.querySelector('#loaderMessage');
 const loaderStage = document.querySelector('#loaderStage');
 const loaderStatus = document.querySelector('#loaderStatus');
 const progressFill = document.querySelector('#progressFill');
+const openLibraryButton = document.querySelector('#openLibraryButton');
+const folderDialog = document.querySelector('#folderDialog');
+const folderLabelInput = document.querySelector('#folderLabelInput');
+const folderPathInput = document.querySelector('#folderPathInput');
+const folderPolicyInput = document.querySelector('#folderPolicyInput');
+const changeFolderPath = document.querySelector('#changeFolderPath');
+const cancelFolderEdit = document.querySelector('#cancelFolderEdit');
+const saveFolderEdit = document.querySelector('#saveFolderEdit');
+
+const PANEL_INDEX = {
+  auth: 0,
+  action: 1,
+  folders: 2,
+  notes: 3,
+  progress: 4
+};
 
 const ENCOURAGEMENT = [
   'Mapping your life',
@@ -33,99 +58,159 @@ const ENCOURAGEMENT = [
   'Gathering the good stuff'
 ];
 
-let authMode = 'login';
-let cloudSignedIn = false;
-let settings = {};
-let messageIndex = 0;
-let messageTimer = null;
 const forceSplash = new URLSearchParams(window.location.search).has('force');
 
-function showStep(name) {
-  Object.entries(steps).forEach(([key, node]) => node.classList.toggle('hidden', key !== name));
+let authMode = 'login';
+let cloudSignedIn = false;
+let skippedLogin = false;
+let settings = {};
+let folders = [];
+let entryMode = 'copy';
+let editingFolderId = '';
+let messageIndex = 0;
+let messageTimer = null;
+let progressTimer = null;
+
+function showPanel(name) {
+  panelTrack.dataset.panel = name;
+  panelTrack.style.transform = `translateX(-${PANEL_INDEX[name] * 100}%)`;
 }
 
-function setAuthStatus(message) {
-  authStatus.textContent = message;
-  authStatus.classList.remove('is-error', 'is-success');
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
-function setAuthError(message) {
-  authStatus.textContent = message;
-  authStatus.classList.add('is-error');
-  authStatus.classList.remove('is-success');
-}
-
-function setAuthSuccess(message) {
-  authStatus.textContent = message;
-  authStatus.classList.add('is-success');
-  authStatus.classList.remove('is-error');
+function setAuthMessage(message, type = '') {
+  authStatus.textContent = message || '';
+  authStatus.classList.toggle('is-error', type === 'error');
+  authStatus.classList.toggle('is-success', type === 'success');
 }
 
 function setCloudConfigStatus(message, state = '') {
+  if (!cloudConfigStatus) return;
   cloudConfigStatus.textContent = message;
   cloudConfigStatus.classList.toggle('is-error', state === 'error');
   cloudConfigStatus.classList.toggle('is-success', state === 'success');
 }
 
-function setConfigStatus(message) {
-  configStatus.textContent = message;
-}
-
 function renderAuthMode() {
-  authModeButtons.forEach((button) => {
-    const active = button.dataset.authMode === authMode;
-    button.classList.toggle('is-active', active);
-    button.setAttribute('aria-selected', active ? 'true' : 'false');
-  });
-  cloudAuthButton.innerHTML = authMode === 'signup'
+  const signup = authMode === 'signup';
+  nameField.classList.toggle('hidden', !signup);
+  confirmField.classList.toggle('hidden', !signup);
+  cloudPassword.setAttribute('autocomplete', signup ? 'new-password' : 'current-password');
+  cloudAuthButton.innerHTML = signup
     ? '<i class="ph-bold ph-user-plus"></i><span>Sign up</span>'
     : '<i class="ph-bold ph-sign-in"></i><span>Log in</span>';
+  toggleAuthMode.textContent = signup ? 'Log in' : 'Sign up';
 }
 
 function baseCloudSettings() {
   return {
     ...settings,
-    deviceName: settings.deviceName || 'Book of Life Desktop',
+    deviceName: cloudName.value.trim() || settings.deviceName || 'Book of Life Desktop',
     libraryName: settings.libraryName || 'Book of Life'
   };
 }
 
-function folderRow(folder = {}) {
-  const id = folder.id || `media-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const row = document.createElement('div');
-  row.className = 'folder-row';
-  row.dataset.folderId = id;
-  row.innerHTML = `
-    <input data-field="label" placeholder="Folder label" value="${escapeAttribute(folder.label || '')}" />
-    <input data-field="path" placeholder="Choose a photo folder" readonly value="${escapeAttribute(folder.path || '')}" />
-    <button class="icon-button" type="button" data-action="pick-folder" title="Choose folder"><i class="ph-bold ph-folder-open"></i></button>
-    <button class="icon-button danger" type="button" data-action="remove-folder" title="Remove folder"><i class="ph-bold ph-trash"></i></button>
-  `;
-  return row;
+function folderPolicyLabel(policy) {
+  if (policy === 'all-originals') return 'Cloud originals';
+  return 'This device';
+}
+
+function folderStatusIcon(folder) {
+  if (skippedLogin || !cloudSignedIn) return '';
+  if (folder.cloudPolicy === 'all-originals') return '<span class="folder-status-icon"><i class="ph-fill ph-cloud"></i></span>';
+  return '<span class="folder-status-icon"><i class="ph-fill ph-hard-drives"></i></span>';
+}
+
+function createFolder(pathValue = '', overrides = {}) {
+  const label = overrides.label || pathValue.split(/[\\/]/).filter(Boolean).pop() || pathValue || 'Media folder';
+  return {
+    id: overrides.id || `media-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    label,
+    path: pathValue,
+    enabled: overrides.enabled !== false,
+    cloudPolicy: overrides.cloudPolicy || (cloudSignedIn ? 'metadata-only' : 'metadata-only')
+  };
 }
 
 function renderFolders() {
   mediaFolders.innerHTML = '';
-  const folders = Array.isArray(settings.mediaFolders) ? settings.mediaFolders : [];
-  folders.forEach((folder) => mediaFolders.appendChild(folderRow(folder)));
-  if (!folders.length) mediaFolders.appendChild(folderRow());
-}
-
-function escapeAttribute(value) {
-  return String(value || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  if (!folders.length) {
+    mediaFolders.innerHTML = '<p class="empty-state">No media folders selected.</p>';
+    return;
+  }
+  for (const folder of folders) {
+    const row = document.createElement('button');
+    row.className = 'folder-row';
+    row.type = 'button';
+    row.dataset.folderId = folder.id;
+    row.innerHTML = `
+      <span class="folder-icon-wrap"><i class="ph-duotone ph-folder-open"></i>${folderStatusIcon(folder)}</span>
+      <span class="folder-copy">
+        <strong>${escapeHtml(folder.label || 'Media folder')}</strong>
+        <small>${escapeHtml(folder.path || 'Choose a folder')}</small>
+      </span>
+      <span class="folder-policy">${escapeHtml(folderPolicyLabel(folder.cloudPolicy))}</span>
+      <span class="folder-delete" role="button" tabindex="0" data-action="remove-folder" title="Remove folder"><i class="ph-bold ph-trash"></i></span>
+    `;
+    mediaFolders.appendChild(row);
+  }
 }
 
 function collectMediaFolders() {
-  return Array.from(mediaFolders.querySelectorAll('.folder-row')).map((row) => ({
-    id: row.dataset.folderId,
-    label: row.querySelector('[data-field="label"]').value.trim(),
-    path: row.querySelector('[data-field="path"]').value.trim(),
-    enabled: true
-  })).filter((folder) => folder.path);
+  return folders
+    .filter((folder) => folder.path)
+    .map((folder) => ({
+      id: folder.id,
+      label: folder.label,
+      path: folder.path,
+      enabled: folder.enabled !== false,
+      cloudPolicy: cloudSignedIn ? folder.cloudPolicy : 'metadata-only'
+    }));
 }
 
-function selectedRadio(name) {
-  return document.querySelector(`input[name="${name}"]:checked`)?.value || '';
+function renderPolicyOptions() {
+  const cloudDisabled = !cloudSignedIn;
+  folderPolicyInput.innerHTML = `
+    <option value="metadata-only">Only on this device</option>
+    <option value="all-originals" ${cloudDisabled ? 'disabled' : ''}>Synced to cloud</option>
+  `;
+}
+
+function openFolderEditor(folderId) {
+  const folder = folders.find((item) => item.id === folderId);
+  if (!folder) return;
+  editingFolderId = folder.id;
+  renderPolicyOptions();
+  folderLabelInput.value = folder.label || '';
+  folderPathInput.value = folder.path || '';
+  folderPolicyInput.value = cloudSignedIn && folder.cloudPolicy === 'all-originals' ? 'all-originals' : 'metadata-only';
+  folderDialog.showModal();
+}
+
+function saveFolderEditor() {
+  const folder = folders.find((item) => item.id === editingFolderId);
+  if (!folder) return;
+  folder.label = folderLabelInput.value.trim() || folderPathInput.value.split(/[\\/]/).filter(Boolean).pop() || folderPathInput.value || 'Media folder';
+  folder.path = folderPathInput.value.trim();
+  folder.cloudPolicy = cloudSignedIn ? folderPolicyInput.value : 'metadata-only';
+  renderFolders();
+  folderDialog.close();
+}
+
+function renderEntryMode() {
+  entryModeButtons.forEach((button) => {
+    const active = button.dataset.entryMode === entryMode;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-checked', active ? 'true' : 'false');
+  });
+  completeButton.textContent = entryMode === 'mirror' ? 'Link' : 'Import';
 }
 
 async function pickDirectory() {
@@ -136,38 +221,103 @@ async function pickDirectory() {
   return window.prompt('Enter the folder path') || '';
 }
 
+async function openLibrary() {
+  if (window.bookOfLifeDesktop?.openLibrary) {
+    await window.bookOfLifeDesktop.openLibrary();
+    return;
+  }
+  window.location.href = '/';
+}
+
+function startMessageCycle() {
+  messageIndex = 0;
+  loaderMessage.textContent = ENCOURAGEMENT[messageIndex];
+  clearInterval(messageTimer);
+  messageTimer = setInterval(() => {
+    messageIndex = (messageIndex + 1) % ENCOURAGEMENT.length;
+    loaderMessage.textContent = ENCOURAGEMENT[messageIndex];
+  }, 1800);
+}
+
+function stopMessageCycle() {
+  clearInterval(messageTimer);
+  messageTimer = null;
+}
+
+async function pollIndexStatus({ allowOpen = false } = {}) {
+  clearTimeout(progressTimer);
+  try {
+    const payload = await fetchJson('/api/desktop/index/status', { cache: 'no-store' });
+    const status = payload.status || {};
+    const percent = Math.max(0, Math.min(100, Number(status.percent || 0)));
+    progressFill.style.width = `${percent}%`;
+    loaderStage.textContent = status.stage || 'Indexing library';
+    loaderStatus.textContent = status.error
+      ? status.error
+      : status.running
+        ? `${percent}% complete. You can open the app while this continues.`
+        : 'Your library is ready.';
+    openLibraryButton.classList.toggle('hidden', !allowOpen);
+    if (status.error) return;
+    if (status.running) {
+      progressTimer = setTimeout(() => pollIndexStatus({ allowOpen }), 900);
+      return;
+    }
+    stopMessageCycle();
+  } catch (error) {
+    loaderStatus.textContent = error.message;
+  }
+}
+
 async function loadStatus() {
   const payload = await fetchJson('/api/desktop/onboarding/status');
   settings = payload.settings || {};
   cloudSignedIn = Boolean(payload.cloud?.signedIn);
+  skippedLogin = !cloudSignedIn;
+  cloudEmail.value = settings.cloudSession?.email || '';
+  folders = Array.isArray(settings.mediaFolders)
+    ? settings.mediaFolders.map((folder) => createFolder(folder.path, folder))
+    : [];
+  renderFolders();
   if (payload.cloud?.configured) {
     setCloudConfigStatus('Book of Life Cloud is ready.', 'success');
     cloudAuthButton.disabled = false;
   } else {
-    setCloudConfigStatus('This desktop build is missing its Book of Life Cloud configuration.', 'error');
+    setCloudConfigStatus('Cloud sign in is unavailable in this build. Local setup still works.', 'error');
     cloudAuthButton.disabled = true;
   }
-  cloudEmail.value = settings.cloudSession?.email || '';
-  journalMirrorPath.value = settings.localJournalMirrorPath || '';
-  renderFolders();
   if (payload.complete && !forceSplash) {
-    window.location.href = '/';
+    if (payload.index?.running) {
+      showPanel('progress');
+      startMessageCycle();
+      await pollIndexStatus({ allowOpen: true });
+    } else {
+      await openLibrary();
+    }
     return;
   }
-  showStep('splash');
+  showPanel('auth');
 }
 
 async function connectCloud() {
   const email = cloudEmail.value.trim();
   const password = cloudPassword.value;
   if (!email || !password) {
-    setAuthError('Enter your email and password, or continue without logging in.');
-    if (!email) cloudEmail.focus();
-    else cloudPassword.focus();
+    setAuthMessage('Enter your email and password, or continue without login.', 'error');
+    (email ? cloudPassword : cloudEmail).focus();
     return;
   }
+  if (authMode === 'signup' && password !== confirmPassword.value) {
+    setAuthMessage('Passwords do not match.', 'error');
+    confirmPassword.focus();
+    return;
+  }
+  setAuthMessage('');
   cloudAuthButton.disabled = true;
-  setAuthStatus(authMode === 'signup' ? 'Creating your cloud account...' : 'Signing in...');
+  actionEyebrow.textContent = authMode === 'signup' ? 'Creating account' : 'Connecting';
+  actionTitle.textContent = authMode === 'signup' ? 'Creating your account' : 'Signing in';
+  actionStatus.textContent = 'Securing your library connection.';
+  showPanel('action');
   try {
     const endpoint = authMode === 'signup' ? '/api/desktop/cloud/signup' : '/api/desktop/cloud/connect';
     const payload = await postJson(endpoint, {
@@ -175,13 +325,21 @@ async function connectCloud() {
       email,
       password
     });
-    cloudPassword.value = '';
     settings = payload.settings || settings;
     cloudSignedIn = true;
-    setAuthSuccess(`Connected as ${settings.cloudSession?.email || email}.`);
-    showStep('config');
+    skippedLogin = false;
+    cloudPassword.value = '';
+    confirmPassword.value = '';
+    folders = folders.map((folder) => ({
+      ...folder,
+      cloudPolicy: folder.cloudPolicy || 'metadata-only'
+    }));
+    renderFolders();
+    actionStatus.textContent = 'Connected. Choose the folders to watch next.';
+    setTimeout(() => showPanel('folders'), 420);
   } catch (error) {
-    setAuthError(formatCloudAuthError(error));
+    setAuthMessage(formatCloudAuthError(error), 'error');
+    showPanel('auth');
   } finally {
     cloudAuthButton.disabled = false;
   }
@@ -189,8 +347,11 @@ async function connectCloud() {
 
 function startLocalSetup() {
   cloudSignedIn = false;
-  setAuthSuccess('Device-only setup selected. Nothing will be uploaded unless you connect later.');
-  showStep('config');
+  skippedLogin = true;
+  folders = folders.map((folder) => ({ ...folder, cloudPolicy: 'metadata-only' }));
+  renderFolders();
+  setAuthMessage('Continuing locally. Nothing will upload unless you connect later.', 'success');
+  showPanel('folders');
 }
 
 function formatCloudAuthError(error) {
@@ -205,108 +366,124 @@ function formatCloudAuthError(error) {
   return message;
 }
 
-async function completeOnboarding() {
-  continueButton.disabled = true;
-  const storageMode = selectedRadio('storageMode') || 'device-only';
-  if (storageMode === 'cloud-originals' && !cloudSignedIn) {
-    setConfigStatus('Sign in before storing originals in the cloud.');
-    continueButton.disabled = false;
+function proceedToNotes() {
+  foldersStatus.textContent = folders.length
+    ? 'Folders saved for setup.'
+    : 'You can add folders later from settings.';
+  showPanel('notes');
+}
+
+async function completeOnboarding(selectedEntryMode = entryMode) {
+  const pathValue = notesPath.value.trim();
+  const entryImportMode = selectedEntryMode === 'none' || !pathValue ? 'none' : selectedEntryMode;
+  if (selectedEntryMode !== 'none' && !pathValue) {
+    configStatus.textContent = 'Choose a notes folder or skip this step.';
+    notesPath.focus();
     return;
   }
-  setConfigStatus('Saving setup...');
+
+  completeButton.disabled = true;
+  skipNotesButton.disabled = true;
+  showPanel('progress');
+  startMessageCycle();
+  progressFill.style.width = '8%';
+  loaderStage.textContent = entryImportMode === 'mirror'
+    ? 'Linking notes'
+    : entryImportMode === 'copy'
+      ? 'Importing notes'
+      : 'Saving setup';
+  loaderStatus.textContent = 'Saving your desktop setup.';
+
   try {
     await postJson('/api/desktop/onboarding/complete', {
-      storageMode,
-      entryImportMode: selectedRadio('entryMode') || 'none',
+      storageMode: collectMediaFolders().some((folder) => folder.cloudPolicy === 'all-originals') ? 'cloud-originals' : 'device-only',
+      entryImportMode,
       mediaFolders: collectMediaFolders(),
-      entryImportPath: entryImportPath.value.trim(),
-      journalMirrorPath: journalMirrorPath.value.trim()
+      entryImportPath: entryImportMode === 'copy' ? pathValue : '',
+      journalMirrorPath: entryImportMode === 'mirror' ? pathValue : ''
     });
-    showLoader();
+    loaderStatus.textContent = 'Opening Book of Life. Indexing will continue in the background.';
+    progressFill.style.width = '100%';
+    stopMessageCycle();
+    setTimeout(() => openLibrary(), 550);
   } catch (error) {
-    setConfigStatus(error.message);
-    continueButton.disabled = false;
+    stopMessageCycle();
+    configStatus.textContent = error.message;
+    showPanel('notes');
+  } finally {
+    completeButton.disabled = false;
+    skipNotesButton.disabled = false;
   }
 }
 
-function showLoader() {
-  showStep('loader');
-  messageIndex = 0;
-  loaderMessage.textContent = ENCOURAGEMENT[messageIndex];
-  clearInterval(messageTimer);
-  messageTimer = setInterval(() => {
-    messageIndex = (messageIndex + 1) % ENCOURAGEMENT.length;
-    loaderMessage.textContent = ENCOURAGEMENT[messageIndex];
-  }, 1800);
-  pollIndexStatus();
-}
+minimizeWindow.addEventListener('click', () => window.bookOfLifeDesktop?.minimizeWindow?.());
+closeWindow.addEventListener('click', () => window.bookOfLifeDesktop?.closeWindow?.());
+openLibraryButton.addEventListener('click', openLibrary);
 
-async function pollIndexStatus() {
-  try {
-    const payload = await fetchJson('/api/desktop/index/status', { cache: 'no-store' });
-    const status = payload.status || {};
-    const percent = Math.max(0, Math.min(100, Number(status.percent || 0)));
-    progressFill.style.width = `${percent}%`;
-    loaderStage.textContent = status.stage || 'Indexing library';
-    loaderStatus.textContent = status.error
-      ? status.error
-      : `${percent}% complete`;
-    if (status.error) return;
-    if (!status.running && (status.completedAt || percent >= 100)) {
-      clearInterval(messageTimer);
-      window.location.href = '/';
-      return;
-    }
-  } catch (error) {
-    loaderStatus.textContent = error.message;
+toggleAuthMode.addEventListener('click', () => {
+  authMode = authMode === 'login' ? 'signup' : 'login';
+  setAuthMessage('');
+  renderAuthMode();
+});
+
+authForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  connectCloud();
+});
+
+localOnlyButton.addEventListener('click', startLocalSetup);
+
+addMediaFolder.addEventListener('click', async () => {
+  const folderPath = await pickDirectory();
+  if (!folderPath) return;
+  const folder = createFolder(folderPath);
+  folders = [...folders, folder];
+  renderFolders();
+  openFolderEditor(folder.id);
+});
+
+foldersNextButton.addEventListener('click', proceedToNotes);
+
+mediaFolders.addEventListener('click', (event) => {
+  const removeButton = event.target.closest('[data-action="remove-folder"]');
+  if (removeButton) {
+    event.stopPropagation();
+    const row = removeButton.closest('.folder-row');
+    folders = folders.filter((folder) => folder.id !== row?.dataset.folderId);
+    renderFolders();
+    return;
   }
-  setTimeout(pollIndexStatus, 700);
-}
+  const row = event.target.closest('.folder-row');
+  if (row) openFolderEditor(row.dataset.folderId);
+});
 
-authModeButtons.forEach((button) => {
+pickNotesFolder.addEventListener('click', async () => {
+  const folder = await pickDirectory();
+  if (folder) notesPath.value = folder;
+});
+
+entryModeButtons.forEach((button) => {
   button.addEventListener('click', () => {
-    authMode = button.dataset.authMode === 'signup' ? 'signup' : 'login';
-    renderAuthMode();
+    entryMode = button.dataset.entryMode === 'mirror' ? 'mirror' : 'copy';
+    renderEntryMode();
   });
 });
 
-cloudAuthButton.addEventListener('click', connectCloud);
-localOnlyButton.addEventListener('click', startLocalSetup);
-backToSplash.addEventListener('click', () => showStep('splash'));
-addMediaFolder.addEventListener('click', () => mediaFolders.appendChild(folderRow()));
-continueButton.addEventListener('click', completeOnboarding);
+skipNotesButton.addEventListener('click', () => completeOnboarding('none'));
+completeButton.addEventListener('click', () => completeOnboarding(entryMode));
 
-document.addEventListener('click', async (event) => {
-  const pickTarget = event.target.closest('[data-pick-target]');
-  if (pickTarget) {
-    const target = document.querySelector(`#${pickTarget.dataset.pickTarget}`);
-    const folder = await pickDirectory();
-    if (target && folder) target.value = folder;
-    return;
-  }
-
-  const folderPick = event.target.closest('[data-action="pick-folder"]');
-  if (folderPick) {
-    const row = folderPick.closest('.folder-row');
-    const folder = await pickDirectory();
-    if (folder) {
-      row.querySelector('[data-field="path"]').value = folder;
-      const label = row.querySelector('[data-field="label"]');
-      if (!label.value.trim()) label.value = folder.split(/[\\/]/).filter(Boolean).pop() || folder;
-    }
-    return;
-  }
-
-  const removeFolder = event.target.closest('[data-action="remove-folder"]');
-  if (removeFolder) {
-    removeFolder.closest('.folder-row')?.remove();
-    if (!mediaFolders.querySelector('.folder-row')) mediaFolders.appendChild(folderRow());
-  }
+changeFolderPath.addEventListener('click', async () => {
+  const folder = await pickDirectory();
+  if (folder) folderPathInput.value = folder;
 });
 
+cancelFolderEdit.addEventListener('click', () => folderDialog.close());
+saveFolderEdit.addEventListener('click', saveFolderEditor);
+
 renderAuthMode();
+renderEntryMode();
 loadStatus().catch((error) => {
   setCloudConfigStatus('Could not read desktop status.', 'error');
-  setAuthError(error.message);
-  showStep('splash');
+  setAuthMessage(error.message, 'error');
+  showPanel('auth');
 });
