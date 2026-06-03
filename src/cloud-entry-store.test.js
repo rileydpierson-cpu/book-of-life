@@ -43,4 +43,25 @@ describe('cloud entry store', () => {
     expect(conflicted.conflict).toBe(true);
     expect(store.getRevisions({ userId: 'user-a', libraryId: 'lib' }, '2026-05-11')).toHaveLength(2);
   });
+
+  it('tracks dirty entries and can mark pulled entries clean', async () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bol-cloud-entries-'));
+    const scope = { userId: 'user-a', libraryId: 'lib', deviceId: 'desktop' };
+    const store = new CloudEntryStore({ cacheDir });
+    await store.init();
+    await store.saveEntry(scope, {
+      isoDate: '2026-05-12',
+      raw: 'Local edit'
+    });
+    await store.saveEntry(scope, {
+      isoDate: '2026-05-13',
+      raw: 'Pulled edit',
+      cloudVersion: 7,
+      markClean: true
+    });
+    expect(store.listDirtyEntries(scope).map((entry) => entry.isoDate)).toEqual(['2026-05-12']);
+    await store.markEntryClean(scope, '2026-05-12', { cloudVersion: 3 });
+    expect(store.listDirtyEntries(scope)).toHaveLength(0);
+    expect(store.getEntry(scope, '2026-05-13').cloudVersion).toBe(7);
+  });
 });

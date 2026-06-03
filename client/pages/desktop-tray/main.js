@@ -3,9 +3,12 @@ import { fetchJson, postJson } from '../../core/api.js';
 
 const accountLine = document.querySelector('#accountLine');
 const loginStatus = document.querySelector('#loginStatus');
+const indexCard = document.querySelector('#indexCard');
 const indexStatus = document.querySelector('#indexStatus');
 const indexProgress = document.querySelector('#indexProgress');
 const syncStatus = document.querySelector('#syncStatus');
+const syncProgress = document.querySelector('#syncProgress');
+const syncProgressFill = syncProgress?.querySelector('span');
 const storageStatus = document.querySelector('#storageStatus');
 const storageProgress = document.querySelector('#storageProgress');
 const trayError = document.querySelector('#trayError');
@@ -13,8 +16,10 @@ const openLibrary = document.querySelector('#openLibrary');
 const openOnboarding = document.querySelector('#openOnboarding');
 const syncNow = document.querySelector('#syncNow');
 const quitApp = document.querySelector('#quitApp');
+const closeTray = document.querySelector('#closeTray');
 
 let pollTimer = null;
+let lastPayload = null;
 
 function formatBytes(bytes) {
   const value = Math.max(0, Number(bytes || 0));
@@ -24,10 +29,18 @@ function formatBytes(bytes) {
 }
 
 function formatTime(value) {
-  if (!value) return 'Not synced yet';
+  if (!value) return 'Preparing sync';
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return 'Not synced yet';
-  return `Last sync ${date.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`;
+  if (Number.isNaN(date.getTime())) return 'Preparing sync';
+  const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
+  if (seconds < 45) return 'Synced just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `Synced ${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `Synced ${hours} hr ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `Synced ${days} day${days === 1 ? '' : 's'} ago`;
+  return `Synced ${date.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`;
 }
 
 function setProgress(node, percent) {
@@ -35,8 +48,10 @@ function setProgress(node, percent) {
 }
 
 function renderStatus(payload) {
+  lastPayload = payload;
   const cloud = payload.cloud || {};
   const index = payload.index || {};
+  const sync = payload.sync || {};
   const storage = payload.storage || {};
   trayError.textContent = cloud.error || '';
 
@@ -44,6 +59,7 @@ function renderStatus(payload) {
   loginStatus.textContent = cloud.signedIn ? `Signed in${cloud.email ? ` as ${cloud.email}` : ''}` : 'Not signed in';
 
   const indexPercent = Math.max(0, Math.min(100, Number(index.percent || 0)));
+  indexCard.classList.toggle('hidden', !index.running && !index.error);
   indexStatus.textContent = index.error
     ? index.error
     : index.running
@@ -51,8 +67,25 @@ function renderStatus(payload) {
       : 'Idle';
   setProgress(indexProgress, index.running ? indexPercent : 100);
 
-  syncStatus.textContent = cloud.signedIn ? formatTime(cloud.lastCloudSyncAt) : 'Sign in to sync';
-  syncNow.disabled = !cloud.signedIn;
+  if (!cloud.signedIn) {
+    syncStatus.textContent = 'Sign in to sync';
+    syncProgress.classList.add('hidden');
+  } else if (sync.running) {
+    const total = Math.max(0, Number(sync.total || 0));
+    const percent = Math.max(0, Math.min(100, Number(sync.percent || 0)));
+    syncStatus.textContent = sync.message || (sync.phase && String(sync.phase).startsWith('delta') ? 'Checking for changes...' : 'Syncing...');
+    if (sync.queued && !sync.message) syncStatus.textContent = 'Syncing... another sync queued';
+    syncProgress.classList.remove('hidden');
+    syncProgress.classList.toggle('is-indeterminate', !total);
+    if (syncProgressFill) syncProgressFill.style.width = total ? `${percent}%` : '';
+  } else if (sync.error) {
+    syncStatus.textContent = sync.error;
+    syncProgress.classList.add('hidden');
+  } else {
+    syncStatus.textContent = formatTime(sync.lastSyncedAt || cloud.lastCloudSyncAt);
+    syncProgress.classList.add('hidden');
+  }
+  syncNow.disabled = !cloud.signedIn || Boolean(sync.running);
 
   if (!cloud.signedIn || storage.available === false) {
     storageStatus.textContent = cloud.signedIn ? 'Unavailable' : 'Sign in for cloud storage';
@@ -77,18 +110,49 @@ async function refreshStatus() {
 openLibrary.addEventListener('click', () => window.bookOfLifeDesktop?.openLibrary?.());
 openOnboarding.addEventListener('click', () => window.bookOfLifeDesktop?.openOnboarding?.());
 quitApp.addEventListener('click', () => window.bookOfLifeDesktop?.quitApp?.());
+closeTray.addEventListener('click', () => window.bookOfLifeDesktop?.closeWindow?.());
 
 syncNow.addEventListener('click', async () => {
   try {
     syncNow.disabled = true;
     syncStatus.textContent = 'Syncing...';
-    await postJson('/api/desktop/cloud/sync', {});
-    await refreshStatus();
+    syncProgress.classList.remove('hidden');
+    const result = await postJson('/api/desktop/cloud/sync', {});
+    renderStatus({
+      ...(lastPayload || {}),
+      cloud: {
+        ...((lastPayload || {}).cloud || {}),
+        ...(result.status || {})
+      },
+      sync: result.sync || {
+        running: false,
+        queued: Boolean(result.queued),
+        lastSyncedAt: result.syncedAt || result.status?.lastCloudSyncAt || ''
+      }
+    });
   } catch (error) {
     trayError.textContent = error.message;
   } finally {
     refreshStatus().catch(() => {});
   }
 });
+
+window.bookOfLifeDesktop?.onTrayStatusSnapshot?.((payload) => {
+  if (payload?.ok) {
+    renderStatus(payload);
+  } else if (payload?.error) {
+    trayError.textContent = payload.error;
+  }
+});
+
+window.bookOfLifeDesktop?.getTrayStatusSnapshot?.()
+  .then((payload) => {
+    if (payload?.ok) {
+      renderStatus(payload);
+    } else if (payload?.error) {
+      trayError.textContent = payload.error;
+    }
+  })
+  .catch(() => {});
 
 refreshStatus();

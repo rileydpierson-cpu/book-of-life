@@ -12,11 +12,31 @@ function normalizeCloudStorageUsage(usage = {}) {
   };
 }
 
+function normalizeSyncStatus(syncStatus = {}) {
+  return {
+    running: Boolean(syncStatus.running),
+    queued: Boolean(syncStatus.queued),
+    reason: String(syncStatus.reason || ''),
+    startedAt: syncStatus.startedAt || '',
+    completedAt: syncStatus.completedAt || '',
+    lastSyncedAt: syncStatus.lastSyncedAt || syncStatus.syncedAt || '',
+    pushed: Math.max(0, Number(syncStatus.pushed || 0)),
+    pulled: Math.max(0, Number(syncStatus.pulled || 0)),
+    phase: String(syncStatus.phase || ''),
+    current: Math.max(0, Number(syncStatus.current || 0)),
+    total: Math.max(0, Number(syncStatus.total || 0)),
+    percent: Math.max(0, Math.min(100, Number(syncStatus.percent || 0))),
+    message: String(syncStatus.message || ''),
+    error: String(syncStatus.error || '')
+  };
+}
+
 function desktopTrayStatus({
   localService = {},
   cloudStatus = {},
   indexStatus = {},
-  storageUsage = {}
+  storageUsage = {},
+  syncStatus = {}
 } = {}) {
   const signedIn = Boolean(cloudStatus.signedIn);
   return {
@@ -37,6 +57,10 @@ function desktopTrayStatus({
       error: cloudStatus.error || ''
     },
     index: indexStatus || {},
+    sync: normalizeSyncStatus({
+      ...syncStatus,
+      lastSyncedAt: syncStatus.lastSyncedAt || cloudStatus.lastCloudSyncAt || ''
+    }),
     storage: normalizeCloudStorageUsage(signedIn
       ? storageUsage
       : { available: false, usedBytes: 0, limitBytes: CLOUD_STORAGE_LIMIT_BYTES })
@@ -46,5 +70,6 @@ function desktopTrayStatus({
 module.exports = {
   CLOUD_STORAGE_LIMIT_BYTES,
   desktopTrayStatus,
+  normalizeSyncStatus,
   normalizeCloudStorageUsage
 };

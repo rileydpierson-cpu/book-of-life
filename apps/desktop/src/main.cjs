@@ -30,6 +30,8 @@ let serverExit = null;
 let appQuitting = false;
 let intentionalServerStop = false;
 let restartAttempts = 0;
+let trayStatusSnapshot = null;
+let trayStatusTimer = null;
 const serverLog = {
   stdout: [],
   stderr: []
@@ -208,6 +210,41 @@ async function waitForLocalHost(retries = 100) {
   return false;
 }
 
+async function refreshTrayStatusSnapshot() {
+  if (!serverProcess) return trayStatusSnapshot;
+  try {
+    const response = await fetch(`${baseUrl}/api/desktop/tray/status`, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`Tray status failed (${response.status})`);
+    trayStatusSnapshot = await response.json();
+    if (trayWindow && !trayWindow.isDestroyed()) {
+      trayWindow.webContents.send('book-of-life:tray-status-snapshot', trayStatusSnapshot);
+    }
+  } catch (error) {
+    trayStatusSnapshot = {
+      ok: false,
+      error: error.message || 'Tray status unavailable.'
+    };
+    if (trayWindow && !trayWindow.isDestroyed()) {
+      trayWindow.webContents.send('book-of-life:tray-status-snapshot', trayStatusSnapshot);
+    }
+  }
+  return trayStatusSnapshot;
+}
+
+function startTrayStatusCache() {
+  clearInterval(trayStatusTimer);
+  refreshTrayStatusSnapshot().catch(() => {});
+  trayStatusTimer = setInterval(() => {
+    refreshTrayStatusSnapshot().catch(() => {});
+  }, 2000);
+  trayStatusTimer.unref?.();
+}
+
+function sendTrayStatusSnapshot() {
+  if (!trayWindow || trayWindow.isDestroyed() || !trayStatusSnapshot) return;
+  trayWindow.webContents.send('book-of-life:tray-status-snapshot', trayStatusSnapshot);
+}
+
 function createWindow() {
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore();
@@ -297,6 +334,7 @@ function createTrayWindow() {
   trayWindow.on('closed', () => {
     trayWindow = null;
   });
+  trayWindow.webContents.on('did-finish-load', sendTrayStatusSnapshot);
   trayWindow.loadURL(`${baseUrl}/desktop/tray`);
   return trayWindow;
 }
@@ -309,33 +347,39 @@ function validTrayBounds(bounds) {
     Number(bounds.height || 0) > 0;
 }
 
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(value, max));
+}
+
 function positionTrayWindow(clickBounds = null) {
   const win = createTrayWindow();
   const cursorPoint = screen.getCursorScreenPoint();
-  const trayBounds = validTrayBounds(clickBounds)
-    ? clickBounds
-    : validTrayBounds(tray?.getBounds?.())
-      ? tray.getBounds()
-      : {
-        x: cursorPoint.x - 8,
-        y: cursorPoint.y - 8,
-        width: 16,
-        height: 16
-      };
-  const display = screen.getDisplayNearestPoint({
-    x: trayBounds.x + Math.round(trayBounds.width / 2),
-    y: trayBounds.y + Math.round(trayBounds.height / 2)
-  });
+  const anchorPoint = validTrayBounds(clickBounds)
+    ? {
+        x: clickBounds.x + (clickBounds.width / 2),
+        y: clickBounds.y + (clickBounds.height / 2)
+      }
+    : cursorPoint;
+  const display = screen.getDisplayNearestPoint(anchorPoint);
   const workArea = display.workArea;
   const size = win.getBounds();
-  const x = Math.max(workArea.x + 8, Math.min(
-    Math.round(trayBounds.x + (trayBounds.width / 2) - (size.width / 2)),
-    workArea.x + workArea.width - size.width - 8
-  ));
-  const y = trayBounds.y < workArea.y + (workArea.height / 2)
-    ? Math.min(trayBounds.y + trayBounds.height + 8, workArea.y + workArea.height - size.height - 8)
-    : Math.max(workArea.y + 8, trayBounds.y - size.height - 8);
-  win.setPosition(x, Math.round(y));
+  const margin = 8;
+  const anchorIsRight = anchorPoint.x > workArea.x + (workArea.width / 2);
+  const desiredX = anchorIsRight
+    ? anchorPoint.x - size.width + 28
+    : anchorPoint.x - 28;
+  const desiredY = workArea.y + workArea.height - size.height - margin;
+  const x = clamp(
+    Math.round(desiredX),
+    workArea.x + margin,
+    workArea.x + workArea.width - size.width - margin
+  );
+  const y = clamp(
+    Math.round(desiredY),
+    workArea.y + margin,
+    workArea.y + workArea.height - size.height - margin
+  );
+  win.setPosition(x, y);
 }
 
 function toggleTrayWindow(clickBounds = null) {
@@ -345,6 +389,8 @@ function toggleTrayWindow(clickBounds = null) {
     return;
   }
   positionTrayWindow(clickBounds);
+  sendTrayStatusSnapshot();
+  refreshTrayStatusSnapshot().catch(() => {});
   win.show();
   win.focus();
 }
@@ -454,6 +500,12 @@ ipcMain.handle('book-of-life:pick-directory', async (event) => {
   };
 });
 
+ipcMain.handle('book-of-life:tray-status-snapshot', async (event) => {
+  const senderUrl = event.senderFrame?.url || '';
+  if (!senderUrl.startsWith(baseUrl)) return { ok: false };
+  return trayStatusSnapshot || refreshTrayStatusSnapshot();
+});
+
 ipcMain.handle('book-of-life:window-control', async (event, action) => {
   const senderUrl = event.senderFrame?.url || '';
   if (!senderUrl.startsWith(baseUrl)) return { ok: false };
@@ -506,6 +558,7 @@ app.whenReady().then(async () => {
   if (ready) restartAttempts = 0;
   installMenu();
   installTray();
+  if (ready) startTrayStatusCache();
   if (ready) {
     createOnboardingWindow();
   } else {
@@ -526,6 +579,7 @@ app.on('activate', () => {
 
 app.on('before-quit', () => {
   appQuitting = true;
+  clearInterval(trayStatusTimer);
   if (serverProcess) {
     serverProcess.kill();
     serverProcess = null;

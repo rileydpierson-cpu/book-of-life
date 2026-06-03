@@ -19,5 +19,14 @@ contextBridge.exposeInMainWorld('bookOfLifeDesktop', {
   },
   async quitApp() {
     return ipcRenderer.invoke('book-of-life:window-control', 'quit');
+  },
+  async getTrayStatusSnapshot() {
+    return ipcRenderer.invoke('book-of-life:tray-status-snapshot');
+  },
+  onTrayStatusSnapshot(callback) {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on('book-of-life:tray-status-snapshot', listener);
+    return () => ipcRenderer.removeListener('book-of-life:tray-status-snapshot', listener);
   }
 });

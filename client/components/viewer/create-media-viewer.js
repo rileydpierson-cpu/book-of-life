@@ -354,6 +354,7 @@ export function createMediaViewer(options) {
         fileNameValidationState: 'idle',
         fileNameValidationTimer: 0,
         fileNameValidationToken: 0,
+        cloudStatusToken: 0,
         previewHideTimer: 0,
         saveQueue: Promise.resolve(),
         suppressClickUntil: 0,
@@ -502,6 +503,15 @@ export function createMediaViewer(options) {
                 <span class="viewer-field-label">Resolution / Size</span>
                 <strong class="viewer-field-static-value" data-role="details-meta"></strong>
               </div>
+
+              <div class="viewer-field viewer-cloud-field">
+                <span class="viewer-field-label">Cloud Original</span>
+                <span class="viewer-field-control viewer-cloud-control">
+                  <span class="viewer-cloud-status" data-role="cloud-status">${renderPhIcon('cloud', { variant: 'duotone' })}<span data-role="cloud-label">Checking</span></span>
+                  <button class="viewer-cloud-toggle" data-role="cloud-toggle" type="button" aria-pressed="false">Sync</button>
+                </span>
+                <span class="viewer-cloud-progress hidden" data-role="cloud-progress"><span data-role="cloud-progress-fill"></span></span>
+              </div>
             </div>
           </aside>
         </div>
@@ -546,6 +556,11 @@ export function createMediaViewer(options) {
         detailsClose: this.root.querySelector('[data-role="details-close"]'),
         detailsHandle: this.root.querySelector('[data-role="details-handle"]'),
         detailsMeta: this.root.querySelector('[data-role="details-meta"]'),
+        cloudStatus: this.root.querySelector('[data-role="cloud-status"]'),
+        cloudLabel: this.root.querySelector('[data-role="cloud-label"]'),
+        cloudToggle: this.root.querySelector('[data-role="cloud-toggle"]'),
+        cloudProgress: this.root.querySelector('[data-role="cloud-progress"]'),
+        cloudProgressFill: this.root.querySelector('[data-role="cloud-progress-fill"]'),
         fileName: this.root.querySelector('[data-role="file-name"]'),
         fileExtension: this.root.querySelector('[data-role="file-extension"]'),
         description: this.root.querySelector('[data-role="description"]'),
@@ -645,6 +660,9 @@ export function createMediaViewer(options) {
       });
       this.dom.timeTrigger.addEventListener('click', () => {
         this.pickTime().catch((error) => this.handleError(error));
+      });
+      this.dom.cloudToggle.addEventListener('click', () => {
+        this.toggleCloudOriginal().catch((error) => this.handleError(error));
       });
       this.dom.description.addEventListener('keydown', (event) => {
         if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
@@ -2589,6 +2607,60 @@ export function createMediaViewer(options) {
         : renderPhIcon('heart', { variant: 'regular' });
     }
 
+    renderCloudOriginalStatus(cloud = {}, { loading = false } = {}) {
+      const status = String(cloud.status || 'local');
+      const desired = Boolean(cloud.desired);
+      const total = Math.max(0, Number(cloud.total || 0));
+      const current = Math.max(0, Number(cloud.current || 0));
+      const percent = total ? Math.max(0, Math.min(100, Math.round((current / total) * 100))) : 0;
+      let label = 'Local only';
+      if (loading) label = 'Checking';
+      else if (status === 'queued') label = 'Queued for cloud';
+      else if (status === 'uploading') label = 'Uploading original';
+      else if (status === 'cloud') label = 'Stored in cloud';
+      else if (status === 'removing') label = 'Removing from cloud';
+      else if (status === 'error') label = cloud.lastError || 'Cloud sync failed';
+      else if (desired) label = 'Queued for cloud';
+
+      this.dom.cloudLabel.textContent = label;
+      this.dom.cloudToggle.disabled = loading || status === 'uploading' || status === 'removing';
+      this.dom.cloudToggle.textContent = status === 'cloud' || desired ? 'Unsync' : 'Sync';
+      this.dom.cloudToggle.setAttribute('aria-pressed', status === 'cloud' || desired ? 'true' : 'false');
+      this.dom.cloudStatus.classList.toggle('is-cloud', status === 'cloud');
+      this.dom.cloudStatus.classList.toggle('is-error', status === 'error');
+      this.dom.cloudProgress.classList.toggle('hidden', status !== 'uploading' && status !== 'queued' && status !== 'removing');
+      this.dom.cloudProgressFill.style.width = status === 'uploading' ? `${percent || 8}%` : '100%';
+    }
+
+    async refreshCloudOriginalStatus(item = this.getCurrentItem()) {
+      if (!item || typeof this.options.onLoadCloudOriginalStatus !== 'function') {
+        this.renderCloudOriginalStatus({}, { loading: false });
+        return;
+      }
+      const token = ++this.state.cloudStatusToken;
+      this.renderCloudOriginalStatus(item.cloudOriginal || {}, { loading: true });
+      const result = await this.options.onLoadCloudOriginalStatus(item, this);
+      if (token !== this.state.cloudStatusToken) return;
+      item.cloudOriginal = result?.cloud || result || {};
+      this.renderCloudOriginalStatus(item.cloudOriginal);
+    }
+
+    async toggleCloudOriginal() {
+      const item = this.getCurrentItem();
+      if (!item || typeof this.options.onToggleCloudOriginal !== 'function') return;
+      const current = item.cloudOriginal || {};
+      const nextDesired = !(current.desired || current.status === 'cloud');
+      this.renderCloudOriginalStatus({
+        ...current,
+        desired: nextDesired,
+        status: nextDesired ? 'queued' : 'removing'
+      });
+      const result = await this.options.onToggleCloudOriginal(item, nextDesired, this);
+      item.cloudOriginal = result?.cloud || result || {};
+      this.renderCloudOriginalStatus(item.cloudOriginal);
+      window.setTimeout(() => this.refreshCloudOriginalStatus(item).catch((error) => this.handleError(error)), 1400);
+    }
+
     renderDetails(item) {
       const resolution = item?.width && item?.height ? `${item.width} × ${item.height}` : '-';
       const size = formatFileSize(item?.size) || '-';
@@ -2612,6 +2684,7 @@ export function createMediaViewer(options) {
       this.state.descriptionDirty = false;
       this.updateMobileDetailsHeight();
       this.updateLikeButton(item);
+      this.refreshCloudOriginalStatus(item).catch((error) => this.handleError(error));
       this.updateStatus(item);
       this.applyDetailsProgress(this.state.detailsProgress, { immediate: true });
     }

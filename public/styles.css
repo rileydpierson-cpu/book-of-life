@@ -1794,7 +1794,6 @@ body[data-active-view="calendar"]::-webkit-scrollbar {
   z-index: 1;
   display: inline-block;
   padding-right: 14px;
-  background: var(--bg);
 }
 
 .day-block {
@@ -3709,6 +3708,60 @@ section.timeline-unit.is-placeholder {
   border-radius: 999px;
   background: rgba(255,255,255,0.4);
   margin: 0 auto 10px;
+}
+.viewer-cloud-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.viewer-cloud-status {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(255,255,255,0.78);
+  font-weight: 700;
+}
+.viewer-cloud-status.is-cloud {
+  color: #c9f7df;
+}
+.viewer-cloud-status.is-error {
+  color: #ffd0d4;
+}
+.viewer-cloud-toggle {
+  min-height: 34px;
+  min-width: 74px;
+  padding: 0 12px;
+  border: 1px solid rgba(255,255,255,0.24);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.12);
+  color: #fff;
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+.viewer-cloud-toggle[aria-pressed="true"] {
+  background: rgba(201,247,223,0.18);
+  border-color: rgba(201,247,223,0.45);
+}
+.viewer-cloud-toggle:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+.viewer-cloud-progress {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.18);
+}
+.viewer-cloud-progress span {
+  display: block;
+  width: 0%;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #c9f7df, #9ad1ff);
+  transition: width 180ms ease;
 }
 .viewer-meta-row {
   display: flex;

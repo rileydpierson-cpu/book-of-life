@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CLOUD_STORAGE_LIMIT_BYTES,
   desktopTrayStatus,
+  normalizeSyncStatus,
   normalizeCloudStorageUsage
 } from './desktop-tray-status.js';
 
@@ -33,5 +34,50 @@ describe('desktop tray status', () => {
     const usage = normalizeCloudStorageUsage({ usedBytes: CLOUD_STORAGE_LIMIT_BYTES / 2 });
     expect(usage.percent).toBe(50);
     expect(usage.limitBytes).toBe(CLOUD_STORAGE_LIMIT_BYTES);
+  });
+
+  it('includes tracked cloud sync state for the tray', () => {
+    const status = desktopTrayStatus({
+      cloudStatus: {
+        configured: true,
+        signedIn: true,
+        email: 'rilo@example.com',
+        lastCloudSyncAt: '2026-06-03T16:00:00.000Z'
+      },
+      syncStatus: {
+        running: true,
+        queued: true,
+        reason: 'manual',
+        startedAt: '2026-06-03T16:01:00.000Z',
+        pushed: 2,
+        pulled: 3
+      }
+    });
+    expect(status.cloud.signedIn).toBe(true);
+    expect(status.sync.running).toBe(true);
+    expect(status.sync.queued).toBe(true);
+    expect(status.sync.reason).toBe('manual');
+    expect(status.sync.lastSyncedAt).toBe('2026-06-03T16:00:00.000Z');
+    expect(status.sync.pushed).toBe(2);
+    expect(status.sync.pulled).toBe(3);
+  });
+
+  it('normalizes empty sync state', () => {
+    expect(normalizeSyncStatus()).toEqual({
+      running: false,
+      queued: false,
+      reason: '',
+      startedAt: '',
+      completedAt: '',
+      lastSyncedAt: '',
+      pushed: 0,
+      pulled: 0,
+      phase: '',
+      current: 0,
+      total: 0,
+      percent: 0,
+      message: '',
+      error: ''
+    });
   });
 });

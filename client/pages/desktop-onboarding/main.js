@@ -244,23 +244,32 @@ function stopMessageCycle() {
   messageTimer = null;
 }
 
-async function pollIndexStatus({ allowOpen = false } = {}) {
+async function pollIndexStatus({ allowOpen = false, simple = false } = {}) {
   clearTimeout(progressTimer);
   try {
     const payload = await fetchJson('/api/desktop/index/status', { cache: 'no-store' });
     const status = payload.status || {};
     const percent = Math.max(0, Math.min(100, Number(status.percent || 0)));
     progressFill.style.width = `${percent}%`;
-    loaderStage.textContent = status.stage || 'Indexing library';
-    loaderStatus.textContent = status.error
-      ? status.error
-      : status.running
-        ? `${percent}% complete. You can open the app while this continues.`
-        : 'Your library is ready.';
+    if (simple) {
+      loaderStage.textContent = 'Getting things ready for you';
+      loaderStatus.textContent = status.error
+        ? status.error
+        : status.running
+          ? 'Refreshing your library in the background.'
+          : 'Your library is ready.';
+    } else {
+      loaderStage.textContent = status.stage || 'Indexing library';
+      loaderStatus.textContent = status.error
+        ? status.error
+        : status.running
+          ? `${percent}% complete. You can open the app while this continues.`
+          : 'Your library is ready.';
+    }
     openLibraryButton.classList.toggle('hidden', !allowOpen);
     if (status.error) return;
     if (status.running) {
-      progressTimer = setTimeout(() => pollIndexStatus({ allowOpen }), 900);
+      progressTimer = setTimeout(() => pollIndexStatus({ allowOpen, simple }), 900);
       return;
     }
     stopMessageCycle();
@@ -289,8 +298,9 @@ async function loadStatus() {
   if (payload.complete && !forceSplash) {
     if (payload.index?.running) {
       showPanel('progress');
-      startMessageCycle();
-      await pollIndexStatus({ allowOpen: true });
+      stopMessageCycle();
+      loaderMessage.textContent = 'Getting things ready for you';
+      await pollIndexStatus({ allowOpen: true, simple: true });
     } else {
       await openLibrary();
     }

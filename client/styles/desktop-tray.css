@@ -27,6 +27,10 @@ button {
   cursor: pointer;
 }
 
+.hidden {
+  display: none !important;
+}
+
 .tray-shell {
   width: 100vw;
   height: 100vh;
@@ -42,7 +46,7 @@ button {
 
 .tray-header {
   display: grid;
-  grid-template-columns: 44px minmax(0, 1fr);
+  grid-template-columns: 44px minmax(0, 1fr) 30px;
   align-items: center;
   gap: 10px;
 }
@@ -76,6 +80,23 @@ h1 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.tray-close-button {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.tray-close-button:hover {
+  border-color: var(--line);
+  background: #f5f7f8;
+  color: var(--ink);
 }
 
 .status-grid {
@@ -135,6 +156,21 @@ h1 {
   height: 100%;
   background: linear-gradient(90deg, var(--accent), #2f66b3);
   transition: width 200ms ease;
+}
+
+.mini-progress.is-indeterminate span {
+  width: 42%;
+  animation: tray-progress-sweep 900ms ease-in-out infinite;
+}
+
+@keyframes tray-progress-sweep {
+  0% {
+    transform: translateX(-120%);
+  }
+
+  100% {
+    transform: translateX(240%);
+  }
 }
 
 .tray-error {

@@ -15,6 +15,7 @@ const { AuthService } = require('./src/auth');
 const { dateToIsoLocal, ensureDirSync } = require('./src/utils');
 const { SyncService } = require('./src/sync-service');
 const { CloudEntryStore } = require('./src/cloud-entry-store');
+const { MediaCloudStore } = require('./src/media-cloud-store');
 const { DesktopSyncSettingsStore } = require('./src/desktop-sync-settings');
 const { JournalCloudSync } = require('./src/journal-cloud-sync');
 const { SupabaseDesktopSync } = require('./src/supabase-desktop-sync');
@@ -243,6 +244,7 @@ async function main() {
   const auth = new AuthService(config);
   const uploader = createUploader(config.paths.cacheDir);
   const cloudEntryStore = new CloudEntryStore({ cacheDir: config.paths.cacheDir });
+  const mediaCloudStore = new MediaCloudStore({ cacheDir: config.paths.cacheDir });
   const desktopSyncSettings = new DesktopSyncSettingsStore({ cacheDir: config.paths.cacheDir });
   const desktopCloudSync = new SupabaseDesktopSync({
     settingsStore: desktopSyncSettings,
@@ -333,6 +335,7 @@ async function main() {
   }
   await indexer.loadCache();
   await cloudEntryStore.init();
+  await mediaCloudStore.init();
   await syncService.init();
   const journalCloudSync = new JournalCloudSync({
     journalDir: currentJournalFolderPath(config),
@@ -352,9 +355,137 @@ async function main() {
         cloudVersion: result.entry.cloudVersion,
         source: 'desktop-file-watch'
       });
+      queueCloudEntrySync('desktop-file-watch');
     }
   });
   journalCloudSync.start();
+  let cloudEntrySyncRunning = false;
+  let cloudEntrySyncQueued = false;
+  const cloudEntrySyncStatus = {
+    running: false,
+    queued: false,
+    reason: '',
+    startedAt: '',
+    completedAt: '',
+    lastSyncedAt: '',
+    pushed: 0,
+    pulled: 0,
+    phase: '',
+    current: 0,
+    total: 0,
+    percent: 0,
+    message: '',
+    error: ''
+  };
+
+  function getCloudEntrySyncStatus() {
+    return {
+      ...cloudEntrySyncStatus,
+      running: cloudEntrySyncRunning,
+      queued: cloudEntrySyncQueued
+    };
+  }
+
+  async function runCloudEntrySync(reason = 'manual') {
+    cloudEntrySyncRunning = true;
+    Object.assign(cloudEntrySyncStatus, {
+      running: true,
+      queued: cloudEntrySyncQueued,
+      reason,
+      startedAt: new Date().toISOString(),
+      phase: '',
+      current: 0,
+      total: 0,
+      percent: 0,
+      message: '',
+      error: ''
+    });
+    try {
+      const settings = await desktopSyncSettings.getSettings();
+      if (!settings.cloudSession?.accessToken) {
+        cloudEntrySyncStatus.completedAt = new Date().toISOString();
+        return { ok: false, skipped: true, reason: 'signed-out' };
+      }
+      const result = await desktopCloudSync.syncEntries({
+        full: reason === 'full-resync',
+        onProgress: (progress = {}) => {
+          const total = Math.max(0, Number(progress.total || 0));
+          const current = Math.max(0, Number(progress.current || 0));
+          Object.assign(cloudEntrySyncStatus, {
+            phase: progress.phase || '',
+            current,
+            total,
+            percent: total ? Math.round((current / total) * 100) : 0,
+            pushed: progress.pushed || cloudEntrySyncStatus.pushed || 0,
+            pulled: progress.pulled || cloudEntrySyncStatus.pulled || 0,
+            message: progress.message || ''
+          });
+        }
+      });
+      await syncService.appendChange('entry.cloud.sync', result.libraryId, {
+        ...result,
+        source: reason
+      });
+      Object.assign(cloudEntrySyncStatus, {
+        completedAt: result.syncedAt || new Date().toISOString(),
+        lastSyncedAt: result.syncedAt || '',
+        pushed: result.pushed || 0,
+        pulled: result.pulled || 0,
+        phase: result.mode || '',
+        current: result.remoteEntries || 0,
+        total: result.remoteEntries || 0,
+        percent: 100,
+        message: result.mode === 'delta' ? 'Checked journal changes.' : 'Journal sync complete.',
+        error: ''
+      });
+      console.log(`Cloud entry sync (${reason}) pushed ${result.pushed}, pulled ${result.pulled}.`);
+      return result;
+    } catch (error) {
+      cloudEntrySyncStatus.error = error.message || 'Cloud entry sync failed.';
+      cloudEntrySyncStatus.completedAt = new Date().toISOString();
+      console.warn(`Cloud entry sync skipped (${reason}): ${cloudEntrySyncStatus.error}`);
+      throw error;
+    } finally {
+      cloudEntrySyncRunning = false;
+      cloudEntrySyncStatus.running = false;
+      cloudEntrySyncStatus.queued = cloudEntrySyncQueued;
+    }
+  }
+
+  function queueCloudEntrySync(reason = 'background') {
+    if (cloudEntrySyncRunning) {
+      cloudEntrySyncQueued = true;
+      cloudEntrySyncStatus.queued = true;
+      return;
+    }
+    cloudEntrySyncRunning = true;
+    Object.assign(cloudEntrySyncStatus, {
+      running: true,
+      queued: false,
+      reason,
+      startedAt: new Date().toISOString(),
+      phase: '',
+      current: 0,
+      total: 0,
+      percent: 0,
+      message: '',
+      error: ''
+    });
+    setImmediate(async () => {
+      try {
+        await runCloudEntrySync(reason);
+      } catch (error) {
+        // runCloudEntrySync already logged the reason.
+      } finally {
+        if (cloudEntrySyncQueued) {
+          cloudEntrySyncQueued = false;
+          cloudEntrySyncStatus.queued = false;
+          queueCloudEntrySync('queued');
+        }
+      }
+    });
+  }
+
   async function applyDesktopRuntimeSettings(settings) {
     const roots = normalizeFolderListFromSettings(settings, config);
     config.paths.photoFolders = roots;
@@ -368,13 +499,84 @@ async function main() {
     }
   }
 
+  let cloudMediaSyncRunning = false;
+
+  async function syncCloudMediaQueue(reason = 'background') {
+    if (cloudMediaSyncRunning) return { ok: true, queued: true };
+    cloudMediaSyncRunning = true;
+    let uploaded = 0;
+    let removed = 0;
+    let failed = 0;
+    try {
+      const settings = await desktopSyncSettings.getSettings();
+      const folders = Array.isArray(settings.mediaFolders) ? settings.mediaFolders : [];
+      const uploadRoots = folders
+        .filter((folder) => folder.enabled !== false && folder.cloudPolicy === MEDIA_CLOUD_POLICIES.ALL_ORIGINALS)
+        .map((folder) => String(folder.path || '').replace(/[\\/]+$/, ''))
+        .filter(Boolean);
+      for (const photo of indexer.state.photosById.values()) {
+        const filePath = String(photo.filePath || '');
+        const inAllOriginalsRoot = uploadRoots.some((root) => filePath === root || filePath.startsWith(`${root}${path.sep}`));
+        if (inAllOriginalsRoot) await mediaCloudStore.setDesired(photo, true);
+      }
+
+      const pending = await mediaCloudStore.listPending(indexer);
+      for (const { photo, record } of pending) {
+        try {
+          if (record.desired) {
+            await mediaCloudStore.update(photo, {
+              status: 'uploading',
+              current: 0,
+              total: Number(photo.size || 0),
+              lastError: ''
+            });
+            const media = await desktopCloudSync.uploadOriginalMedia(photo);
+            await mediaCloudStore.update(photo, {
+              status: 'cloud',
+              desired: true,
+              current: Number(photo.size || 0),
+              total: Number(photo.size || 0),
+              cloudMediaId: media?.id || record.cloudMediaId || '',
+              storagePath: media?.original_storage_path || record.storagePath || '',
+              lastError: ''
+            });
+            uploaded += 1;
+          } else {
+            await mediaCloudStore.update(photo, { status: 'removing', lastError: '' });
+            await desktopCloudSync.deleteOriginalMedia({
+              cloudMediaId: record.cloudMediaId,
+              storagePath: record.storagePath
+            });
+            await mediaCloudStore.update(photo, {
+              status: 'local',
+              desired: false,
+              current: 0,
+              cloudMediaId: '',
+              storagePath: '',
+              lastError: ''
+            });
+            removed += 1;
+          }
+        } catch (error) {
+          failed += 1;
+          await mediaCloudStore.update(photo, {
+            status: 'error',
+            lastError: error.message || 'Cloud media sync failed.'
+          });
+          console.warn(`Cloud media sync skipped for ${photo.filePath || photo.id}: ${error.message}`);
+        }
+      }
+      console.log(`Cloud media sync (${reason}) uploaded ${uploaded}, removed ${removed}, failed ${failed}.`);
+      return { ok: true, uploaded, removed, failed };
+    } finally {
+      cloudMediaSyncRunning = false;
+    }
+  }
+
   function queueCloudOriginalUpload(reason = 'background') {
     setImmediate(async () => {
       try {
-        const settings = await desktopSyncSettings.getSettings();
-        if (settings.storageMode !== DESKTOP_STORAGE_MODES.CLOUD_ORIGINALS) return;
-        const result = await desktopCloudSync.uploadOriginalsForPolicy();
-        console.log(`Cloud original upload queue (${reason}) uploaded ${result.uploaded}, failed ${result.failed}, skipped ${result.skipped}.`);
+        await syncCloudMediaQueue(reason);
       } catch (error) {
         console.warn(`Cloud original upload queue skipped (${reason}): ${error.message}`);
       }
@@ -608,6 +810,7 @@ async function main() {
         cloudVersion: result.entry.cloudVersion,
         conflict: result.conflict
       });
+      queueCloudEntrySync('entry-api-save');
       res.json({ ok: true, ...result });
     } catch (error) {
       res.status(500).json({ error: error.message || 'Failed to save cloud entry.' });
@@ -655,6 +858,7 @@ async function main() {
         libraryId: nextSettings.libraryId,
         source: 'desktop-cloud-connect'
       });
+      queueCloudEntrySync('cloud-connect');
       res.json({ ok: true, settings: nextSettings, status: await desktopCloudSync.status() });
     } catch (error) {
       res.status(500).json({ ok: false, error: error.message || 'Failed to connect desktop to Book of Life Cloud.' });
@@ -663,9 +867,14 @@ async function main() {
 
   app.post('/api/desktop/cloud/sync', async (_req, res) => {
     try {
-      const result = await desktopCloudSync.syncEntries();
-      await syncService.appendChange('entry.cloud.pull', result.libraryId, result);
-      res.json(result);
+      if (cloudEntrySyncRunning) {
+        cloudEntrySyncQueued = true;
+        cloudEntrySyncStatus.queued = true;
+        res.json({ ok: true, queued: true, status: await desktopCloudSync.status(), sync: getCloudEntrySyncStatus() });
+        return;
+      }
+      const result = await runCloudEntrySync('manual');
+      res.json({ ...result, status: await desktopCloudSync.status(), sync: getCloudEntrySyncStatus() });
     } catch (error) {
       res.status(500).json({ ok: false, error: error.message || 'Desktop cloud sync failed.' });
     }
@@ -688,6 +897,7 @@ async function main() {
         libraryId: nextSettings.libraryId,
         source: 'desktop-cloud-signup'
       });
+      queueCloudEntrySync('cloud-signup');
       res.status(201).json({ ok: true, settings: nextSettings, status: await desktopCloudSync.status() });
     } catch (error) {
       res.status(500).json({ ok: false, error: error.message || 'Failed to create Supabase account.' });
@@ -718,7 +928,8 @@ async function main() {
         },
         cloudStatus,
         indexStatus: indexer.getRebuildStatus(),
-        storageUsage
+        storageUsage,
+        syncStatus: getCloudEntrySyncStatus()
       }));
     } catch (error) {
       res.status(500).json({ ok: false, error: error.message || 'Failed to read tray status.' });
@@ -970,6 +1181,43 @@ async function main() {
     res.json(indexer.getGalleryIndex());
   });
 
+  app.get('/api/media/:photoId/cloud', async (req, res) => {
+    try {
+      const photo = indexer.getPhoto(req.params.photoId);
+      if (!photo) {
+        res.status(404).json({ ok: false, error: 'Media not found.' });
+        return;
+      }
+      res.json({ ok: true, cloud: await mediaCloudStore.get(photo) });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error.message || 'Failed to read media cloud status.' });
+    }
+  });
+
+  app.post('/api/media/:photoId/cloud', async (req, res) => {
+    try {
+      const photo = indexer.getPhoto(req.params.photoId);
+      if (!photo) {
+        res.status(404).json({ ok: false, error: 'Media not found.' });
+        return;
+      }
+      const syncOriginal = Boolean(req.body?.syncOriginal);
+      const cloud = await mediaCloudStore.setDesired(photo, syncOriginal);
+      queueCloudOriginalUpload(syncOriginal ? 'photo-selected' : 'photo-unselected');
+      res.json({ ok: true, cloud });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error.message || 'Failed to update media cloud status.' });
+    }
+  });
+
+  app.post('/api/desktop/cloud/media/sync', async (_req, res) => {
+    try {
+      res.json(await syncCloudMediaQueue('manual'));
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error.message || 'Cloud media sync failed.' });
+    }
+  });
+
   app.get('/api/search', (req, res) => {
     const query = typeof req.query.q === 'string' ? req.query.q : '';
     res.json(indexer.search(query));
@@ -1049,6 +1297,7 @@ async function main() {
         cloudVersion: cloudResult.entry.cloudVersion,
         conflict: cloudResult.conflict
       });
+      queueCloudEntrySync('entry-save');
       res.json({ ok: true, day, isoDate, removed: !day, cloudEntry: cloudResult.entry, conflict: cloudResult.conflict });
     } catch (error) {
       res.status(500).json({ error: error.message || 'Failed to save entry.' });
@@ -1490,7 +1739,9 @@ async function main() {
         backgroundStartupRebuildQueued = true;
         setImmediate(() => {
           indexer.scheduleRebuild('startup');
+          queueCloudEntrySync('startup');
           setInterval(() => indexer.scheduleRefresh('interval'), config.indexing.rebuildIntervalMs).unref();
+          setInterval(() => queueCloudEntrySync('interval'), 5 * 60 * 1000).unref();
         });
       }
       resolve(server);

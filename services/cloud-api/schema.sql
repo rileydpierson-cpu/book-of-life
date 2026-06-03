@@ -49,6 +49,8 @@ create table if not exists media_items (
   id uuid primary key default gen_random_uuid(),
   library_id uuid not null references libraries(id) on delete cascade,
   host_device_id uuid references devices(id),
+  local_media_id text,
+  file_signature text,
   iso_date date,
   file_name text not null default '',
   metadata jsonb not null default '{}',
@@ -61,6 +63,25 @@ create table if not exists media_items (
   original_content_type text not null default '',
   updated_at timestamptz not null default now()
 );
+
+alter table media_items add column if not exists host_device_id uuid references devices(id);
+alter table media_items add column if not exists local_media_id text;
+alter table media_items add column if not exists file_signature text;
+alter table media_items add column if not exists iso_date date;
+alter table media_items add column if not exists file_name text not null default '';
+alter table media_items add column if not exists metadata jsonb not null default '{}';
+alter table media_items add column if not exists has_thumb boolean not null default false;
+alter table media_items add column if not exists has_preview boolean not null default false;
+alter table media_items add column if not exists original_in_cloud boolean not null default false;
+alter table media_items add column if not exists original_on_host boolean not null default true;
+alter table media_items add column if not exists original_storage_path text not null default '';
+alter table media_items add column if not exists original_size bigint not null default 0;
+alter table media_items add column if not exists original_content_type text not null default '';
+alter table media_items add column if not exists updated_at timestamptz not null default now();
+
+create unique index if not exists media_items_library_local_media_id_idx
+  on media_items(library_id, local_media_id)
+  where local_media_id is not null;
 
 create table if not exists sync_changes (
   id bigserial primary key,

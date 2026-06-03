@@ -41,9 +41,11 @@ export async function POST(request) {
   }
   const { data, error } = await context.supabase
     .from('media_items')
-    .insert({
+    .upsert({
       library_id: libraryId,
       host_device_id: body.hostDeviceId || null,
+      local_media_id: String(body.localMediaId || '').trim() || null,
+      file_signature: String(body.fileSignature || '').trim() || null,
       iso_date: body.isoDate || null,
       file_name: String(body.fileName || '').trim(),
       metadata: body.metadata || {},
@@ -55,7 +57,7 @@ export async function POST(request) {
       original_size: Number(body.originalSize || 0) || null,
       original_content_type: body.originalContentType || null,
       updated_at: new Date().toISOString()
-    })
+    }, body.localMediaId ? { onConflict: 'library_id,local_media_id' } : undefined)
     .select('*')
     .single();
   if (error) return apiError(error);

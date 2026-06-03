@@ -148,6 +148,9 @@ function normalizeDesktopSyncSettings(value = {}) {
     onboardingCompletedAt: String(settings.onboardingCompletedAt || '').trim(),
     importedEntriesAt: String(settings.importedEntriesAt || '').trim(),
     lastCloudSyncAt: String(settings.lastCloudSyncAt || '').trim(),
+    entryInitialSyncCompletedAt: String(settings.entryInitialSyncCompletedAt || '').trim(),
+    entryLastFullSyncAt: String(settings.entryLastFullSyncAt || '').trim(),
+    entryChangeCursor: Math.max(0, Number(settings.entryChangeCursor || 0)),
     thumbnail: {
       uploadDerivatives: settings.thumbnail?.uploadDerivatives !== false,
       imageMaxEdge: Number(settings.thumbnail?.imageMaxEdge || 1600),

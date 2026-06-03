@@ -68,6 +68,11 @@ function apiEntryToRemote(entry) {
   };
 }
 
+function changePayloadEntry(change) {
+  const payload = change?.payload || {};
+  return payload.entry || payload.day || null;
+}
+
 class SupabaseDesktopSync {
   constructor({ settingsStore, cloudEntryStore, indexer }) {
     this.settingsStore = settingsStore;
@@ -207,6 +212,14 @@ class SupabaseDesktopSync {
     return (payload.entries || []).map(apiEntryToRemote);
   }
 
+  async listRemoteChanges(settings, since = 0) {
+    const payload = await cloudApiFetch(settings, `/api/sync/changes?libraryId=${encodeURIComponent(settings.libraryId)}&since=${encodeURIComponent(String(since || 0))}`);
+    return {
+      cursor: Number(payload.cursor || since || 0),
+      changes: Array.isArray(payload.changes) ? payload.changes : []
+    };
+  }
+
   async saveRemoteEntry(settings, localEntry, previousRemote = null) {
     const saved = await cloudApiFetch(settings, '/api/entries', {
       method: 'POST',
@@ -221,51 +234,131 @@ class SupabaseDesktopSync {
     return apiEntryToRemote(saved.entry);
   }
 
-  async syncEntries() {
+  async syncEntries({ full = false, onProgress = null } = {}) {
     const settings = await this.ensureReadySettings();
     const scope = {
       userId: settings.userId,
       libraryId: settings.libraryId,
       deviceId: settings.deviceId
     };
-    const remoteEntries = await this.listRemoteEntries(settings);
-    const remoteByDate = new Map(remoteEntries.map((entry) => [entry.iso_date, entry]));
-    const localEntries = this.cloudEntryStore.listEntries(scope);
+    const initial = full || !settings.entryInitialSyncCompletedAt;
+    const localEntries = initial
+      ? this.cloudEntryStore.listEntries(scope)
+      : this.cloudEntryStore.listDirtyEntries(scope);
     let pushed = 0;
     let pulled = 0;
+    let remoteEntries = [];
+    let remoteByDate = new Map();
+    let nextCursor = Number(settings.entryChangeCursor || 0);
+    const pushedDates = new Set();
+
+    onProgress?.({
+      phase: initial ? 'initial-fetch' : 'delta-fetch',
+      current: 0,
+      total: initial ? 0 : 1,
+      pushed,
+      pulled,
+      message: initial ? 'Fetching journal entries from cloud.' : 'Checking for journal changes.'
+    });
+
+    if (initial) {
+      remoteEntries = await this.listRemoteEntries(settings);
+      remoteByDate = new Map(remoteEntries.map((entry) => [entry.iso_date, entry]));
+    } else {
+      const delta = await this.listRemoteChanges(settings, settings.entryChangeCursor || 0);
+      nextCursor = delta.cursor;
+      for (const change of delta.changes) {
+        if (change.change_type !== 'entry.upsert' && change.change_type !== 'entry.delete') continue;
+        const entry = changePayloadEntry(change);
+        const isoDate = entry?.isoDate || change.entity_id || '';
+        if (!isoDate) continue;
+        remoteByDate.set(isoDate, {
+          library_id: settings.libraryId,
+          iso_date: isoDate,
+          raw: entry?.raw || '',
+          cloud_version: Number(entry?.cloudVersion || 0),
+          updated_at: entry?.updatedAt || change.changed_at,
+          updated_by_device_id: entry?.updatedByDeviceId || null
+        });
+      }
+      remoteEntries = [...remoteByDate.values()];
+    }
+
+    const total = Math.max(1, localEntries.length + remoteEntries.length);
+    let current = 0;
 
     for (const localEntry of localEntries) {
       const remote = remoteByDate.get(localEntry.isoDate);
       if (!remote || new Date(localEntry.updatedAt || 0).getTime() > new Date(remote.updated_at || 0).getTime()) {
         const saved = await this.saveRemoteEntry(settings, localEntry, remote);
         remoteByDate.set(localEntry.isoDate, saved);
+        await this.cloudEntryStore.markEntryClean(scope, localEntry.isoDate, {
+          cloudVersion: saved.cloud_version || localEntry.cloudVersion,
+          updatedAt: saved.updated_at || localEntry.updatedAt
+        });
         pushed += 1;
+        pushedDates.add(localEntry.isoDate);
       }
+      current += 1;
+      onProgress?.({
+        phase: initial ? 'initial-push' : 'delta-push',
+        current,
+        total,
+        pushed,
+        pulled,
+        message: initial ? 'Uploading local journal changes.' : 'Uploading changed journal entries.'
+      });
     }
 
-    for (const remote of remoteByDate.values()) {
+    for (const remote of remoteEntries) {
+      if (pushedDates.has(remote.iso_date)) {
+        current += 1;
+        continue;
+      }
       const local = this.cloudEntryStore.getEntry(scope, remote.iso_date);
-      if (!local || new Date(remote.updated_at || 0).getTime() >= new Date(local.updatedAt || 0).getTime()) {
+      if (!local || !local.dirty || new Date(remote.updated_at || 0).getTime() >= new Date(local.updatedAt || 0).getTime()) {
         await this.cloudEntryStore.saveEntry(scope, {
           isoDate: remote.iso_date,
           raw: remote.raw || '',
-          baseCloudVersion: local?.cloudVersion || 0
+          baseCloudVersion: local?.cloudVersion || 0,
+          cloudVersion: remote.cloud_version || local?.cloudVersion || 0,
+          updatedAt: remote.updated_at || '',
+          markClean: true
         });
         await this.indexer.saveEntry(remote.iso_date, remote.raw || '');
         pulled += 1;
       }
+      current += 1;
+      onProgress?.({
+        phase: initial ? 'initial-pull' : 'delta-pull',
+        current,
+        total,
+        pushed,
+        pulled,
+        message: initial ? 'Writing cloud journal entries locally.' : 'Applying changed journal entries.'
+      });
     }
 
+    const syncedAt = new Date().toISOString();
+    if (initial) {
+      nextCursor = (await this.listRemoteChanges(settings, 0).catch(() => ({ cursor: nextCursor }))).cursor || nextCursor;
+    }
     await this.settingsStore.saveSettings({
-      lastCloudSyncAt: new Date().toISOString()
+      lastCloudSyncAt: syncedAt,
+      entryInitialSyncCompletedAt: settings.entryInitialSyncCompletedAt || syncedAt,
+      entryLastFullSyncAt: initial ? syncedAt : settings.entryLastFullSyncAt,
+      entryChangeCursor: nextCursor
     });
     return {
       ok: true,
       libraryId: settings.libraryId,
       deviceId: settings.deviceId,
+      mode: initial ? 'initial' : 'delta',
       pushed,
       pulled,
-      remoteEntries: remoteByDate.size
+      remoteEntries: remoteByDate.size,
+      cursor: nextCursor,
+      syncedAt
     };
   }
 
@@ -319,10 +412,24 @@ class SupabaseDesktopSync {
         originalOnHost: true,
         originalStoragePath: uploadTicket.objectPath,
         originalSize: Number(photo.size || fileBuffer.length || 0),
-        originalContentType: photo.mimeType || 'application/octet-stream'
+        originalContentType: photo.mimeType || 'application/octet-stream',
+        localMediaId: photo.id,
+        fileSignature: `${photo.id || ''}:${photo.mtimeMs || 0}:${photo.size || 0}`
       })
     });
     return created.media || null;
+  }
+
+  async deleteOriginalMedia({ cloudMediaId = '', storagePath = '' } = {}) {
+    const settings = await this.ensureReadySettings();
+    if (!cloudMediaId && !storagePath) return { ok: true, deleted: false };
+    return cloudApiFetch(settings, `/api/media/${encodeURIComponent(cloudMediaId || storagePath)}/original`, {
+      method: 'DELETE',
+      body: JSON.stringify({
+        libraryId: settings.libraryId,
+        storagePath
+      })
+    });
   }
 
   async uploadOriginalsForPolicy({ limit = Infinity } = {}) {
@@ -371,11 +478,13 @@ class SupabaseDesktopSync {
       };
     } catch (error) {
       if (/404|not found/i.test(String(error.message || ''))) {
+        console.warn('Cloud storage usage endpoint is unavailable. Confirm the cloud web app deployment includes /api/media/storage-usage.');
         return {
           available: false,
           usedBytes: 0
         };
       }
+      console.warn(`Cloud storage usage unavailable: ${error.message || 'unknown error'}`);
       return {
         available: false,
         usedBytes: 0,

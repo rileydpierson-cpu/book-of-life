@@ -51,6 +51,10 @@ class CloudEntryStore {
       .sort((a, b) => b.isoDate.localeCompare(a.isoDate));
   }
 
+  listDirtyEntries(scope = {}) {
+    return this.listEntries(scope).filter((entry) => entry.dirty !== false);
+  }
+
   getEntry(scope, isoDate) {
     return this.state.entries[entryKey(scope, isoDate)] || null;
   }
@@ -67,7 +71,7 @@ class CloudEntryStore {
     const key = entryKey(normalized, isoDate);
     const previous = this.state.entries[key] || null;
     const now = new Date().toISOString();
-    const nextVersion = Number(previous?.cloudVersion || 0) + 1;
+    const nextVersion = Number(input.cloudVersion || 0) || Number(previous?.cloudVersion || 0) + 1;
     const baseCloudVersion = Number(input.baseCloudVersion || 0);
     const hasConflict = Boolean(previous && baseCloudVersion && baseCloudVersion !== previous.cloudVersion);
 
@@ -89,9 +93,10 @@ class CloudEntryStore {
       raw,
       title: String(input.title || '').trim(),
       cloudVersion: nextVersion,
-      updatedAt: now,
+      updatedAt: input.updatedAt || now,
       updatedByDeviceId: normalized.deviceId,
-      deleted: raw.trim() ? false : Boolean(input.deleted)
+      deleted: raw.trim() ? false : Boolean(input.deleted),
+      dirty: input.dirty === false || input.markClean === true ? false : true
     };
     this.state.entries[key] = entry;
     await this.persist();
@@ -101,6 +106,19 @@ class CloudEntryStore {
       conflict: hasConflict,
       revisions: this.getRevisions(normalized, isoDate)
     };
+  }
+
+  async markEntryClean(scope, isoDate, updates = {}) {
+    await this.ensureLoaded();
+    const key = entryKey(scope, isoDate);
+    if (!this.state.entries[key]) return null;
+    this.state.entries[key] = {
+      ...this.state.entries[key],
+      ...(updates || {}),
+      dirty: false
+    };
+    await this.persist();
+    return this.state.entries[key];
   }
 }
 

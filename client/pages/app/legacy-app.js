@@ -568,6 +568,22 @@ const mediaViewer = createMediaViewer({
     queueMediaLikeSave(item.id, item.liked);
     return { liked: item.liked };
   },
+  onLoadCloudOriginalStatus: async (item) => {
+    const payload = await fetchJson(`/api/media/${item.id}/cloud`, { cache: 'no-store' });
+    item.cloudOriginal = payload.cloud || {};
+    syncViewerMediaMutation(item.id, (photo) => { photo.cloudOriginal = item.cloudOriginal; });
+    return item.cloudOriginal;
+  },
+  onToggleCloudOriginal: async (item, syncOriginal) => {
+    const payload = await fetchJson(`/api/media/${item.id}/cloud`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ syncOriginal })
+    });
+    item.cloudOriginal = payload.cloud || {};
+    syncViewerMediaMutation(item.id, (photo) => { photo.cloudOriginal = item.cloudOriginal; });
+    return item.cloudOriginal;
+  },
   onDelete: async (item, index, viewer) => {
     if (!item) return;
     if (!window.confirm(`Delete ${item.fileName}?`)) return;
