@@ -35,31 +35,46 @@ export async function POST(request) {
   if (context.response) return context.response;
   const body = await request.json().catch(() => ({}));
   const libraryId = String(body.libraryId || '').trim();
+  const localMediaId = String(body.localMediaId || '').trim();
   if (!libraryId) return Response.json({ ok: false, error: 'libraryId is required.' }, { status: 400 });
   if (!(await ownsLibrary(context.supabase, context.user.id, libraryId))) {
     return Response.json({ ok: false, error: 'Library not found.' }, { status: 404 });
   }
-  const { data, error } = await context.supabase
-    .from('media_items')
-    .upsert({
-      library_id: libraryId,
-      host_device_id: body.hostDeviceId || null,
-      local_media_id: String(body.localMediaId || '').trim() || null,
-      file_signature: String(body.fileSignature || '').trim() || null,
-      iso_date: body.isoDate || null,
-      file_name: String(body.fileName || '').trim(),
-      metadata: body.metadata || {},
-      has_thumb: Boolean(body.hasThumb),
-      has_preview: Boolean(body.hasPreview),
-      original_in_cloud: Boolean(body.originalInCloud),
-      original_on_host: body.originalOnHost !== false,
-      original_storage_path: body.originalStoragePath || null,
-      original_size: Number(body.originalSize || 0) || null,
-      original_content_type: body.originalContentType || null,
-      updated_at: new Date().toISOString()
-    }, body.localMediaId ? { onConflict: 'library_id,local_media_id' } : undefined)
-    .select('*')
-    .single();
+
+  const mediaRow = {
+    library_id: libraryId,
+    host_device_id: body.hostDeviceId || null,
+    local_media_id: localMediaId || null,
+    file_signature: String(body.fileSignature || '').trim() || null,
+    iso_date: body.isoDate || null,
+    file_name: String(body.fileName || '').trim(),
+    metadata: body.metadata || {},
+    has_thumb: Boolean(body.hasThumb),
+    has_preview: Boolean(body.hasPreview),
+    original_in_cloud: Boolean(body.originalInCloud),
+    original_on_host: body.originalOnHost !== false,
+    original_storage_path: body.originalStoragePath || null,
+    original_size: Number(body.originalSize || 0) || null,
+    original_content_type: body.originalContentType || null,
+    updated_at: new Date().toISOString()
+  };
+
+  let existing = null;
+  if (localMediaId) {
+    const lookup = await context.supabase
+      .from('media_items')
+      .select('id')
+      .eq('library_id', libraryId)
+      .eq('local_media_id', localMediaId)
+      .maybeSingle();
+    if (lookup.error) return apiError(lookup.error);
+    existing = lookup.data || null;
+  }
+
+  const query = existing
+    ? context.supabase.from('media_items').update(mediaRow).eq('id', existing.id)
+    : context.supabase.from('media_items').insert(mediaRow);
+  const { data, error } = await query.select('*').single();
   if (error) return apiError(error);
-  return Response.json({ ok: true, media: data }, { status: 201 });
+  return Response.json({ ok: true, media: data }, { status: existing ? 200 : 201 });
 }

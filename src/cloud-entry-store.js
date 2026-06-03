@@ -1,5 +1,5 @@
 const path = require('path');
-const { readJson, writeJson } = require('./utils');
+const { hash, readJson, writeJson } = require('./utils');
 
 function normalizeScope(scope = {}) {
   return {
@@ -12,6 +12,10 @@ function normalizeScope(scope = {}) {
 function entryKey(scope, isoDate) {
   const normalized = normalizeScope(scope);
   return `${normalized.userId}:${normalized.libraryId}:${isoDate}`;
+}
+
+function entryContentHash(raw) {
+  return hash(String(raw || ''));
 }
 
 class CloudEntryStore {
@@ -52,7 +56,7 @@ class CloudEntryStore {
   }
 
   listDirtyEntries(scope = {}) {
-    return this.listEntries(scope).filter((entry) => entry.dirty !== false);
+    return this.listEntries(scope).filter((entry) => entry.dirty === true);
   }
 
   getEntry(scope, isoDate) {
@@ -74,6 +78,13 @@ class CloudEntryStore {
     const nextVersion = Number(input.cloudVersion || 0) || Number(previous?.cloudVersion || 0) + 1;
     const baseCloudVersion = Number(input.baseCloudVersion || 0);
     const hasConflict = Boolean(previous && baseCloudVersion && baseCloudVersion !== previous.cloudVersion);
+    const contentHash = String(input.contentHash || entryContentHash(raw));
+    const lastSyncedHash = input.markClean === true || input.dirty === false
+      ? contentHash
+      : String(previous?.lastSyncedHash || '');
+    const dirty = input.markClean === true || input.dirty === false
+      ? false
+      : contentHash !== lastSyncedHash;
 
     if (previous) {
       const revisions = this.state.revisions[key] || [];
@@ -96,7 +107,10 @@ class CloudEntryStore {
       updatedAt: input.updatedAt || now,
       updatedByDeviceId: normalized.deviceId,
       deleted: raw.trim() ? false : Boolean(input.deleted),
-      dirty: input.dirty === false || input.markClean === true ? false : true
+      contentHash,
+      localChangedAt: dirty ? now : previous?.localChangedAt || '',
+      lastSyncedHash,
+      dirty
     };
     this.state.entries[key] = entry;
     await this.persist();
@@ -115,6 +129,8 @@ class CloudEntryStore {
     this.state.entries[key] = {
       ...this.state.entries[key],
       ...(updates || {}),
+      contentHash: updates.contentHash || this.state.entries[key].contentHash || entryContentHash(this.state.entries[key].raw || ''),
+      lastSyncedHash: updates.lastSyncedHash || updates.contentHash || this.state.entries[key].contentHash || entryContentHash(this.state.entries[key].raw || ''),
       dirty: false
     };
     await this.persist();
@@ -124,5 +140,6 @@ class CloudEntryStore {
 
 module.exports = {
   CloudEntryStore,
+  entryContentHash,
   normalizeScope
 };

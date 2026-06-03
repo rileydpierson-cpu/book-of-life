@@ -246,10 +246,14 @@ async function main() {
   const cloudEntryStore = new CloudEntryStore({ cacheDir: config.paths.cacheDir });
   const mediaCloudStore = new MediaCloudStore({ cacheDir: config.paths.cacheDir });
   const desktopSyncSettings = new DesktopSyncSettingsStore({ cacheDir: config.paths.cacheDir });
+  let journalCloudSync = null;
   const desktopCloudSync = new SupabaseDesktopSync({
     settingsStore: desktopSyncSettings,
     cloudEntryStore,
-    indexer
+    indexer,
+    onBeforeLocalEntryWrite: ({ isoDate, raw }) => {
+      journalCloudSync?.suppressEntryWrite?.(isoDate, raw);
+    }
   });
   const appCloudSettings = {
     cloudApiBaseUrl: config.cloud.apiBaseUrl,
@@ -337,7 +341,7 @@ async function main() {
   await cloudEntryStore.init();
   await mediaCloudStore.init();
   await syncService.init();
-  const journalCloudSync = new JournalCloudSync({
+  journalCloudSync = new JournalCloudSync({
     journalDir: currentJournalFolderPath(config),
     cloudEntryStore,
     getScope: async () => {
@@ -350,6 +354,7 @@ async function main() {
     },
     onSynced: async (result) => {
       if (!result?.entry) return;
+      if (result.entry.dirty !== true) return;
       await syncService.appendChange('entry.upsert', result.entry.isoDate, {
         entry: syncService.serializeEntryRecord(result.entry.isoDate),
         cloudVersion: result.entry.cloudVersion,
@@ -435,7 +440,7 @@ async function main() {
         current: result.remoteEntries || 0,
         total: result.remoteEntries || 0,
         percent: 100,
-        message: result.mode === 'delta' ? 'Checked journal changes.' : 'Journal sync complete.',
+        message: result.noop ? 'Up to date.' : result.mode === 'delta' ? 'Synced changed entries.' : 'Journal sync complete.',
         error: ''
       });
       console.log(`Cloud entry sync (${reason}) pushed ${result.pushed}, pulled ${result.pulled}.`);

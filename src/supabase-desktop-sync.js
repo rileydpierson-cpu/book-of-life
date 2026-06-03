@@ -74,10 +74,11 @@ function changePayloadEntry(change) {
 }
 
 class SupabaseDesktopSync {
-  constructor({ settingsStore, cloudEntryStore, indexer }) {
+  constructor({ settingsStore, cloudEntryStore, indexer, onBeforeLocalEntryWrite = null }) {
     this.settingsStore = settingsStore;
     this.cloudEntryStore = cloudEntryStore;
     this.indexer = indexer;
+    this.onBeforeLocalEntryWrite = onBeforeLocalEntryWrite;
   }
 
   async signIn({ email, password }) {
@@ -220,6 +221,15 @@ class SupabaseDesktopSync {
     };
   }
 
+  async entrySummary(settings) {
+    const payload = await cloudApiFetch(settings, `/api/sync/entry-summary?libraryId=${encodeURIComponent(settings.libraryId)}`);
+    return {
+      cursor: Math.max(0, Number(payload.cursor || 0)),
+      latestChangedAt: String(payload.latestChangedAt || ''),
+      changeCount: Math.max(0, Number(payload.changeCount || 0))
+    };
+  }
+
   async saveRemoteEntry(settings, localEntry, previousRemote = null) {
     const saved = await cloudApiFetch(settings, '/api/entries', {
       method: 'POST',
@@ -241,8 +251,8 @@ class SupabaseDesktopSync {
       libraryId: settings.libraryId,
       deviceId: settings.deviceId
     };
-    const initial = full || !settings.entryInitialSyncCompletedAt;
-    const localEntries = initial
+    const mode = full ? 'full' : 'delta';
+    const localEntries = full
       ? this.cloudEntryStore.listEntries(scope)
       : this.cloudEntryStore.listDirtyEntries(scope);
     let pushed = 0;
@@ -253,35 +263,72 @@ class SupabaseDesktopSync {
     const pushedDates = new Set();
 
     onProgress?.({
-      phase: initial ? 'initial-fetch' : 'delta-fetch',
+      phase: full ? 'full-fetch' : 'checking',
       current: 0,
-      total: initial ? 0 : 1,
+      total: full ? 0 : 1,
       pushed,
       pulled,
-      message: initial ? 'Fetching journal entries from cloud.' : 'Checking for journal changes.'
+      message: full ? 'Fetching journal entries from cloud.' : 'Checking cloud for journal changes.'
     });
 
-    if (initial) {
+    if (full) {
       remoteEntries = await this.listRemoteEntries(settings);
       remoteByDate = new Map(remoteEntries.map((entry) => [entry.iso_date, entry]));
     } else {
-      const delta = await this.listRemoteChanges(settings, settings.entryChangeCursor || 0);
-      nextCursor = delta.cursor;
-      for (const change of delta.changes) {
-        if (change.change_type !== 'entry.upsert' && change.change_type !== 'entry.delete') continue;
-        const entry = changePayloadEntry(change);
-        const isoDate = entry?.isoDate || change.entity_id || '';
-        if (!isoDate) continue;
-        remoteByDate.set(isoDate, {
-          library_id: settings.libraryId,
-          iso_date: isoDate,
-          raw: entry?.raw || '',
-          cloud_version: Number(entry?.cloudVersion || 0),
-          updated_at: entry?.updatedAt || change.changed_at,
-          updated_by_device_id: entry?.updatedByDeviceId || null
+      const summary = await this.entrySummary(settings);
+      const currentCursor = Number(settings.entryChangeCursor || 0);
+      const firstBaseline = !currentCursor && !settings.entryInitialSyncCompletedAt;
+      const cloudChanged = !firstBaseline && summary.cursor > currentCursor;
+      nextCursor = firstBaseline ? summary.cursor : currentCursor;
+
+      if (!cloudChanged && !localEntries.length) {
+        const syncedAt = new Date().toISOString();
+        await this.settingsStore.saveSettings({
+          lastCloudSyncAt: syncedAt,
+          entryInitialSyncCompletedAt: settings.entryInitialSyncCompletedAt || syncedAt,
+          entryChangeCursor: nextCursor
         });
+        onProgress?.({
+          phase: 'up-to-date',
+          current: 1,
+          total: 1,
+          pushed,
+          pulled,
+          message: 'Up to date.'
+        });
+        return {
+          ok: true,
+          libraryId: settings.libraryId,
+          deviceId: settings.deviceId,
+          mode,
+          noop: true,
+          pushed,
+          pulled,
+          remoteEntries: 0,
+          cursor: nextCursor,
+          syncedAt
+        };
       }
-      remoteEntries = [...remoteByDate.values()];
+
+      if (cloudChanged) {
+        const delta = await this.listRemoteChanges(settings, currentCursor);
+        nextCursor = delta.cursor;
+        for (const change of delta.changes) {
+          if (change.change_type !== 'entry.upsert' && change.change_type !== 'entry.delete') continue;
+          const entry = changePayloadEntry(change);
+          const isoDate = entry?.isoDate || change.entity_id || '';
+          if (!isoDate) continue;
+          remoteByDate.set(isoDate, {
+            library_id: settings.libraryId,
+            iso_date: isoDate,
+            raw: entry?.raw || '',
+            cloud_version: Number(entry?.cloudVersion || 0),
+            updated_at: entry?.updatedAt || change.changed_at,
+            updated_by_device_id: entry?.updatedByDeviceId || null
+          });
+        }
+        remoteEntries = [...remoteByDate.values()];
+      }
     }
 
     const total = Math.max(1, localEntries.length + remoteEntries.length);
@@ -301,12 +348,12 @@ class SupabaseDesktopSync {
       }
       current += 1;
       onProgress?.({
-        phase: initial ? 'initial-push' : 'delta-push',
+        phase: full ? 'full-push' : 'delta-push',
         current,
         total,
         pushed,
         pulled,
-        message: initial ? 'Uploading local journal changes.' : 'Uploading changed journal entries.'
+        message: full ? 'Uploading local journal entries.' : 'Uploading changed journal entries.'
       });
     }
 
@@ -325,35 +372,38 @@ class SupabaseDesktopSync {
           updatedAt: remote.updated_at || '',
           markClean: true
         });
+        if (typeof this.onBeforeLocalEntryWrite === 'function') {
+          await this.onBeforeLocalEntryWrite({ isoDate: remote.iso_date, raw: remote.raw || '' });
+        }
         await this.indexer.saveEntry(remote.iso_date, remote.raw || '');
         pulled += 1;
       }
       current += 1;
       onProgress?.({
-        phase: initial ? 'initial-pull' : 'delta-pull',
+        phase: full ? 'full-pull' : 'delta-pull',
         current,
         total,
         pushed,
         pulled,
-        message: initial ? 'Writing cloud journal entries locally.' : 'Applying changed journal entries.'
+        message: full ? 'Writing cloud journal entries locally.' : 'Applying changed journal entries.'
       });
     }
 
     const syncedAt = new Date().toISOString();
-    if (initial) {
-      nextCursor = (await this.listRemoteChanges(settings, 0).catch(() => ({ cursor: nextCursor }))).cursor || nextCursor;
+    if (full || pushed) {
+      nextCursor = (await this.entrySummary(settings).catch(() => ({ cursor: nextCursor }))).cursor || nextCursor;
     }
     await this.settingsStore.saveSettings({
       lastCloudSyncAt: syncedAt,
       entryInitialSyncCompletedAt: settings.entryInitialSyncCompletedAt || syncedAt,
-      entryLastFullSyncAt: initial ? syncedAt : settings.entryLastFullSyncAt,
+      entryLastFullSyncAt: full ? syncedAt : settings.entryLastFullSyncAt,
       entryChangeCursor: nextCursor
     });
     return {
       ok: true,
       libraryId: settings.libraryId,
       deviceId: settings.deviceId,
-      mode: initial ? 'initial' : 'delta',
+      mode,
       pushed,
       pulled,
       remoteEntries: remoteByDate.size,

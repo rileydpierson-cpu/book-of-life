@@ -18,23 +18,34 @@ export async function GET(request) {
   if (context.response) return context.response;
   const url = new URL(request.url);
   const libraryId = url.searchParams.get('libraryId') || '';
-  const since = Math.max(0, Number(url.searchParams.get('since') || 0));
   if (!libraryId) return Response.json({ ok: false, error: 'libraryId is required.' }, { status: 400 });
   if (!(await ownsLibrary(context.supabase, context.user.id, libraryId))) {
     return Response.json({ ok: false, error: 'Library not found.' }, { status: 404 });
   }
 
-  const { data, error } = await context.supabase
+  const latest = await context.supabase
     .from('sync_changes')
-    .select('*')
+    .select('id, changed_at')
     .eq('library_id', libraryId)
     .in('change_type', ENTRY_CHANGE_TYPES)
-    .gt('id', since)
-    .order('id', { ascending: true })
-    .limit(500);
+    .order('id', { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
-  if (error) return apiError(error);
-  const changes = data || [];
-  const cursor = changes.reduce((max, change) => Math.max(max, Number(change.id || 0)), since);
-  return Response.json({ ok: true, cursor, changes });
+  if (latest.error) return apiError(latest.error);
+
+  const count = await context.supabase
+    .from('sync_changes')
+    .select('id', { count: 'exact', head: true })
+    .eq('library_id', libraryId)
+    .in('change_type', ENTRY_CHANGE_TYPES);
+
+  if (count.error) return apiError(count.error);
+
+  return Response.json({
+    ok: true,
+    cursor: Number(latest.data?.id || 0),
+    latestChangedAt: latest.data?.changed_at || '',
+    changeCount: Number(count.count || 0)
+  });
 }

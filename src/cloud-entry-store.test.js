@@ -2,7 +2,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
-import { CloudEntryStore } from './cloud-entry-store.js';
+import { CloudEntryStore, entryContentHash } from './cloud-entry-store.js';
 
 describe('cloud entry store', () => {
   it('keeps canonical entries scoped by user and library', async () => {
@@ -63,5 +63,43 @@ describe('cloud entry store', () => {
     await store.markEntryClean(scope, '2026-05-12', { cloudVersion: 3 });
     expect(store.listDirtyEntries(scope)).toHaveLength(0);
     expect(store.getEntry(scope, '2026-05-13').cloudVersion).toBe(7);
+  });
+
+  it('does not treat legacy entries without dirty flags as changed', async () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bol-cloud-entries-'));
+    const scope = { userId: 'user-a', libraryId: 'lib', deviceId: 'desktop' };
+    const store = new CloudEntryStore({ cacheDir });
+    await store.init();
+    await store.saveEntry(scope, {
+      isoDate: '2026-05-14',
+      raw: 'Already cached',
+      markClean: true
+    });
+    const key = 'user-a:lib:2026-05-14';
+    delete store.state.entries[key].dirty;
+    expect(store.listDirtyEntries(scope)).toHaveLength(0);
+  });
+
+  it('marks entries dirty only when content differs from the synced hash', async () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bol-cloud-entries-'));
+    const scope = { userId: 'user-a', libraryId: 'lib', deviceId: 'desktop' };
+    const store = new CloudEntryStore({ cacheDir });
+    await store.init();
+    await store.saveEntry(scope, {
+      isoDate: '2026-05-15',
+      raw: 'Clean copy',
+      markClean: true
+    });
+    await store.saveEntry(scope, {
+      isoDate: '2026-05-15',
+      raw: 'Clean copy'
+    });
+    expect(store.listDirtyEntries(scope)).toHaveLength(0);
+    await store.saveEntry(scope, {
+      isoDate: '2026-05-15',
+      raw: 'Real local edit'
+    });
+    expect(store.listDirtyEntries(scope)).toHaveLength(1);
+    expect(store.getEntry(scope, '2026-05-15').contentHash).toBe(entryContentHash('Real local edit'));
   });
 });

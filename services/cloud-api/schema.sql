@@ -79,9 +79,9 @@ alter table media_items add column if not exists original_size bigint not null d
 alter table media_items add column if not exists original_content_type text not null default '';
 alter table media_items add column if not exists updated_at timestamptz not null default now();
 
+drop index if exists media_items_library_local_media_id_idx;
 create unique index if not exists media_items_library_local_media_id_idx
-  on media_items(library_id, local_media_id)
-  where local_media_id is not null;
+  on media_items(library_id, local_media_id);
 
 create table if not exists sync_changes (
   id bigserial primary key,
@@ -91,6 +91,12 @@ create table if not exists sync_changes (
   payload jsonb not null default '{}',
   changed_at timestamptz not null default now()
 );
+
+create index if not exists sync_changes_library_id_id_idx
+  on sync_changes(library_id, id);
+
+create index if not exists sync_changes_library_id_changed_at_idx
+  on sync_changes(library_id, changed_at);
 
 create table if not exists sync_mutations (
   id text primary key,
