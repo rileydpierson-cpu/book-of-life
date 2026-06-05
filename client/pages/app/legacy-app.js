@@ -3441,6 +3441,8 @@ function desktopFolderTemplate(folder = {}) {
 function renderSettingsMediaFolders() {
   if (!dom.settingsMediaFolders) return;
   const folders = Array.isArray(state.desktopSettings?.mediaFolders) ? state.desktopSettings.mediaFolders : [];
+  const availabilityRoots = Array.isArray(state.desktopMediaAvailability?.roots) ? state.desktopMediaAvailability.roots : [];
+  const availabilityByPath = new Map(availabilityRoots.map((root) => [root.path, root]));
   dom.settingsMediaFolders.innerHTML = folders.map((folder) => `
     <div class="settings-media-folder" data-folder-id="${escapeHtml(folder.id)}">
       <label>
@@ -3467,6 +3469,13 @@ function renderSettingsMediaFolders() {
         <input data-field="enabled" type="checkbox" ${folder.enabled !== false ? 'checked' : ''} />
         Enabled
       </label>
+      ${(() => {
+        const status = availabilityByPath.get(folder.path);
+        if (!status) return '';
+        if (status.warningCount) return `<p class="settings-folder-warning"><i class="ph-duotone ph-warning"></i><span>${escapeHtml(String(status.warningCount))} media original${status.warningCount === 1 ? '' : 's'} need attention.</span></p>`;
+        if (status.available === false) return '';
+        return `<p class="settings-folder-ok"><i class="ph-duotone ph-check-circle"></i><span>Available</span></p>`;
+      })()}
       <button class="settings-remove-button" type="button" data-action="remove-folder"><i class="ph-bold ph-trash"></i><span>Remove</span></button>
     </div>
   `).join('');
@@ -3481,9 +3490,19 @@ function renderSettingsHostSummary() {
   const settings = state.desktopSettings || {};
   const cloud = state.desktopCloudStatus || {};
   const onboarding = state.desktopOnboardingStatus || {};
+  const mirrorStatus = state.desktopJournalMirrorStatus || {};
   const mediaCount = Number(onboarding.sourceCounts?.mediaFolders || settings.mediaFolders?.length || 0);
   const uploadDestination = settings.deviceUploadDestinationPath || 'Default device uploads folder';
   const journalMirror = settings.localJournalMirrorPath || 'Not configured';
+  const journalMirrorState = mirrorStatus.configured
+    ? mirrorStatus.syncing || mirrorStatus.status === 'syncing'
+      ? 'Syncing journal mirror'
+      : mirrorStatus.status === 'conflict' || Number(mirrorStatus.conflictCount || 0) > 0
+        ? 'Journal mirror has conflicts'
+        : mirrorStatus.available === false || mirrorStatus.status === 'unavailable'
+          ? 'Journal mirror unavailable. Using local backup'
+          : 'Journal mirror synced'
+    : 'Not configured';
   const signedIn = cloud.signedIn ? `Connected as ${cloud.email || cloud.userId || 'cloud account'}` : 'Not connected to cloud';
   const hostMode = settings.hostAvailability || 'local-only';
   const lastSync = cloud.lastCloudSyncAt ? new Date(cloud.lastCloudSyncAt).toLocaleString() : 'Not synced yet';
@@ -3493,6 +3512,7 @@ function renderSettingsHostSummary() {
     <div><span>Photo sources</span><strong>${mediaCount}</strong></div>
     <div><span>Device uploads</span><strong>${escapeHtml(uploadDestination)}</strong></div>
     <div><span>Journal mirror</span><strong>${escapeHtml(journalMirror)}</strong></div>
+    <div><span>Mirror status</span><strong>${escapeHtml(journalMirrorState)}</strong></div>
     <div><span>Last sync</span><strong>${escapeHtml(lastSync)}</strong></div>
   `;
 }
@@ -3510,14 +3530,17 @@ function hydrateDesktopSettingsForm() {
 
 async function loadDesktopSettings() {
   setSettingsDevicesStatus('Loading desktop settings...');
-  const [settingsPayload, cloudStatus, onboardingStatus] = await Promise.all([
+  const [settingsPayload, cloudStatus, onboardingStatus, trayStatus] = await Promise.all([
     fetchJson('/api/desktop/sync-settings'),
     fetchJson('/api/desktop/cloud/status').catch((error) => ({ error: error.message })),
-    fetchJson('/api/desktop/onboarding/status').catch((error) => ({ error: error.message }))
+    fetchJson('/api/desktop/onboarding/status').catch((error) => ({ error: error.message })),
+    fetchJson('/api/desktop/tray/status', { cache: 'no-store' }).catch((error) => ({ error: error.message }))
   ]);
   state.desktopSettings = settingsPayload.settings || {};
   state.desktopCloudStatus = cloudStatus;
   state.desktopOnboardingStatus = onboardingStatus;
+  state.desktopMediaAvailability = trayStatus?.mediaAvailability || {};
+  state.desktopJournalMirrorStatus = trayStatus?.journalMirror || {};
   state.desktopCloudSignedIn = Boolean(cloudStatus?.signedIn);
   hydrateDesktopSettingsForm();
   if (cloudStatus?.error) setSettingsDevicesStatus(cloudStatus.error);
@@ -3550,6 +3573,7 @@ async function saveDesktopSettingsFromPanel() {
     setSettingsDevicesStatus('Saving devices and media settings...');
     const payload = await postJson('/api/desktop/sync-settings', { settings: collectDesktopSettings() });
     state.desktopSettings = payload.settings || state.desktopSettings;
+    state.desktopJournalMirrorStatus = payload.journalMirror || state.desktopJournalMirrorStatus || {};
     hydrateDesktopSettingsForm();
     setSettingsDevicesStatus(`Saved at ${new Date().toLocaleTimeString()}.`);
   } catch (error) {
@@ -4216,19 +4240,43 @@ function uploadMediaFiles() {
   xhr.send(form);
 }
 
+function mediaOriginalStatusLabel(item = {}) {
+  switch (item.availability) {
+    case 'cloud-only':
+      return 'Original stored in cloud to save space';
+    case 'root-unavailable':
+      return 'Original is on a disconnected drive';
+    case 'missing-cloud-risk':
+      return 'Original is missing locally; cloud copy exists';
+    case 'missing-unapproved':
+    case 'missing-cloud':
+      return 'Original is missing from this device';
+    default:
+      return item.originalAvailable === false ? 'Original unavailable' : 'Original on this device';
+  }
+}
+
 function buildMediaTile(media, className, { hero = false, label = '', badge = '', style = '' } = {}) {
   const previewSrc = media.type === 'video' ? (media.previewUrl || media.thumbUrl) : media.thumbUrl;
   const previewNode = media.type === 'video'
     ? `<video class="lazy-media" data-src="${previewSrc}" muted autoplay loop playsinline preload="none" poster="${escapeHtml(media.thumbUrl || '')}" aria-hidden="true"></video>`
     : '';
   const likedIndicator = media.liked ? `<span class="media-liked-indicator" aria-hidden="true">${renderPhIcon('heart', { variant: 'fill' })}</span>` : '';
+  const cloudOnly = media.availability === 'cloud-only';
+  const warning = media.originalAvailable === false && !cloudOnly;
+  const statusBadge = cloudOnly
+    ? `<div class="media-badge media-badge-cloud ${hero ? 'hero-badge' : ''}" title="${escapeHtml(mediaOriginalStatusLabel(media))}">${renderPhIcon('cloud', { variant: 'duotone' })}</div>`
+    : warning
+      ? `<div class="media-badge media-badge-warning ${hero ? 'hero-badge' : ''}" title="${escapeHtml(mediaOriginalStatusLabel(media))}">${renderPhIcon('warning', { variant: 'duotone' })}</div>`
+    : '';
   return `
-    <button class="${className} media-tile open-media ${hero ? 'hero-photo' : ''} ${media.type === 'video' ? '' : 'lazy-media lazy-media-bg'}" type="button" data-media-id="${media.id}" ${style ? `style="${style}"` : ''} ${media.type === 'video' ? '' : `data-src="${previewSrc}"`}>
+    <button class="${className} media-tile open-media ${hero ? 'hero-photo' : ''} ${warning ? 'is-unavailable' : ''} ${cloudOnly ? 'is-cloud-only' : ''} ${media.type === 'video' ? '' : 'lazy-media lazy-media-bg'}" type="button" data-media-id="${media.id}" ${style ? `style="${style}"` : ''} ${media.type === 'video' ? '' : `data-src="${previewSrc}"`}>
       <div class="media-skeleton"></div>
       ${previewNode}
       ${likedIndicator}
       ${hero ? '<div class="hero-gradient"></div>' : ''}
       ${label ? `<div class="hero-stamp">${escapeHtml(label)}</div>` : ''}
+      ${statusBadge}
       ${media.type === 'video' ? `<div class="media-badge ${hero ? 'hero-badge' : ''}">${renderPhIcon('video-camera', { variant: 'fill' })}</div>` : ''}
       ${badge && media.type !== 'video' ? `<div class="media-badge ${hero ? 'hero-badge' : ''}">${badge}</div>` : ''}
     </button>
@@ -5517,6 +5565,7 @@ function renderViewerDetails(item) {
   const rows = [
     ['File', item.fileName || '—'],
     ['Type', item.type === 'video' ? 'Video' : 'Photo'],
+    ['Original', mediaOriginalStatusLabel(item)],
     ['Date', item.capturedAt ? new Date(item.capturedAt).toLocaleString() : '—'],
     ['Source', item.dateSource || '—'],
     ['Folder', folderText],
@@ -5755,17 +5804,28 @@ function renderViewerItem(direction = 0, { forceDateToast = false } = {}) {
   if (item.type === 'video') {
     dom.viewerVideo.classList.remove('hidden');
     dom.viewerVideo.poster = item.thumbUrl;
-    dom.viewerVideo.src = getDisplayUrl(item);
+    dom.viewerVideo.src = item.originalAvailable === false ? (item.previewUrl || item.thumbUrl || '') : getDisplayUrl(item);
     dom.viewerVideo.load();
-    dom.viewerVideo.addEventListener('loadeddata', () => {
-      if (token !== state.viewerLoadToken) return;
+    if (item.originalAvailable === false) {
       dom.viewerLoading.classList.add('hidden');
-      updateViewerTransform();
-    }, { once: true });
+      requestAnimationFrame(() => { updateViewerTransform(); updateViewerLoadingPosition(); });
+    } else {
+      dom.viewerVideo.addEventListener('loadeddata', () => {
+        if (token !== state.viewerLoadToken) return;
+        dom.viewerLoading.classList.add('hidden');
+        updateViewerTransform();
+      }, { once: true });
+    }
   } else {
     dom.viewerImage.classList.remove('hidden');
     dom.viewerImage.alt = item.fileName;
     dom.viewerImage.src = item.thumbUrl;
+    if (item.originalAvailable === false) {
+      dom.viewerLoading.classList.add('hidden');
+      requestAnimationFrame(() => { updateViewerTransform(); updateViewerLoadingPosition(); });
+      if (direction) playViewerStepAnimation(direction);
+      return;
+    }
 
     const fullImage = new Image();
     fullImage.onload = () => {

@@ -9,6 +9,7 @@ const TABS = [
   { id: 'calendar', label: 'Calendar' },
   { id: 'editor', label: 'Editor' },
   { id: 'media', label: 'Media' },
+  { id: 'folders', label: 'Folders' },
   { id: 'devices', label: 'Devices' },
   { id: 'settings', label: 'Settings' }
 ];
@@ -70,6 +71,7 @@ export default function WebAppPage() {
   const [raw, setRaw] = useState('');
   const [entries, setEntries] = useState([]);
   const [media, setMedia] = useState([]);
+  const [selectedMedia, setSelectedMedia] = useState(null);
   const [devices, setDevices] = useState([]);
   const [hosts, setHosts] = useState([]);
   const [query, setQuery] = useState('');
@@ -96,6 +98,25 @@ export default function WebAppPage() {
       devices: devices.length
     };
   }, [entries, media, devices]);
+  const mediaByDate = useMemo(() => {
+    const map = new Map();
+    for (const item of media) {
+      const key = item.isoDate || item.metadata?.isoDate || '';
+      if (!key) continue;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(item);
+    }
+    return map;
+  }, [media]);
+  const folderGroups = useMemo(() => {
+    const groups = new Map();
+    for (const item of media) {
+      const folder = item.metadata?.folder || item.metadata?.relative_path || 'Unfiled';
+      if (!groups.has(folder)) groups.set(folder, []);
+      groups.get(folder).push(item);
+    }
+    return Array.from(groups.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [media]);
 
   useEffect(() => {
     let cancelled = false;
@@ -262,7 +283,13 @@ export default function WebAppPage() {
 
         <section className="tab-panel">
           {activeTab === 'timeline' ? (
-            <TimelineView entries={filteredEntries} onSelect={(entry) => selectEntry(entry, 'editor')} />
+            <TimelineView
+              entries={filteredEntries}
+              mediaByDate={mediaByDate}
+              libraryId={libraryId}
+              onSelect={(entry) => selectEntry(entry, 'editor')}
+              onOpenMedia={setSelectedMedia}
+            />
           ) : null}
           {activeTab === 'calendar' ? (
             <CalendarView
@@ -284,7 +311,22 @@ export default function WebAppPage() {
               onSave={saveEntry}
             />
           ) : null}
-          {activeTab === 'media' ? <MediaView media={media} hosts={hosts} /> : null}
+          {activeTab === 'media' ? (
+            <MediaView
+              media={media}
+              hosts={hosts}
+              libraryId={libraryId}
+              onOpenMedia={setSelectedMedia}
+              onActionComplete={loadEverything}
+            />
+          ) : null}
+          {activeTab === 'folders' ? (
+            <FoldersView
+              groups={folderGroups}
+              libraryId={libraryId}
+              onOpenMedia={setSelectedMedia}
+            />
+          ) : null}
           {activeTab === 'devices' ? <DevicesView devices={devices} hosts={hosts} /> : null}
           {activeTab === 'settings' ? (
             <SettingsView
@@ -296,6 +338,14 @@ export default function WebAppPage() {
           ) : null}
         </section>
       </section>
+      {selectedMedia ? (
+        <MediaViewer
+          item={selectedMedia}
+          libraryId={libraryId}
+          onClose={() => setSelectedMedia(null)}
+          onActionComplete={loadEverything}
+        />
+      ) : null}
     </main>
   );
 }
@@ -309,24 +359,69 @@ function Stat({ label, value }) {
   );
 }
 
-function TimelineView({ entries, onSelect }) {
+function variantUrl(libraryId, item, variant) {
+  if (!libraryId || !item?.id) return '';
+  return `/api/media/${encodeURIComponent(item.id)}/variant/${encodeURIComponent(variant)}?libraryId=${encodeURIComponent(libraryId)}`;
+}
+
+function pendingActionCount(item) {
+  return Array.isArray(item?.metadata?.pendingActions) ? item.metadata.pendingActions.length : 0;
+}
+
+function TimelineView({ entries, mediaByDate, libraryId, onSelect, onOpenMedia }) {
   if (!entries.length) {
     return <EmptyState title="No timeline entries yet" message="Create an entry in the editor and it will appear here." />;
   }
   return (
     <div className="timeline-view">
-      {entries.map((entry) => (
-        <article className="timeline-card" key={entry.isoDate}>
-          <div className="timeline-date">
-            <strong>{entry.isoDate}</strong>
-            <span>v{entry.cloudVersion}</span>
+      {entries.map((entry) => {
+        const dayMedia = mediaByDate.get(entry.isoDate) || [];
+        return (
+          <article className="timeline-card" key={entry.isoDate}>
+            <div className="timeline-date">
+              <strong>{entry.isoDate}</strong>
+              <span>v{entry.cloudVersion}</span>
+              {dayMedia.length ? <span>{dayMedia.length} media</span> : null}
+            </div>
+            <div>
+              <h2>{entryTitle(entry)}</h2>
+              <p>{String(entry.raw || '').replace(/\s+/g, ' ').slice(0, 240) || 'No text yet.'}</p>
+              {dayMedia.length ? (
+                <div className="timeline-media-strip">
+                  {dayMedia.slice(0, 8).map((item) => (
+                    <button className="thumb-button" key={item.id} type="button" onClick={() => onOpenMedia(item)}>
+                      <img src={variantUrl(libraryId, item, 'thumb')} alt={item.fileName || 'Media'} loading="lazy" />
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              <button className="button small secondary" type="button" onClick={() => onSelect(entry)}>Edit</button>
+            </div>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function FoldersView({ groups, libraryId, onOpenMedia }) {
+  if (!groups.length) {
+    return <EmptyState title="No folders yet" message="Desktop media metadata will fill this view after sync." />;
+  }
+  return (
+    <div className="folder-list">
+      {groups.map(([folder, items]) => (
+        <section className="folder-group" key={folder}>
+          <div className="folder-heading">
+            <h2>{folder}</h2>
+            <span>{items.length} item{items.length === 1 ? '' : 's'}</span>
           </div>
-          <div>
-            <h2>{entryTitle(entry)}</h2>
-            <p>{String(entry.raw || '').replace(/\s+/g, ' ').slice(0, 240) || 'No text yet.'}</p>
-            <button className="button small secondary" type="button" onClick={() => onSelect(entry)}>Edit</button>
+          <div className="media-grid compact">
+            {items.map((item) => (
+              <MediaCard key={item.id} item={item} libraryId={libraryId} onOpen={() => onOpenMedia(item)} />
+            ))}
           </div>
-        </article>
+        </section>
       ))}
     </div>
   );
@@ -381,7 +476,7 @@ function EditorView({ isoDate, raw, selectedEntry, busy, onDateChange, onRawChan
   );
 }
 
-function MediaView({ media, hosts }) {
+function MediaView({ media, hosts, libraryId, onOpenMedia, onActionComplete }) {
   if (!media.length) {
     return (
       <EmptyState
@@ -393,18 +488,122 @@ function MediaView({ media, hosts }) {
   return (
     <div className="media-grid">
       {media.map((item) => (
-        <article className="media-card" key={item.id}>
-          <div className="media-thumb">{String(item.file_name || 'Media').slice(0, 1).toUpperCase()}</div>
-          <h2>{item.file_name || 'Untitled media'}</h2>
-          <p>{item.iso_date || 'No date'}</p>
-          <div className="pill-row">
-            <span>{item.has_thumb ? 'Thumb' : 'No thumb'}</span>
-            <span>{item.has_preview ? 'Preview' : 'No preview'}</span>
-            <span>{item.original_in_cloud ? 'Cloud original' : 'Host original'}</span>
-          </div>
-        </article>
+        <MediaCard
+          key={item.id}
+          item={item}
+          libraryId={libraryId}
+          onOpen={() => onOpenMedia(item)}
+          onActionComplete={onActionComplete}
+        />
       ))}
       {hosts.length ? <p className="status">Online hosts: {hosts.map((host) => host.device_name).join(', ')}</p> : null}
+    </div>
+  );
+}
+
+function MediaCard({ item, libraryId, onOpen, onActionComplete = null }) {
+  return (
+    <article className="media-card">
+      <button className="media-thumb image" type="button" onClick={onOpen}>
+        <img src={variantUrl(libraryId, item, 'thumb')} alt={item.fileName || 'Media'} loading="lazy" />
+      </button>
+      <h2>{item.fileName || 'Untitled media'}</h2>
+      <p>{item.isoDate || 'No date'}</p>
+      <div className="pill-row">
+        <span>{item.hasThumb ? 'Thumb' : 'No thumb'}</span>
+        <span>{item.hasPreview ? 'Preview' : 'No preview'}</span>
+        <span>{item.originalInCloud ? 'Cloud original' : 'Host original'}</span>
+        {pendingActionCount(item) ? <span>{pendingActionCount(item)} pending</span> : null}
+      </div>
+      {onActionComplete ? (
+        <button className="button small secondary" type="button" onClick={onOpen}>Open</button>
+      ) : null}
+    </article>
+  );
+}
+
+function MediaViewer({ item, libraryId, onClose, onActionComplete }) {
+  const [status, setStatus] = useState('');
+  const [description, setDescription] = useState(item.metadata?.description || '');
+  const [tags, setTags] = useState(Array.isArray(item.metadata?.tags) ? item.metadata.tags.join(', ') : '');
+  const isVideo = item.metadata?.type === 'video' || item.fileName?.toLowerCase().match(/\.(mp4|mov|m4v|webm)$/);
+  const source = variantUrl(libraryId, item, isVideo ? 'preview' : 'full');
+
+  async function queueAction(actionType, payload) {
+    setStatus('Queued for desktop...');
+    const response = await fetch('/api/media/actions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ libraryId, mediaId: item.id, actionType, payload })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || 'Media action failed.');
+    setStatus('Pending desktop sync.');
+    await onActionComplete();
+  }
+
+  return (
+    <div className="viewer-overlay" role="dialog" aria-modal="true">
+      <div className="viewer-panel">
+        <div className="viewer-toolbar">
+          <div>
+            <h2>{item.fileName || 'Media'}</h2>
+            <p>{item.isoDate || 'No date'} · {item.metadata?.folder || 'No folder'}</p>
+          </div>
+          <button className="button small secondary" type="button" onClick={onClose}>Close</button>
+        </div>
+        <div className="viewer-media">
+          {isVideo ? (
+            <video src={source} controls playsInline />
+          ) : (
+            <img src={source} alt={item.fileName || 'Media'} />
+          )}
+        </div>
+        <div className="viewer-details">
+          <label>
+            Description
+            <textarea value={description} onChange={(event) => setDescription(event.target.value)} />
+          </label>
+          <label>
+            Tags
+            <input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="comma, separated, tags" />
+          </label>
+          <div className="editor-actions">
+            <button
+              className="button small"
+              type="button"
+              onClick={() => queueAction('media.description.set', { photoId: item.localMediaId || item.id, description }).catch((error) => setStatus(error.message))}
+            >
+              Save description
+            </button>
+            <button
+              className="button small secondary"
+              type="button"
+              onClick={() => queueAction('media.tags.set', {
+                photoId: item.localMediaId || item.id,
+                tags: tags.split(',').map((tag) => tag.trim()).filter(Boolean)
+              }).catch((error) => setStatus(error.message))}
+            >
+              Save tags
+            </button>
+            <button
+              className="button small secondary"
+              type="button"
+              onClick={() => queueAction('media.like.set', { photoId: item.localMediaId || item.id, liked: !item.metadata?.liked }).catch((error) => setStatus(error.message))}
+            >
+              {item.metadata?.liked ? 'Unlike' : 'Like'}
+            </button>
+            <button
+              className="button small danger"
+              type="button"
+              onClick={() => queueAction('media.delete', { photoId: item.localMediaId || item.id }).catch((error) => setStatus(error.message))}
+            >
+              Delete on desktop
+            </button>
+          </div>
+          <p className="status compact">{status || (pendingActionCount(item) ? 'Waiting for desktop to apply pending actions.' : 'Originals may take a moment when served by desktop.')}</p>
+        </div>
+      </div>
     </div>
   );
 }

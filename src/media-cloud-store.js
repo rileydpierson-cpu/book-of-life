@@ -5,6 +5,16 @@ function mediaSignature(photo = {}) {
   return `${photo.id || ''}:${photo.mtimeMs || 0}:${photo.size || 0}`;
 }
 
+const LOCAL_RETENTION = Object.freeze({
+  UNKNOWN: 'unknown',
+  KEEP_LOCAL: 'keep-local',
+  CLOUD_ONLY_APPROVED: 'cloud-only-approved'
+});
+
+function normalizeLocalRetention(value) {
+  return Object.values(LOCAL_RETENTION).includes(value) ? value : LOCAL_RETENTION.UNKNOWN;
+}
+
 function defaultRecord(photo = {}) {
   return {
     photoId: String(photo.id || ''),
@@ -15,9 +25,22 @@ function defaultRecord(photo = {}) {
     total: Number(photo.size || 0),
     cloudMediaId: '',
     storagePath: '',
+    localRetention: LOCAL_RETENTION.UNKNOWN,
+    localRetentionUpdatedAt: '',
+    localRetentionSource: '',
     lastError: '',
     updatedAt: ''
   };
+}
+
+function isUploadedOriginalRecord(record = {}) {
+  return String(record.status || '') === 'cloud'
+    && (Boolean(String(record.cloudMediaId || '').trim()) || Boolean(String(record.storagePath || '').trim()));
+}
+
+function isCloudOnlyApprovedRecord(record = {}) {
+  return normalizeLocalRetention(record.localRetention) === LOCAL_RETENTION.CLOUD_ONLY_APPROVED
+    && isUploadedOriginalRecord(record);
 }
 
 class MediaCloudStore {
@@ -51,12 +74,14 @@ class MediaCloudStore {
   async get(photo = {}) {
     await this.ensureLoaded();
     const key = this.keyForPhoto(photo);
+    const stored = this.state.media[key] || {};
     return {
       ...defaultRecord(photo),
-      ...(this.state.media[key] || {}),
+      ...stored,
       photoId: key,
       signature: mediaSignature(photo),
-      total: Number(photo.size || this.state.media[key]?.total || 0)
+      localRetention: normalizeLocalRetention(stored.localRetention),
+      total: Number(photo.size || stored.total || 0)
     };
   }
 
@@ -83,11 +108,21 @@ class MediaCloudStore {
     const next = {
       ...record,
       ...(updates || {}),
+      localRetention: normalizeLocalRetention(updates.localRetention || record.localRetention),
       updatedAt: new Date().toISOString()
     };
     this.state.media[next.photoId] = next;
     await this.persist();
     return next;
+  }
+
+  async setLocalRetention(photo = {}, localRetention, source = 'user') {
+    const normalized = normalizeLocalRetention(localRetention);
+    return this.update(photo, {
+      localRetention: normalized,
+      localRetentionSource: String(source || 'user'),
+      localRetentionUpdatedAt: new Date().toISOString()
+    });
   }
 
   async listPending(indexer) {
@@ -105,6 +140,10 @@ class MediaCloudStore {
 }
 
 module.exports = {
+  LOCAL_RETENTION,
   MediaCloudStore,
-  mediaSignature
+  isCloudOnlyApprovedRecord,
+  mediaSignature,
+  normalizeLocalRetention,
+  isUploadedOriginalRecord
 };

@@ -19,9 +19,16 @@ create table if not exists devices (
   can_edit_entries boolean not null default true,
   can_request_originals boolean not null default false,
   can_use_desktop_host boolean not null default false,
+  host_url text not null default '',
+  host_relay_token text not null default '',
+  host_relay_expires_at timestamptz,
   last_seen_at timestamptz,
   created_at timestamptz not null default now()
 );
+
+alter table devices add column if not exists host_url text not null default '';
+alter table devices add column if not exists host_relay_token text not null default '';
+alter table devices add column if not exists host_relay_expires_at timestamptz;
 
 create table if not exists entries (
   library_id uuid not null references libraries(id) on delete cascade,
@@ -56,6 +63,10 @@ create table if not exists media_items (
   metadata jsonb not null default '{}',
   has_thumb boolean not null default false,
   has_preview boolean not null default false,
+  thumb_storage_path text not null default '',
+  thumb_content_type text not null default '',
+  preview_storage_path text not null default '',
+  preview_content_type text not null default '',
   original_in_cloud boolean not null default false,
   original_on_host boolean not null default true,
   original_storage_path text not null default '',
@@ -72,6 +83,10 @@ alter table media_items add column if not exists file_name text not null default
 alter table media_items add column if not exists metadata jsonb not null default '{}';
 alter table media_items add column if not exists has_thumb boolean not null default false;
 alter table media_items add column if not exists has_preview boolean not null default false;
+alter table media_items add column if not exists thumb_storage_path text not null default '';
+alter table media_items add column if not exists thumb_content_type text not null default '';
+alter table media_items add column if not exists preview_storage_path text not null default '';
+alter table media_items add column if not exists preview_content_type text not null default '';
 alter table media_items add column if not exists original_in_cloud boolean not null default false;
 alter table media_items add column if not exists original_on_host boolean not null default true;
 alter table media_items add column if not exists original_storage_path text not null default '';
@@ -108,6 +123,23 @@ create table if not exists sync_mutations (
   created_at timestamptz not null default now()
 );
 
+create table if not exists media_actions (
+  id uuid primary key default gen_random_uuid(),
+  library_id uuid not null references libraries(id) on delete cascade,
+  media_id uuid references media_items(id) on delete cascade,
+  requested_by_device_id uuid references devices(id),
+  host_device_id uuid references devices(id),
+  action_type text not null,
+  payload jsonb not null default '{}',
+  status text not null default 'pending',
+  result jsonb not null default '{}',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists media_actions_library_status_idx
+  on media_actions(library_id, status, created_at);
+
 alter table libraries enable row level security;
 alter table devices enable row level security;
 alter table entries enable row level security;
@@ -115,9 +147,14 @@ alter table entry_revisions enable row level security;
 alter table media_items enable row level security;
 alter table sync_changes enable row level security;
 alter table sync_mutations enable row level security;
+alter table media_actions enable row level security;
 
 insert into storage.buckets (id, name, public)
 values ('media-originals', 'media-originals', false)
+on conflict (id) do nothing;
+
+insert into storage.buckets (id, name, public)
+values ('media-derivatives', 'media-derivatives', false)
 on conflict (id) do nothing;
 
 drop policy if exists "Users can read own libraries" on libraries;
@@ -323,6 +360,90 @@ create policy "Users can read own media originals"
     and exists (
       select 1 from libraries
       where storage.objects.name like ('libraries/' || libraries.id || '/%')
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can read own media derivatives" on storage.objects;
+create policy "Users can read own media derivatives"
+  on storage.objects for select
+  using (
+    bucket_id = 'media-derivatives'
+    and exists (
+      select 1 from libraries
+      where storage.objects.name like ('libraries/' || libraries.id || '/%')
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can upload own media derivatives" on storage.objects;
+create policy "Users can upload own media derivatives"
+  on storage.objects for insert
+  with check (
+    bucket_id = 'media-derivatives'
+    and exists (
+      select 1 from libraries
+      where storage.objects.name like ('libraries/' || libraries.id || '/%')
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can update own media derivatives" on storage.objects;
+create policy "Users can update own media derivatives"
+  on storage.objects for update
+  using (
+    bucket_id = 'media-derivatives'
+    and exists (
+      select 1 from libraries
+      where storage.objects.name like ('libraries/' || libraries.id || '/%')
+        and libraries.owner_user_id = auth.uid()
+    )
+  )
+  with check (
+    bucket_id = 'media-derivatives'
+    and exists (
+      select 1 from libraries
+      where storage.objects.name like ('libraries/' || libraries.id || '/%')
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can read own media actions" on media_actions;
+create policy "Users can read own media actions"
+  on media_actions for select
+  using (
+    exists (
+      select 1 from libraries
+      where libraries.id = media_actions.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can create own media actions" on media_actions;
+create policy "Users can create own media actions"
+  on media_actions for insert
+  with check (
+    exists (
+      select 1 from libraries
+      where libraries.id = media_actions.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can update own media actions" on media_actions;
+create policy "Users can update own media actions"
+  on media_actions for update
+  using (
+    exists (
+      select 1 from libraries
+      where libraries.id = media_actions.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  )
+  with check (
+    exists (
+      select 1 from libraries
+      where libraries.id = media_actions.library_id
         and libraries.owner_user_id = auth.uid()
     )
   );

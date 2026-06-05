@@ -2245,6 +2245,22 @@ body[data-active-view="calendar"]::-webkit-scrollbar {
   color: white;
   pointer-events: none;
 }
+.media-tile.is-unavailable {
+  outline: 1px solid rgba(245, 158, 11, 0.72);
+  outline-offset: -1px;
+}
+.media-badge-warning {
+  right: 30px;
+  color: #f59e0b;
+  background: rgba(20, 20, 24, 0.72);
+  border-radius: 999px;
+}
+.media-badge-cloud {
+  right: 30px;
+  color: #7dd3fc;
+  background: rgba(20, 20, 24, 0.72);
+  border-radius: 999px;
+}
 .media-badge-dot {
   width: 10px;
   height: 10px;
@@ -3708,6 +3724,20 @@ section.timeline-unit.is-placeholder {
   border-radius: 999px;
   background: rgba(255,255,255,0.4);
   margin: 0 auto 10px;
+}
+
+.settings-folder-warning,
+.settings-folder-ok {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  color: #d97706;
+  font-size: 0.84rem;
+  line-height: 1.35;
+}
+.settings-folder-ok {
+  color: #15803d;
 }
 .viewer-cloud-control {
   display: flex;

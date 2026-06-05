@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Book of Life Status</title>
+    <link rel="stylesheet" href="/vendor/phosphor/regular/style.css" />
+    <link rel="stylesheet" href="/vendor/phosphor/fill/style.css" />
+    <link rel="stylesheet" href="/vendor/phosphor/duotone/style.css" />
+    <link rel="stylesheet" href="/vendor/phosphor/bold/style.css" />
+    <script type="module" crossorigin src="/assets/desktopTray-BdtqNxki.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/modulepreload-polyfill-B5Qt9EMX.js">
+    <link rel="modulepreload" crossorigin href="/assets/api-iAbQVvnE.js">
+    <link rel="stylesheet" crossorigin href="/assets/desktopTray-CyFSiRb8.css">
+  </head>
+  <body>
+    <main class="tray-shell">
+      <header class="tray-header">
+        <img src="/desktop/assets/icon.png" alt="" />
+        <div>
+          <h1>Book of Life</h1>
+          <p id="accountLine">Loading status...</p>
+        </div>
+        <button id="closeTray" class="tray-close-button" type="button" aria-label="Close"><i class="ph-bold ph-x"></i></button>
+      </header>
+
+      <section class="status-grid">
+        <article class="status-card">
+          <span class="status-icon"><i class="ph-duotone ph-user-circle"></i></span>
+          <div>
+            <p class="status-label">Login</p>
+            <strong id="loginStatus">Checking</strong>
+          </div>
+        </article>
+
+        <article id="indexCard" class="status-card">
+          <span class="status-icon"><i class="ph-duotone ph-clock-counter-clockwise"></i></span>
+          <div>
+            <p class="status-label">Indexing</p>
+            <strong id="indexStatus">Checking</strong>
+            <div class="mini-progress"><span id="indexProgress"></span></div>
+          </div>
+        </article>
+
+        <article class="status-card">
+          <span class="status-icon"><i class="ph-duotone ph-arrows-clockwise"></i></span>
+          <div>
+            <p class="status-label">Sync</p>
+            <strong id="syncStatus">Checking</strong>
+            <div id="syncProgress" class="mini-progress is-indeterminate hidden"><span></span></div>
+          </div>
+        </article>
+
+        <article class="status-card">
+          <span class="status-icon"><i class="ph-duotone ph-cloud"></i></span>
+          <div>
+            <p class="status-label">Cloud Storage</p>
+            <strong id="storageStatus">Checking</strong>
+            <div class="mini-progress"><span id="storageProgress"></span></div>
+          </div>
+        </article>
+
+        <article id="mediaAvailabilityCard" class="status-card hidden">
+          <span class="status-icon"><i class="ph-duotone ph-warning"></i></span>
+          <div>
+            <p class="status-label">Media</p>
+            <strong id="mediaAvailabilityStatus">Checking</strong>
+          </div>
+        </article>
+      </section>
+
+      <p id="trayError" class="tray-error"></p>
+
+      <footer class="tray-actions">
+        <button id="openLibrary" type="button"><i class="ph-bold ph-house"></i><span>Open</span></button>
+        <button id="openOnboarding" type="button"><i class="ph-bold ph-sliders-horizontal"></i><span>Setup</span></button>
+        <button id="syncNow" type="button"><i class="ph-bold ph-arrows-clockwise"></i><span>Sync</span></button>
+        <button id="quitApp" type="button"><i class="ph-bold ph-power"></i><span>Quit</span></button>
+      </footer>
+    </main>
+  </body>
+</html>

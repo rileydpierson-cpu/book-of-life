@@ -2,7 +2,7 @@ const fs = require('fs');
 const net = require('net');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
-const { app, BrowserWindow, Menu, Tray, nativeImage, shell, ipcMain, dialog, utilityProcess, screen } = require('electron');
+const { app, BrowserWindow, Menu, Tray, nativeImage, shell, ipcMain, dialog, utilityProcess, screen, Notification } = require('electron');
 
 const devProjectRoot = path.resolve(__dirname, '..', '..', '..');
 const serverRoot = app.isPackaged
@@ -32,6 +32,8 @@ let intentionalServerStop = false;
 let restartAttempts = 0;
 let trayStatusSnapshot = null;
 let trayStatusTimer = null;
+let lastMediaWarningCount = 0;
+let lastMediaWarningNotificationAt = 0;
 const serverLog = {
   stdout: [],
   stderr: []
@@ -216,6 +218,22 @@ async function refreshTrayStatusSnapshot() {
     const response = await fetch(`${baseUrl}/api/desktop/tray/status`, { cache: 'no-store' });
     if (!response.ok) throw new Error(`Tray status failed (${response.status})`);
     trayStatusSnapshot = await response.json();
+    const mediaWarningCount = Math.max(0, Number(trayStatusSnapshot?.mediaAvailability?.warningCount || 0));
+    const notificationCooldownMs = 6 * 60 * 60 * 1000;
+    if (
+      mediaWarningCount > 0
+      && lastMediaWarningCount === 0
+      && Date.now() - lastMediaWarningNotificationAt > notificationCooldownMs
+      && Notification.isSupported()
+    ) {
+      lastMediaWarningNotificationAt = Date.now();
+      new Notification({
+        title: 'Book of Life media unavailable',
+        body: `${mediaWarningCount} media original${mediaWarningCount === 1 ? '' : 's'} need attention.`
+      }).show();
+    }
+    lastMediaWarningCount = mediaWarningCount;
+    updateTrayMenu();
     if (trayWindow && !trayWindow.isDestroyed()) {
       trayWindow.webContents.send('book-of-life:tray-status-snapshot', trayStatusSnapshot);
     }
@@ -452,12 +470,17 @@ function createTrayImage() {
 
 function updateTrayMenu() {
   if (!tray) return;
+  const mediaWarningCount = Math.max(0, Number(trayStatusSnapshot?.mediaAvailability?.warningCount || 0));
+  const mediaLabel = mediaWarningCount
+    ? `Media warning: ${mediaWarningCount} original${mediaWarningCount === 1 ? '' : 's'} need attention`
+    : 'Media: all available';
   const serviceLabel = serverProcess
     ? `Local service: running on ${desktopPort}`
     : `Local service: stopped${serverExit?.signal ? ` (${serverExit.signal})` : ''}`;
-  tray.setToolTip(`Book of Life - ${serviceLabel}`);
+  tray.setToolTip(`Book of Life - ${serviceLabel}${mediaWarningCount ? ` - ${mediaLabel}` : ''}`);
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: serviceLabel, enabled: false },
+    { label: mediaLabel, enabled: false },
     { type: 'separator' },
     { label: 'Open Book of Life', click: openLibraryWindow },
     { label: 'Open Onboarding', click: openOnboardingWindow },

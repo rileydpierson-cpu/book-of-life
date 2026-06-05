@@ -18,6 +18,29 @@ class ImageService {
     this.pending = new Map();
   }
 
+  isOriginalUnavailable(photo) {
+    return photo?.originalAvailable === false;
+  }
+
+  originalUnavailableMessage(photo = {}) {
+    switch (photo.availability) {
+      case 'root-unavailable':
+        return 'Drive unavailable. Reconnect it to open originals.';
+      case 'cloud-only':
+        return 'Original is stored in cloud to save space.';
+      case 'missing-cloud-risk':
+        return 'Original is missing from this device, but a cloud copy exists.';
+      case 'missing-unapproved':
+        return 'Original is missing from this device.';
+      default:
+        return 'Original media is unavailable on this device.';
+    }
+  }
+
+  sendOriginalUnavailable(res, photo) {
+    res.status(410).send(this.originalUnavailableMessage(photo));
+  }
+
   isHeic(filePath) {
     return HEIC_EXTENSIONS.has(path.extname(filePath).toLowerCase());
   }
@@ -34,6 +57,10 @@ class ImageService {
       res.set('Cache-Control', 'private, max-age=31536000, immutable');
       res.sendFile(cachePath);
     } catch (error) {
+      if (this.isOriginalUnavailable(photo)) {
+        res.status(404).send('Cached thumbnail unavailable');
+        return;
+      }
       console.error('Thumbnail error', error);
       res.status(500).send('Thumbnail generation failed');
     }
@@ -51,6 +78,10 @@ class ImageService {
       res.set('Cache-Control', 'private, max-age=31536000, immutable');
       res.sendFile(cachePath);
     } catch (error) {
+      if (this.isOriginalUnavailable(photo)) {
+        res.status(404).send('Cached preview unavailable');
+        return;
+      }
       console.error('Video preview error', error);
       res.status(500).send('Video preview generation failed');
     }
@@ -64,6 +95,10 @@ class ImageService {
     }
 
     try {
+      if (this.isOriginalUnavailable(photo)) {
+        this.sendOriginalUnavailable(res, photo);
+        return;
+      }
       if (photo.type === 'video') {
         res.set('Accept-Ranges', 'bytes');
         res.set('Cache-Control', 'private, max-age=86400');
@@ -97,6 +132,10 @@ class ImageService {
     }
 
     try {
+      if (this.isOriginalUnavailable(photo)) {
+        this.sendOriginalUnavailable(res, photo);
+        return;
+      }
       const cachePath = photo.type === 'video'
         ? await this.ensureVideoDisplay(photo)
         : await this.ensureImageDisplay(photo);
@@ -117,6 +156,10 @@ class ImageService {
     }
 
     try {
+      if (this.isOriginalUnavailable(photo)) {
+        this.sendOriginalUnavailable(res, photo);
+        return;
+      }
       res.set('Cache-Control', 'private, max-age=86400');
       res.download(photo.filePath, photo.fileName || path.basename(photo.filePath));
     } catch (error) {
@@ -157,6 +200,7 @@ class ImageService {
     const key = hash(`${photo.filePath}|${photo.mtimeMs}|${photo.size}|thumb-v6`);
     const outputPath = path.join(this.cacheDir, 'thumbs', `${key}.webp`);
     if (fs.existsSync(outputPath)) return outputPath;
+    if (this.isOriginalUnavailable(photo)) throw new Error('Original media is unavailable.');
 
     return this.withLock(`thumb:${key}`, async () => {
       if (fs.existsSync(outputPath)) return outputPath;
@@ -221,6 +265,7 @@ class ImageService {
     const key = hash(`${photo.filePath}|${photo.mtimeMs}|${photo.size}|preview-v1`);
     const outputPath = path.join(this.cacheDir, 'thumbs', `${key}.webm`);
     if (fs.existsSync(outputPath)) return outputPath;
+    if (this.isOriginalUnavailable(photo)) throw new Error('Original media is unavailable.');
 
     return this.withLock(`preview:${key}`, async () => {
       if (fs.existsSync(outputPath)) return outputPath;

@@ -1,6 +1,6 @@
 import { apiError, requireUser } from '../../../../lib/supabase-api.js';
 
-const ENTRY_CHANGE_TYPES = ['entry.upsert', 'entry.delete'];
+const SYNC_CHANGE_TYPES = ['entry.upsert', 'entry.delete', 'media.upsert', 'media.delete', 'folder.upsert'];
 
 async function ownsLibrary(supabase, userId, libraryId) {
   const { data, error } = await supabase
@@ -28,7 +28,7 @@ export async function GET(request) {
     .from('sync_changes')
     .select('*')
     .eq('library_id', libraryId)
-    .in('change_type', ENTRY_CHANGE_TYPES)
+    .in('change_type', SYNC_CHANGE_TYPES)
     .gt('id', since)
     .order('id', { ascending: true })
     .limit(500);

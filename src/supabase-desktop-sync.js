@@ -1,3 +1,7 @@
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+
 function isUuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ''));
 }
@@ -74,10 +78,11 @@ function changePayloadEntry(change) {
 }
 
 class SupabaseDesktopSync {
-  constructor({ settingsStore, cloudEntryStore, indexer, onBeforeLocalEntryWrite = null }) {
+  constructor({ settingsStore, cloudEntryStore, indexer, imageService = null, onBeforeLocalEntryWrite = null }) {
     this.settingsStore = settingsStore;
     this.cloudEntryStore = cloudEntryStore;
     this.indexer = indexer;
+    this.imageService = imageService;
     this.onBeforeLocalEntryWrite = onBeforeLocalEntryWrite;
   }
 
@@ -177,6 +182,7 @@ class SupabaseDesktopSync {
   }
 
   async ensureDevice(settings) {
+    const heartbeat = this.desktopHostHeartbeatPayload(settings);
     if (isUuid(settings.deviceId)) {
       await cloudApiFetch(settings, '/api/devices', {
         method: 'POST',
@@ -188,7 +194,8 @@ class SupabaseDesktopSync {
           canUploadMedia: true,
           canEditEntries: true,
           canRequestOriginals: true,
-          canUseDesktopHost: true
+          canUseDesktopHost: true,
+          ...heartbeat
         })
       }).catch(() => null);
       return settings;
@@ -202,10 +209,33 @@ class SupabaseDesktopSync {
         canUploadMedia: true,
         canEditEntries: true,
         canRequestOriginals: true,
-        canUseDesktopHost: true
+        canUseDesktopHost: true,
+        ...heartbeat
       })
     });
     return this.settingsStore.saveSettings({ deviceId: created.device.id });
+  }
+
+  desktopHostHeartbeatPayload(settings) {
+    const hostUrl = String(
+      process.env.BOOK_OF_LIFE_DESKTOP_HOST_URL ||
+      settings.desktopHostUrl ||
+      ''
+    ).replace(/\/+$/, '');
+    const hostRelayToken = String(settings.hostRelayToken || '');
+    const canRelay = settings.hostAvailability === 'cloud-relay' && hostUrl && hostRelayToken;
+    return {
+      hostUrl: canRelay ? hostUrl : '',
+      hostRelayToken: canRelay ? hostRelayToken : '',
+      hostRelayExpiresAt: canRelay ? new Date(Date.now() + 15 * 60 * 1000).toISOString() : null
+    };
+  }
+
+  async ensureRelayToken(settings) {
+    if (settings.hostRelayToken) return settings;
+    return this.settingsStore.saveSettings({
+      hostRelayToken: crypto.randomBytes(32).toString('hex')
+    });
   }
 
   async listRemoteEntries(settings) {
@@ -416,7 +446,7 @@ class SupabaseDesktopSync {
     const settings = await this.ensureReadySettings();
     if (!photo?.filePath) throw new Error('Media file is missing.');
     const fileName = photo.fileName || photo.baseName || 'media';
-    const fileBuffer = await require('fs').promises.readFile(photo.filePath);
+    const fileBuffer = await fs.promises.readFile(photo.filePath);
     const uploadTicket = await cloudApiFetch(settings, '/api/media/original-upload-url', {
       method: 'POST',
       body: JSON.stringify({
@@ -470,6 +500,152 @@ class SupabaseDesktopSync {
     return created.media || null;
   }
 
+  async uploadDerivative(settings, photo, variant) {
+    if (!this.imageService) return null;
+    const cachePath = variant === 'thumb'
+      ? await this.imageService.ensureThumb(photo)
+      : photo.type === 'video'
+        ? await this.imageService.ensureVideoPreview(photo)
+        : '';
+    if (!cachePath) return null;
+    const contentType = variant === 'thumb' ? 'image/webp' : 'video/webm';
+    const fileName = path.basename(cachePath);
+    const uploadTicket = await cloudApiFetch(settings, '/api/media/derivative-upload-url', {
+      method: 'POST',
+      body: JSON.stringify({
+        libraryId: settings.libraryId,
+        mediaId: photo.id,
+        variant,
+        fileName
+      })
+    });
+    if (!uploadTicket.signedUrl || !uploadTicket.objectPath) {
+      throw new Error('Book of Life Cloud did not return a derivative upload URL.');
+    }
+    const buffer = await fs.promises.readFile(cachePath);
+    const uploadResponse = await cloudFetch(uploadTicket.signedUrl, {
+      method: 'PUT',
+      headers: {
+        'cache-control': 'max-age=31536000',
+        'content-type': contentType,
+        'x-upsert': 'true'
+      },
+      body: buffer
+    });
+    await readJsonResponse(uploadResponse);
+    return {
+      storagePath: uploadTicket.objectPath,
+      contentType
+    };
+  }
+
+  async upsertMediaMetadata(photo, { uploadDerivatives = true } = {}) {
+    let settings = await this.ensureReadySettings();
+    settings = await this.ensureRelayToken(settings);
+    await this.ensureDevice(settings);
+
+    let thumb = null;
+    let preview = null;
+    if (uploadDerivatives && photo.originalAvailable !== false) {
+      thumb = await this.uploadDerivative(settings, photo, 'thumb').catch((error) => {
+        console.warn(`Cloud thumb upload skipped for ${photo.filePath || photo.id}: ${error.message}`);
+        return null;
+      });
+      if (photo.type === 'video') {
+        preview = await this.uploadDerivative(settings, photo, 'preview').catch((error) => {
+          console.warn(`Cloud preview upload skipped for ${photo.filePath || photo.id}: ${error.message}`);
+          return null;
+        });
+      }
+    }
+
+    const metadata = {
+      local_media_id: photo.id,
+      file_path: photo.filePath || '',
+      relative_path: photo.relativePath || '',
+      folder: photo.folder || '',
+      folder_root_id: photo.folderRootId || '',
+      width: photo.width || 0,
+      height: photo.height || 0,
+      type: photo.type || '',
+      size: photo.size || 0,
+      mtime_ms: photo.mtimeMs || 0,
+      captured_at: photo.capturedAt || '',
+      date_source: photo.dateSource || '',
+      tags: Array.isArray(photo.tags) ? photo.tags : [],
+      description: photo.description || '',
+      liked: Boolean(photo.liked)
+    };
+    const payload = await cloudApiFetch(settings, '/api/media', {
+      method: 'POST',
+      body: JSON.stringify({
+        libraryId: settings.libraryId,
+        hostDeviceId: isUuid(settings.deviceId) ? settings.deviceId : null,
+        isoDate: photo.isoDate || null,
+        fileName: photo.fileName || photo.baseName || 'media',
+        metadata,
+        hasThumb: Boolean(thumb),
+        hasPreview: Boolean(preview),
+        thumbStoragePath: thumb?.storagePath || '',
+        thumbContentType: thumb?.contentType || '',
+        previewStoragePath: preview?.storagePath || '',
+        previewContentType: preview?.contentType || '',
+        originalOnHost: photo.originalAvailable !== false,
+        originalSize: Number(photo.size || 0),
+        originalContentType: photo.mimeType || 'application/octet-stream',
+        localMediaId: photo.id,
+        fileSignature: `${photo.id || ''}:${photo.mtimeMs || 0}:${photo.size || 0}`
+      })
+    });
+    return payload.media || null;
+  }
+
+  async syncMediaMetadata({ uploadDerivatives = true, limit = Infinity } = {}) {
+    const settings = await this.ensureReadySettings();
+    await this.ensureRelayToken(settings);
+    let synced = 0;
+    let failed = 0;
+    for (const photo of this.indexer.state.photosById.values()) {
+      if (synced >= limit) break;
+      try {
+        await this.upsertMediaMetadata(photo, { uploadDerivatives });
+        synced += 1;
+      } catch (error) {
+        failed += 1;
+        console.warn(`Cloud media metadata sync skipped for ${photo.filePath || photo.id}: ${error.message}`);
+      }
+    }
+    return { ok: true, synced, failed };
+  }
+
+  async registerDesktopHostHeartbeat() {
+    let settings = await this.ensureReadySettings();
+    settings = await this.ensureRelayToken(settings);
+    await this.ensureDevice(settings);
+    return { ok: true, libraryId: settings.libraryId, deviceId: settings.deviceId };
+  }
+
+  async listPendingMediaActions() {
+    const settings = await this.ensureReadySettings();
+    const payload = await cloudApiFetch(
+      settings,
+      `/api/media/actions?libraryId=${encodeURIComponent(settings.libraryId)}&hostDeviceId=${encodeURIComponent(settings.deviceId)}&status=pending`
+    );
+    return Array.isArray(payload.actions) ? payload.actions : [];
+  }
+
+  async markMediaAction(actionId, { status, result = {} }) {
+    const settings = await this.ensureReadySettings();
+    return cloudApiFetch(settings, `/api/media/actions/${encodeURIComponent(actionId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        libraryId: settings.libraryId,
+        status,
+        result
+      })
+    });
+  }
+
   async deleteOriginalMedia({ cloudMediaId = '', storagePath = '' } = {}) {
     const settings = await this.ensureReadySettings();
     if (!cloudMediaId && !storagePath) return { ok: true, deleted: false };
@@ -478,6 +654,17 @@ class SupabaseDesktopSync {
       body: JSON.stringify({
         libraryId: settings.libraryId,
         storagePath
+      })
+    });
+  }
+
+  async deleteMediaMetadata(photoId) {
+    const settings = await this.ensureReadySettings();
+    if (!photoId) return { ok: true, deleted: false };
+    return cloudApiFetch(settings, `/api/media/${encodeURIComponent(photoId)}`, {
+      method: 'DELETE',
+      body: JSON.stringify({
+        libraryId: settings.libraryId
       })
     });
   }

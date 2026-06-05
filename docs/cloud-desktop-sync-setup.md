@@ -96,7 +96,7 @@ The web app should always read/write entries through the cloud API. It should ne
 
 ## 5. Mobile App
 
-The current Expo app lives in `mobile/`.
+The current Expo app lives in `apps/mobile/`.
 
 For the current local host flow:
 

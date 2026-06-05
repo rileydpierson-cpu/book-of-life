@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Book of Life Login</title>
+    <link rel="stylesheet" href="/vendor/phosphor/regular/style.css" />
+    <link rel="stylesheet" href="/vendor/phosphor/fill/style.css" />
+    <link rel="stylesheet" href="/vendor/phosphor/bold/style.css" />
+    <script type="module" crossorigin src="/assets/login-vImjohTt.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/modulepreload-polyfill-B5Qt9EMX.js">
+    <link rel="modulepreload" crossorigin href="/assets/api-iAbQVvnE.js">
+    <link rel="stylesheet" crossorigin href="/assets/login-Cac1E99A.css">
+  </head>
+  <body>
+    <main class="login-shell">
+      <section class="login-card" aria-label="Authentication">
+        <div class="login-brand"><i class="ph-fill ph-book-open"></i></div>
+        <h1>Book of Life</h1>
+        <p id="loginSubtitle" class="login-subtitle">Sign in with your account or create one with an approved username.</p>
+
+        <div class="auth-mode-switch" role="tablist" aria-label="Authentication mode">
+          <button id="loginModeButton" class="auth-mode-button is-active" type="button" data-auth-mode="login">Log in</button>
+          <button id="signupModeButton" class="auth-mode-button" type="button" data-auth-mode="signup">Sign up</button>
+        </div>
+
+        <form id="authForm" class="login-form">
+          <label class="field-label" for="usernameInput">Username</label>
+          <input id="usernameInput" name="username" class="login-input" type="text" autocapitalize="none" autocomplete="username" spellcheck="false" maxlength="32" placeholder="your-name" />
+
+          <label class="field-label" for="passwordInput">Password</label>
+          <input id="passwordInput" name="password" class="login-input" type="password" autocomplete="current-password" placeholder="Enter your password" />
+
+          <div id="confirmPasswordWrap" class="hidden">
+            <label class="field-label" for="confirmPasswordInput">Confirm password</label>
+            <input id="confirmPasswordInput" name="confirmPassword" class="login-input" type="password" autocomplete="new-password" placeholder="Re-enter your password" />
+          </div>
+
+          <button id="authButton" class="login-button" type="submit"><i class="ph-bold ph-sign-in"></i><span id="authButtonLabel">Log in</span></button>
+          <p id="loginHint" class="login-hint">Only usernames listed in <code>LIFESERVER_ALLOWED_USERS</code> may sign up.</p>
+          <p id="loginError" class="login-error hidden" role="alert"></p>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

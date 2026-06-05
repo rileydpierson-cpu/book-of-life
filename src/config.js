@@ -185,7 +185,7 @@ function loadConfig(projectRoot) {
   ensureDirSync(journalVault);
   ensureDirSync(path.join(journalVault, journalFolderName));
   ensureDirSync(path.join(journalVault, journalImagesFolderName));
-  for (const folder of allPhotoFolders) ensureDirSync(folder);
+  ensureDirSync(deviceSyncRoot);
   ensureDirSync(cacheDir);
   ensureDirSync(path.join(cacheDir, 'thumbs'));
   ensureDirSync(path.join(cacheDir, 'converted'));

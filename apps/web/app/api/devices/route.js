@@ -48,6 +48,9 @@ export async function POST(request) {
     can_edit_entries: body.canEditEntries !== false,
     can_request_originals: Boolean(body.canRequestOriginals),
     can_use_desktop_host: Boolean(body.canUseDesktopHost),
+    host_url: String(body.hostUrl || '').trim(),
+    host_relay_token: String(body.hostRelayToken || '').trim(),
+    host_relay_expires_at: body.hostRelayExpiresAt || null,
     last_seen_at: new Date().toISOString()
   };
   const query = deviceId

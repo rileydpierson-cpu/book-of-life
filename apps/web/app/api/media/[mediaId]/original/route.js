@@ -37,13 +37,28 @@ export async function DELETE(request, { params }) {
     ? query.eq('original_storage_path', storagePath)
     : query.eq('id', mediaId);
 
-  const { error } = await query;
+  const { data, error } = await query.select('id').maybeSingle();
   if (error) return apiError(error);
 
   if (storagePath) {
     const storage = await context.supabase.storage.from('media-originals').remove([storagePath]);
     if (storage.error) return apiError(storage.error);
   }
+
+  await context.supabase.from('sync_changes').insert({
+    library_id: libraryId,
+    change_type: 'media.upsert',
+    entity_id: data?.id || mediaId || storagePath,
+    payload: {
+      media: {
+        id: data?.id || mediaId || storagePath,
+        originalInCloud: false,
+        originalStoragePath: '',
+        originalSize: 0,
+        updatedAt: new Date().toISOString()
+      }
+    }
+  });
 
   return Response.json({ ok: true, deleted: Boolean(storagePath) });
 }

@@ -1,4 +1,4 @@
-import { apiError, requireUser } from '../../../lib/supabase-api.js';
+import { apiError, requireUser, toMedia } from '../../../lib/supabase-api.js';
 
 async function ownsLibrary(supabase, userId, libraryId) {
   const { data, error } = await supabase
@@ -25,9 +25,9 @@ export async function GET(request) {
     .select('*')
     .eq('library_id', libraryId)
     .order('updated_at', { ascending: false })
-    .limit(200);
+    .limit(2000);
   if (error) return apiError(error);
-  return Response.json({ ok: true, media: data || [] });
+  return Response.json({ ok: true, media: (data || []).map(toMedia) });
 }
 
 export async function POST(request) {
@@ -41,29 +41,11 @@ export async function POST(request) {
     return Response.json({ ok: false, error: 'Library not found.' }, { status: 404 });
   }
 
-  const mediaRow = {
-    library_id: libraryId,
-    host_device_id: body.hostDeviceId || null,
-    local_media_id: localMediaId || null,
-    file_signature: String(body.fileSignature || '').trim() || null,
-    iso_date: body.isoDate || null,
-    file_name: String(body.fileName || '').trim(),
-    metadata: body.metadata || {},
-    has_thumb: Boolean(body.hasThumb),
-    has_preview: Boolean(body.hasPreview),
-    original_in_cloud: Boolean(body.originalInCloud),
-    original_on_host: body.originalOnHost !== false,
-    original_storage_path: body.originalStoragePath || null,
-    original_size: Number(body.originalSize || 0) || null,
-    original_content_type: body.originalContentType || null,
-    updated_at: new Date().toISOString()
-  };
-
   let existing = null;
   if (localMediaId) {
     const lookup = await context.supabase
       .from('media_items')
-      .select('id')
+      .select('*')
       .eq('library_id', libraryId)
       .eq('local_media_id', localMediaId)
       .maybeSingle();
@@ -71,10 +53,39 @@ export async function POST(request) {
     existing = lookup.data || null;
   }
 
+  const mediaRow = {
+    library_id: libraryId,
+    host_device_id: body.hostDeviceId || null,
+    local_media_id: localMediaId || null,
+    file_signature: String(body.fileSignature || '').trim() || null,
+    iso_date: body.isoDate || null,
+    file_name: String(body.fileName || '').trim(),
+    metadata: body.metadata || existing?.metadata || {},
+    has_thumb: body.hasThumb === undefined ? Boolean(existing?.has_thumb) : Boolean(body.hasThumb),
+    has_preview: body.hasPreview === undefined ? Boolean(existing?.has_preview) : Boolean(body.hasPreview),
+    thumb_storage_path: body.thumbStoragePath === undefined ? (existing?.thumb_storage_path || '') : String(body.thumbStoragePath || '').trim(),
+    thumb_content_type: body.thumbContentType === undefined ? (existing?.thumb_content_type || '') : String(body.thumbContentType || '').trim(),
+    preview_storage_path: body.previewStoragePath === undefined ? (existing?.preview_storage_path || '') : String(body.previewStoragePath || '').trim(),
+    preview_content_type: body.previewContentType === undefined ? (existing?.preview_content_type || '') : String(body.previewContentType || '').trim(),
+    original_in_cloud: body.originalInCloud === undefined ? Boolean(existing?.original_in_cloud) : Boolean(body.originalInCloud),
+    original_on_host: body.originalOnHost !== false,
+    original_storage_path: body.originalStoragePath === undefined ? (existing?.original_storage_path || '') : body.originalStoragePath || '',
+    original_size: body.originalSize === undefined ? Number(existing?.original_size || 0) : Number(body.originalSize || 0) || 0,
+    original_content_type: body.originalContentType === undefined ? (existing?.original_content_type || '') : body.originalContentType || '',
+    updated_at: new Date().toISOString()
+  };
+
   const query = existing
     ? context.supabase.from('media_items').update(mediaRow).eq('id', existing.id)
     : context.supabase.from('media_items').insert(mediaRow);
   const { data, error } = await query.select('*').single();
   if (error) return apiError(error);
-  return Response.json({ ok: true, media: data }, { status: existing ? 200 : 201 });
+  const media = toMedia(data);
+  await context.supabase.from('sync_changes').insert({
+    library_id: libraryId,
+    change_type: 'media.upsert',
+    entity_id: media.id,
+    payload: { media }
+  });
+  return Response.json({ ok: true, media }, { status: existing ? 200 : 201 });
 }

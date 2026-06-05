@@ -72,3 +72,28 @@ export function toLibrary(row) {
     updatedAt: row.updated_at
   };
 }
+
+export function toMedia(row) {
+  return {
+    id: row.id,
+    libraryId: row.library_id,
+    hostDeviceId: row.host_device_id || '',
+    localMediaId: row.local_media_id || '',
+    fileSignature: row.file_signature || '',
+    isoDate: row.iso_date || '',
+    fileName: row.file_name || '',
+    metadata: row.metadata || {},
+    hasThumb: Boolean(row.has_thumb),
+    hasPreview: Boolean(row.has_preview),
+    thumbStoragePath: row.thumb_storage_path || '',
+    thumbContentType: row.thumb_content_type || '',
+    previewStoragePath: row.preview_storage_path || '',
+    previewContentType: row.preview_content_type || '',
+    originalInCloud: Boolean(row.original_in_cloud),
+    originalOnHost: row.original_on_host !== false,
+    originalStoragePath: row.original_storage_path || '',
+    originalSize: Number(row.original_size || 0),
+    originalContentType: row.original_content_type || '',
+    updatedAt: row.updated_at || ''
+  };
+}

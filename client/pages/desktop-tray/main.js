@@ -11,6 +11,10 @@ const syncProgress = document.querySelector('#syncProgress');
 const syncProgressFill = syncProgress?.querySelector('span');
 const storageStatus = document.querySelector('#storageStatus');
 const storageProgress = document.querySelector('#storageProgress');
+const mediaAvailabilityCard = document.querySelector('#mediaAvailabilityCard');
+const mediaAvailabilityStatus = document.querySelector('#mediaAvailabilityStatus');
+const journalMirrorCard = document.querySelector('#journalMirrorCard');
+const journalMirrorStatus = document.querySelector('#journalMirrorStatus');
 const trayError = document.querySelector('#trayError');
 const openLibrary = document.querySelector('#openLibrary');
 const openOnboarding = document.querySelector('#openOnboarding');
@@ -47,12 +51,22 @@ function setProgress(node, percent) {
   node.style.width = `${Math.max(0, Math.min(100, Number(percent || 0)))}%`;
 }
 
+function journalMirrorLabel(journalMirror = {}) {
+  if (!journalMirror.configured) return 'Not configured';
+  if (journalMirror.syncing || journalMirror.status === 'syncing') return 'Syncing journal mirror';
+  if (journalMirror.status === 'conflict' || Number(journalMirror.conflictCount || 0) > 0) return 'Journal mirror has conflicts';
+  if (journalMirror.available === false || journalMirror.status === 'unavailable') return 'Journal mirror unavailable. Using local backup';
+  return 'Journal mirror synced';
+}
+
 function renderStatus(payload) {
   lastPayload = payload;
   const cloud = payload.cloud || {};
   const index = payload.index || {};
   const sync = payload.sync || {};
   const storage = payload.storage || {};
+  const mediaAvailability = payload.mediaAvailability || {};
+  const journalMirror = payload.journalMirror || {};
   trayError.textContent = cloud.error || '';
 
   accountLine.textContent = cloud.signedIn ? cloud.email || 'Signed in' : 'Local only';
@@ -94,6 +108,17 @@ function renderStatus(payload) {
     storageStatus.textContent = `${formatBytes(storage.usedBytes)} of 1 GB`;
     setProgress(storageProgress, storage.percent);
   }
+
+  const warningCount = Math.max(0, Number(mediaAvailability.warningCount || 0));
+  mediaAvailabilityCard?.classList.toggle('hidden', !warningCount);
+  if (mediaAvailabilityStatus) {
+    mediaAvailabilityStatus.textContent = warningCount
+      ? `${warningCount} media original${warningCount === 1 ? '' : 's'} need attention`
+      : 'All originals available';
+  }
+
+  journalMirrorCard?.classList.toggle('hidden', !journalMirror.configured);
+  if (journalMirrorStatus) journalMirrorStatus.textContent = journalMirrorLabel(journalMirror);
 }
 
 async function refreshStatus() {

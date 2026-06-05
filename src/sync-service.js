@@ -13,7 +13,8 @@ class SyncService {
     deletePhoto,
     resolveDeviceSyncRoot,
     entryStore,
-    defaultScope
+    defaultScope,
+    onEntryWrite
   }) {
     this.cachePath = path.join(cacheDir, 'sync-state.json');
     this.indexer = indexer;
@@ -24,6 +25,7 @@ class SyncService {
     this.resolveDeviceSyncRoot = resolveDeviceSyncRoot;
     this.entryStore = entryStore || null;
     this.defaultScope = defaultScope || {};
+    this.onEntryWrite = typeof onEntryWrite === 'function' ? onEntryWrite : null;
     this.state = {
       nextSequence: 1,
       changes: [],
@@ -260,6 +262,7 @@ class SyncService {
         } else {
           result = await this.indexer.saveEntry(envelope.payload.isoDate, envelope.payload.raw);
         }
+        if (this.onEntryWrite) await this.onEntryWrite(envelope.payload.isoDate, envelope.payload.raw);
         sequence = await this.appendChange(CHANGE_TYPES.ENTRY_UPSERT, envelope.payload.isoDate, {
           entry: this.serializeEntryRecord(envelope.payload.isoDate),
           day: result?.entry ? { isoDate: envelope.payload.isoDate } : result,
@@ -277,6 +280,7 @@ class SyncService {
           });
         }
         await this.indexer.saveEntry(envelope.payload.isoDate, '');
+        if (this.onEntryWrite) await this.onEntryWrite(envelope.payload.isoDate, '');
         sequence = await this.appendChange(CHANGE_TYPES.ENTRY_DELETE, envelope.payload.isoDate, {
           isoDate: envelope.payload.isoDate,
           deleted: true

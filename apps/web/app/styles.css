@@ -70,6 +70,11 @@ a {
   color: var(--accent-strong);
 }
 
+.button.danger {
+  background: #8d2f36;
+  color: #fff;
+}
+
 .button.small {
   min-height: 36px;
   padding: 0 12px;
@@ -521,6 +526,10 @@ textarea {
   grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
 }
 
+.media-grid.compact {
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+
 .media-card {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -533,12 +542,132 @@ textarea {
   align-items: center;
   aspect-ratio: 4 / 3;
   background: linear-gradient(135deg, #dbe7ec, #f7efd8);
+  border: 0;
   border-radius: 7px;
   color: var(--accent-strong);
+  cursor: pointer;
   display: flex;
   font-size: 2rem;
   font-weight: 900;
   justify-content: center;
+  overflow: hidden;
+  padding: 0;
+  width: 100%;
+}
+
+.media-thumb img,
+.thumb-button img {
+  display: block;
+  height: 100%;
+  object-fit: cover;
+  width: 100%;
+}
+
+.timeline-media-strip {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+  margin: 12px 0;
+  max-width: 560px;
+}
+
+.thumb-button {
+  aspect-ratio: 1;
+  background: #dfe9ef;
+  border: 0;
+  border-radius: 7px;
+  cursor: pointer;
+  overflow: hidden;
+  padding: 0;
+}
+
+.folder-list,
+.folder-group {
+  display: grid;
+  gap: 16px;
+}
+
+.folder-heading {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.folder-heading h2 {
+  margin: 0;
+}
+
+.folder-heading span {
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.viewer-overlay {
+  align-items: center;
+  background: rgba(9, 14, 20, 0.72);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 18px;
+  position: fixed;
+  z-index: 50;
+}
+
+.viewer-panel {
+  background: var(--panel);
+  border-radius: 8px;
+  display: grid;
+  gap: 16px;
+  max-height: calc(100vh - 36px);
+  max-width: 1080px;
+  overflow: auto;
+  padding: 16px;
+  width: 100%;
+}
+
+.viewer-toolbar {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.viewer-toolbar h2,
+.viewer-toolbar p {
+  margin: 0;
+}
+
+.viewer-toolbar p {
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.viewer-media {
+  align-items: center;
+  background: #0d1117;
+  border-radius: 8px;
+  display: flex;
+  justify-content: center;
+  min-height: 280px;
+  overflow: hidden;
+}
+
+.viewer-media img,
+.viewer-media video {
+  display: block;
+  max-height: 68vh;
+  max-width: 100%;
+  object-fit: contain;
+}
+
+.viewer-details {
+  display: grid;
+  gap: 12px;
+}
+
+.viewer-details textarea {
+  min-height: 110px;
 }
 
 .pill-row {

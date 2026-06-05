@@ -57,7 +57,7 @@
           "!**/*.test.jsx",
           "!**/*.test.tsx",
           "!apps/**/*",
-          "!mobile/**/*",
+          "!apps/mobile/**/*",
           "!storage/**/*",
           "!docs/**/*",
           "!release/**/*",

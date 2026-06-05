@@ -8,4 +8,4 @@ Migration target for shared pure logic:
 - folder rules
 - media availability and cloud policy helpers
 
-The current source of truth remains split between `client/domain/`, `mobile/src/domain/`, and `src/` until the extraction can be done mechanically with tests.
+The current source of truth remains split between `client/domain/`, `apps/mobile/src/domain/`, and `src/` until the extraction can be done mechanically with tests.

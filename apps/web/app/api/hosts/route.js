@@ -22,7 +22,13 @@ export async function GET(request) {
     .eq('library_id', libraryId)
     .eq('device_type', 'desktop')
     .eq('can_use_desktop_host', true)
+    .not('host_url', 'eq', '')
     .order('last_seen_at', { ascending: false });
   if (error) return apiError(error);
-  return Response.json({ ok: true, hosts: data || [] });
+  const now = Date.now();
+  const hosts = (data || []).filter((host) => {
+    const expiresAt = Date.parse(host.host_relay_expires_at || '');
+    return !expiresAt || expiresAt > now;
+  });
+  return Response.json({ ok: true, hosts });
 }

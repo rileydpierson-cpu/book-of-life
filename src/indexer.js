@@ -28,6 +28,16 @@ const {
   shortDateLabel,
   slugMonth
 } = require('./utils');
+const { LOCAL_RETENTION, isUploadedOriginalRecord } = require('./media-cloud-store');
+
+const MEDIA_AVAILABILITY = Object.freeze({
+  AVAILABLE: 'available',
+  MISSING_CLOUD: 'missing-cloud',
+  ROOT_UNAVAILABLE: 'root-unavailable',
+  CLOUD_ONLY: 'cloud-only',
+  MISSING_UNAPPROVED: 'missing-unapproved',
+  MISSING_CLOUD_RISK: 'missing-cloud-risk'
+});
 
 const markdown = new MarkdownIt({
   html: false,
@@ -99,7 +109,13 @@ class TimelineIndexer {
     this.rebuildQueued = false;
     this.mediaInventory = {};
     this.mediaInventorySignature = '';
+    this.mediaRootStatus = {};
+    this.mediaCloudStore = null;
     this.rebuildProgress = createIdleRebuildProgress();
+  }
+
+  setMediaCloudStore(mediaCloudStore) {
+    this.mediaCloudStore = mediaCloudStore || null;
   }
 
   setPhotoRoots(photoRoots = []) {
@@ -123,6 +139,9 @@ class TimelineIndexer {
     if (cachedInventory?.entries && typeof cachedInventory.entries === 'object') {
       this.mediaInventory = cachedInventory.entries;
       this.mediaInventorySignature = String(cachedInventory.signature || '');
+      this.mediaRootStatus = cachedInventory.rootStatus && typeof cachedInventory.rootStatus === 'object'
+        ? cachedInventory.rootStatus
+        : {};
     }
   }
 
@@ -265,6 +284,11 @@ class TimelineIndexer {
       inventory?.records || null,
       progress
     );
+    await this.preserveUnavailableMedia({
+      dayMap,
+      photosById,
+      inventory
+    });
 
     const derivedTags = {};
     const derivedDescriptions = {};
@@ -310,8 +334,31 @@ class TimelineIndexer {
   async scanMediaInventory({ progress = null } = {}) {
     const records = [];
     const entries = {};
+    const rootStatus = {};
+    const availableRoots = [];
+    const unavailableRoots = [];
 
     for (const folder of this.photoRoots) {
+      let rootAvailable = true;
+      let rootError = '';
+      try {
+        await fs.promises.readdir(folder, { withFileTypes: true });
+      } catch (error) {
+        rootAvailable = false;
+        rootError = error.message || 'Folder is unavailable.';
+      }
+      rootStatus[folder] = {
+        path: folder,
+        available: rootAvailable,
+        error: rootError,
+        mediaCount: 0
+      };
+      if (!rootAvailable) {
+        unavailableRoots.push(folder);
+        progress?.increment();
+        continue;
+      }
+      availableRoots.push(folder);
       const files = await walkFiles(folder);
       for (const filePath of files) {
         if (!isMediaFile(filePath)) continue;
@@ -320,6 +367,7 @@ class TimelineIndexer {
           const entrySignature = `${stat.size}:${Math.trunc(stat.mtimeMs)}`;
           records.push({ filePath, stat, signature: hash(`${filePath}|${stat.size}|${stat.mtimeMs}`) });
           entries[filePath] = entrySignature;
+          rootStatus[folder].mediaCount += 1;
         } catch (error) {
           // Ignore files that disappear during scan.
         }
@@ -330,7 +378,10 @@ class TimelineIndexer {
     return {
       records,
       entries,
-      signature: this.computeInventorySignature(entries)
+      signature: this.computeInventorySignature(entries),
+      rootStatus,
+      availableRoots,
+      unavailableRoots
     };
   }
 
@@ -346,10 +397,112 @@ class TimelineIndexer {
   async persistMediaInventory(inventory) {
     this.mediaInventory = inventory?.entries || {};
     this.mediaInventorySignature = String(inventory?.signature || '');
+    this.mediaRootStatus = inventory?.rootStatus || {};
     await writeJson(this.mediaInventoryCachePath, {
       signature: this.mediaInventorySignature,
-      entries: this.mediaInventory
+      entries: this.mediaInventory,
+      rootStatus: this.mediaRootStatus
     });
+  }
+
+  getRootAvailabilitySummary() {
+    const rootStatus = this.mediaRootStatus || {};
+    const roots = this.photoRoots.map((rootPath) => {
+      const status = rootStatus[rootPath] || { path: rootPath, available: true, mediaCount: 0, error: '' };
+      return {
+        path: rootPath,
+        rootLabel: path.basename(rootPath) || rootPath,
+        available: status.available !== false,
+        error: String(status.error || ''),
+        mediaCount: Math.max(0, Number(status.mediaCount || 0)),
+        warningCount: 0
+      };
+    });
+    const byPath = new Map(roots.map((root) => [root.path, root]));
+    let missingCloudCount = 0;
+    let rootUnavailableCount = 0;
+    let cloudOnlyCount = 0;
+    let missingUnapprovedCount = 0;
+    let missingCloudRiskCount = 0;
+    for (const photo of this.state.photosById.values()) {
+      const availability = photo.availability || MEDIA_AVAILABILITY.AVAILABLE;
+      if (availability === MEDIA_AVAILABILITY.AVAILABLE) continue;
+      if (availability === MEDIA_AVAILABILITY.CLOUD_ONLY) {
+        cloudOnlyCount += 1;
+        continue;
+      }
+      missingCloudCount += 1;
+      if (photo.availability === MEDIA_AVAILABILITY.ROOT_UNAVAILABLE) rootUnavailableCount += 1;
+      if (photo.availability === MEDIA_AVAILABILITY.MISSING_UNAPPROVED) missingUnapprovedCount += 1;
+      if (photo.availability === MEDIA_AVAILABILITY.MISSING_CLOUD_RISK || photo.availability === MEDIA_AVAILABILITY.MISSING_CLOUD) missingCloudRiskCount += 1;
+      const root = byPath.get(photo.rootPath);
+      if (root) root.warningCount += 1;
+    }
+    return {
+      roots,
+      missingCloudCount,
+      rootUnavailableCount,
+      cloudOnlyCount,
+      missingUnapprovedCount,
+      missingCloudRiskCount,
+      warningCount: missingCloudCount
+    };
+  }
+
+  async getCloudOriginalRecord(photo) {
+    if (!this.mediaCloudStore || !photo?.id) return false;
+    try {
+      return await this.mediaCloudStore.get(photo);
+    } catch (error) {
+      return false;
+    }
+  }
+
+  async isCloudUploadedOriginal(photo) {
+    return isUploadedOriginalRecord(await this.getCloudOriginalRecord(photo));
+  }
+
+  async classifyUnavailablePhoto(photo, rootPath, { availableRoots = new Set(), unavailableRoots = new Set() } = {}) {
+    if (unavailableRoots.has(rootPath)) return MEDIA_AVAILABILITY.ROOT_UNAVAILABLE;
+    if (!availableRoots.has(rootPath)) return null;
+
+    const cloudRecord = await this.getCloudOriginalRecord(photo);
+    if (isUploadedOriginalRecord(cloudRecord)) {
+      return cloudRecord.localRetention === LOCAL_RETENTION.CLOUD_ONLY_APPROVED
+        ? MEDIA_AVAILABILITY.CLOUD_ONLY
+        : MEDIA_AVAILABILITY.MISSING_CLOUD_RISK;
+    }
+    return MEDIA_AVAILABILITY.MISSING_UNAPPROVED;
+  }
+
+  cloneUnavailablePhoto(photo, availability) {
+    return {
+      ...photo,
+      availability,
+      originalAvailable: false,
+      unavailableSince: photo.unavailableSince || new Date().toISOString()
+    };
+  }
+
+  async preserveUnavailableMedia({ dayMap, photosById, inventory = null } = {}) {
+    const previousPhotos = Array.from(this.state?.photosById?.values?.() || []);
+    if (!previousPhotos.length) return;
+
+    const entries = inventory?.entries || {};
+    const availableRoots = new Set(inventory?.availableRoots || this.photoRoots);
+    const unavailableRoots = new Set(inventory?.unavailableRoots || []);
+    const inventoryHasPath = (filePath) => Object.prototype.hasOwnProperty.call(entries, filePath);
+
+    for (const previousPhoto of previousPhotos) {
+      if (!previousPhoto?.id || photosById.has(previousPhoto.id) || inventoryHasPath(previousPhoto.filePath)) continue;
+      const rootPath = previousPhoto.rootPath || this.getPhotoRootInfo(previousPhoto.filePath).rootPath;
+      const availability = await this.classifyUnavailablePhoto(previousPhoto, rootPath, { availableRoots, unavailableRoots });
+      if (!availability) continue;
+
+      const preserved = this.cloneUnavailablePhoto(previousPhoto, availability);
+      photosById.set(preserved.id, preserved);
+      this.getOrCreateDay(dayMap, preserved.isoDate).photos.push(preserved);
+    }
   }
 
   async indexJournalImages() {
@@ -495,6 +648,8 @@ class TimelineIndexer {
         description: typeof portableEntry.description === 'string' ? portableEntry.description : (typeof mediaDescriptions[filePath] === 'string' ? mediaDescriptions[filePath] : ''),
         liked: Object.prototype.hasOwnProperty.call(portableEntry, 'liked') ? Boolean(portableEntry.liked) : Boolean(mediaLikes[filePath])
       };
+      record.availability = MEDIA_AVAILABILITY.AVAILABLE;
+      record.originalAvailable = true;
       return record;
   }
 
@@ -1013,6 +1168,9 @@ class TimelineIndexer {
       displayUrl: this.displayUrlForPhoto(photo),
       downloadUrl: this.downloadUrlForPhoto(photo),
       fullUrl: `/media/full/${photo.id}`,
+      availability: photo.availability || MEDIA_AVAILABILITY.AVAILABLE,
+      originalAvailable: photo.originalAvailable !== false,
+      unavailableSince: photo.unavailableSince || '',
       isoDate: photo.isoDate,
       dateLabel: longDateLabel(photo.isoDate),
       capturedAt: photo.capturedAt,
@@ -1554,7 +1712,10 @@ class TimelineIndexer {
     if (this.isBuilding) return { changed: false, skipped: true };
 
     const inventory = await this.scanMediaInventory();
-    if (inventory.signature === this.mediaInventorySignature) {
+    const hasUnavailablePhotos = Array.from(this.state.photosById.values())
+      .some((photo) => (photo.availability || MEDIA_AVAILABILITY.AVAILABLE) !== MEDIA_AVAILABILITY.AVAILABLE);
+    if (inventory.signature === this.mediaInventorySignature && !hasUnavailablePhotos) {
+      this.mediaRootStatus = inventory.rootStatus || {};
       return { changed: false, reason };
     }
 
@@ -1562,42 +1723,72 @@ class TimelineIndexer {
     const nextEntries = inventory.entries || {};
     const removedPaths = Object.keys(previousEntries).filter((filePath) => !Object.prototype.hasOwnProperty.call(nextEntries, filePath));
     const changedPaths = Object.keys(nextEntries).filter((filePath) => previousEntries[filePath] !== nextEntries[filePath]);
+    const recoveredPaths = Object.keys(nextEntries).filter((filePath) => {
+      const photo = this.getPhoto(hash(filePath));
+      return photo && photo.availability !== MEDIA_AVAILABILITY.AVAILABLE;
+    });
+    const reindexPaths = Array.from(new Set([...changedPaths, ...recoveredPaths]));
     const stalePhotos = new Map();
+    const removedLocalPaths = [];
+    const preservedUnavailable = [];
+    const availableRoots = new Set(inventory.availableRoots || this.photoRoots);
+    const unavailableRoots = new Set(inventory.unavailableRoots || []);
 
-    for (const filePath of [...removedPaths, ...changedPaths]) {
+    for (const filePath of [...removedPaths, ...reindexPaths]) {
       const photo = this.getPhoto(hash(filePath));
       if (photo) stalePhotos.set(filePath, photo);
     }
 
     for (const filePath of removedPaths) {
       const photo = this.getPhoto(hash(filePath));
-      if (photo) this.removePhotoFromState(photo.id, { removeMetadata: false });
+      if (!photo) continue;
+      const rootPath = photo.rootPath || this.getPhotoRootInfo(filePath).rootPath;
+      const availability = await this.classifyUnavailablePhoto(photo, rootPath, { availableRoots, unavailableRoots });
+      if (availability) {
+        const preserved = this.cloneUnavailablePhoto(photo, availability);
+        this.removePhotoFromState(photo.id, { removeMetadata: false });
+        this.insertPhotoIntoState(preserved);
+        preservedUnavailable.push(filePath);
+      } else {
+        this.removePhotoFromState(photo.id, { removeMetadata: false });
+        removedLocalPaths.push(filePath);
+      }
     }
 
-    for (const filePath of changedPaths) {
+    for (const filePath of reindexPaths) {
       const photo = this.getPhoto(hash(filePath));
       if (photo) this.removePhotoFromState(photo.id, { removeMetadata: false });
     }
 
     const metaCache = await readJson(this.mediaMetaCachePath, {});
-    [...removedPaths, ...changedPaths].forEach((filePath) => {
+    [...removedLocalPaths, ...reindexPaths].forEach((filePath) => {
       const previous = stalePhotos.get(filePath);
       this.prunePhotoMetaCache(metaCache, filePath, previous || {});
     });
     await writeJson(this.mediaMetaCachePath, metaCache);
 
-    if (changedPaths.length) {
-      await this.addMediaFiles(changedPaths, { persist: false });
+    if (reindexPaths.length) {
+      await this.addMediaFiles(reindexPaths, { persist: false });
     }
 
     this.recomputeDerivedState();
     await this.persistState();
-    await this.persistMediaInventory(inventory);
-    console.log(`Book of Life index refreshed (${reason}) with ${changedPaths.length} changed and ${removedPaths.length} removed files.`);
+    const nextInventoryEntries = { ...(inventory.entries || {}) };
+    for (const filePath of preservedUnavailable) {
+      if (previousEntries[filePath]) nextInventoryEntries[filePath] = previousEntries[filePath];
+    }
+    await this.persistMediaInventory({
+      ...inventory,
+      entries: nextInventoryEntries,
+      signature: this.computeInventorySignature(nextInventoryEntries)
+    });
+    console.log(`Book of Life index refreshed (${reason}) with ${changedPaths.length} changed, ${recoveredPaths.length} recovered, ${removedLocalPaths.length} removed, and ${preservedUnavailable.length} unavailable files.`);
     return {
       changed: true,
       changedPaths: changedPaths.length,
-      removedPaths: removedPaths.length
+      recoveredPaths: recoveredPaths.length,
+      removedPaths: removedLocalPaths.length,
+      unavailablePaths: preservedUnavailable.length
     };
   }
 

@@ -31,10 +31,47 @@ function normalizeSyncStatus(syncStatus = {}) {
   };
 }
 
+function normalizeMediaAvailability(mediaAvailability = {}) {
+  const roots = Array.isArray(mediaAvailability.roots) ? mediaAvailability.roots : [];
+  const normalizedRoots = roots.map((root) => ({
+    path: String(root.path || ''),
+    rootLabel: String(root.rootLabel || root.path || ''),
+    available: root.available !== false,
+    error: String(root.error || ''),
+    mediaCount: Math.max(0, Number(root.mediaCount || 0)),
+    warningCount: Math.max(0, Number(root.warningCount || 0))
+  }));
+  return {
+    roots: normalizedRoots,
+    missingCloudCount: Math.max(0, Number(mediaAvailability.missingCloudCount || 0)),
+    rootUnavailableCount: Math.max(0, Number(mediaAvailability.rootUnavailableCount || 0)),
+    cloudOnlyCount: Math.max(0, Number(mediaAvailability.cloudOnlyCount || 0)),
+    missingUnapprovedCount: Math.max(0, Number(mediaAvailability.missingUnapprovedCount || 0)),
+    missingCloudRiskCount: Math.max(0, Number(mediaAvailability.missingCloudRiskCount || 0)),
+    warningCount: Math.max(0, Number(mediaAvailability.warningCount || 0))
+  };
+}
+
+function normalizeJournalMirrorStatus(journalMirror = {}) {
+  return {
+    configured: Boolean(journalMirror.configured),
+    status: String(journalMirror.status || (journalMirror.configured ? 'unavailable' : 'idle')),
+    localDir: String(journalMirror.localDir || ''),
+    mirrorDir: String(journalMirror.mirrorDir || ''),
+    available: Boolean(journalMirror.available),
+    syncing: Boolean(journalMirror.syncing),
+    conflictCount: Math.max(0, Number(journalMirror.conflictCount || 0)),
+    lastSyncedAt: String(journalMirror.lastSyncedAt || ''),
+    error: String(journalMirror.error || '')
+  };
+}
+
 function desktopTrayStatus({
   localService = {},
   cloudStatus = {},
   indexStatus = {},
+  mediaAvailability = {},
+  journalMirror = {},
   storageUsage = {},
   syncStatus = {}
 } = {}) {
@@ -57,6 +94,8 @@ function desktopTrayStatus({
       error: cloudStatus.error || ''
     },
     index: indexStatus || {},
+    mediaAvailability: normalizeMediaAvailability(mediaAvailability),
+    journalMirror: normalizeJournalMirrorStatus(journalMirror),
     sync: normalizeSyncStatus({
       ...syncStatus,
       lastSyncedAt: syncStatus.lastSyncedAt || cloudStatus.lastCloudSyncAt || ''
@@ -71,5 +110,7 @@ module.exports = {
   CLOUD_STORAGE_LIMIT_BYTES,
   desktopTrayStatus,
   normalizeSyncStatus,
-  normalizeCloudStorageUsage
+  normalizeCloudStorageUsage,
+  normalizeMediaAvailability,
+  normalizeJournalMirrorStatus
 };

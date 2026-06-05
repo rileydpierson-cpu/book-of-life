@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Book of Life Desktop Setup</title>
+    <link rel="stylesheet" href="/vendor/phosphor/regular/style.css" />
+    <link rel="stylesheet" href="/vendor/phosphor/fill/style.css" />
+    <link rel="stylesheet" href="/vendor/phosphor/duotone/style.css" />
+    <link rel="stylesheet" href="/vendor/phosphor/bold/style.css" />
+    <script type="module" crossorigin src="/assets/desktopOnboarding-Blcdmpu6.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/modulepreload-polyfill-B5Qt9EMX.js">
+    <link rel="modulepreload" crossorigin href="/assets/api-iAbQVvnE.js">
+    <link rel="stylesheet" crossorigin href="/assets/desktopOnboarding-CYC8uAGu.css">
+  </head>
+  <body>
+    <main class="desktop-onboarding-shell">
+      <div class="window-bar">
+        <div class="window-drag"></div>
+        <button id="minimizeWindow" class="window-button" type="button" aria-label="Minimize"><i class="ph-bold ph-minus"></i></button>
+        <button id="closeWindow" class="window-button" type="button" aria-label="Close"><i class="ph-bold ph-x"></i></button>
+      </div>
+
+      <section class="onboarding-viewport" aria-live="polite">
+        <div id="panelTrack" class="panel-track" data-panel="auth">
+          <article class="onboarding-panel auth-panel" data-step="auth">
+            <img class="app-logo" src="/desktop/assets/icon.png" alt="" />
+            <h1>Book of Life</h1>
+            <p class="lede">The solution to your unending camera roll.</p>
+
+            <form id="authForm" class="auth-form">
+              <label id="nameField" class="hidden">Name<input id="cloudName" type="text" autocomplete="name" /></label>
+              <label>Email<input id="cloudEmail" type="email" autocomplete="username" /></label>
+              <label>Password<input id="cloudPassword" type="password" autocomplete="current-password" /></label>
+              <label id="confirmField" class="hidden">Confirm password<input id="confirmPassword" type="password" autocomplete="new-password" /></label>
+              <button id="cloudAuthButton" class="primary-button" type="submit"><i class="ph-bold ph-sign-in"></i><span>Log in</span></button>
+              <p id="authStatus" class="status-line" role="alert"></p>
+            </form>
+
+            <button id="toggleAuthMode" class="text-button auth-toggle" type="button">Sign up</button>
+            <button id="localOnlyButton" class="text-button local-only-button" type="button"><i class="ph-bold ph-door-open"></i><span>Continue without login</span></button>
+          </article>
+
+          <article class="onboarding-panel action-panel" data-step="action">
+            <div class="action-orbit"><i class="ph-duotone ph-cloud-arrow-up"></i></div>
+            <p id="actionEyebrow" class="eyebrow">Connecting</p>
+            <h2 id="actionTitle">Signing in</h2>
+            <p id="actionStatus" class="status-line">Securing your library connection.</p>
+          </article>
+
+          <article class="onboarding-panel folders-panel" data-step="folders">
+            <header class="panel-header">
+              <div>
+                <p class="eyebrow">Media</p>
+                <h2>Choose Media Folders</h2>
+                <p class="panel-copy">Book of Life keeps you in control of your camera roll. Choose the photo folders you want to sync.</p>
+              </div>
+              <button id="addMediaFolder" class="icon-text-button" type="button"><i class="ph-bold ph-plus"></i><span>Add folder</span></button>
+            </header>
+            <div id="mediaFolders" class="folder-list"></div>
+            <footer class="panel-footer">
+              <p id="foldersStatus" class="status-line">Add the folders Book of Life should watch.</p>
+              <button id="foldersNextButton" class="primary-button" type="button">Continue</button>
+            </footer>
+          </article>
+
+          <article class="onboarding-panel notes-panel" data-step="notes">
+            <header class="panel-header">
+              <div>
+                <p class="eyebrow">Journal</p>
+                <h2>Import Notes</h2>
+              </div>
+            </header>
+            <div class="notes-picker">
+              <input id="notesPath" placeholder="Choose a Markdown notes folder" readonly />
+              <button id="pickNotesFolder" class="icon-button" type="button" title="Choose folder"><i class="ph-bold ph-folder-open"></i></button>
+            </div>
+            <div class="option-switch" role="radiogroup" aria-label="Notes import mode">
+              <button class="option-card is-active" type="button" data-entry-mode="copy">
+                <i class="ph-duotone ph-download-simple"></i>
+                <span><strong>Import</strong><small>Copy Markdown files into Book of Life.</small></span>
+              </button>
+              <button class="option-card" type="button" data-entry-mode="mirror">
+                <i class="ph-duotone ph-link"></i>
+                <span><strong>Link</strong><small>Use this folder as the live journal mirror.</small></span>
+              </button>
+            </div>
+            <footer class="panel-footer">
+              <button id="skipNotesButton" class="skip-button" type="button">Skip</button>
+              <p id="configStatus" class="status-line">Choose a notes folder, or skip this for now.</p>
+              <button id="completeButton" class="primary-button" type="button">Import</button>
+            </footer>
+          </article>
+
+          <article class="onboarding-panel progress-panel" data-step="progress">
+            <div class="action-orbit"><i class="ph-duotone ph-clock-counter-clockwise"></i></div>
+            <p id="loaderMessage" class="eyebrow">Mapping your life</p>
+            <h2 id="loaderStage">Preparing library</h2>
+            <div class="progress-track"><span id="progressFill"></span></div>
+            <p id="loaderStatus" class="status-line">Saving setup.</p>
+            <button id="openLibraryButton" class="primary-button hidden" type="button">Open Book of Life</button>
+          </article>
+        </div>
+      </section>
+
+      <dialog id="folderDialog" class="folder-dialog">
+        <form method="dialog" class="folder-dialog-card">
+          <h3>Folder Settings</h3>
+          <label>Name<input id="folderLabelInput" type="text" /></label>
+          <label>Path<input id="folderPathInput" type="text" readonly /></label>
+          <button id="changeFolderPath" class="secondary-button" type="button"><i class="ph-bold ph-folder-open"></i><span>Choose folder</span></button>
+          <label>Status<select id="folderPolicyInput"></select></label>
+          <div class="dialog-actions">
+            <button id="cancelFolderEdit" class="secondary-button" type="button">Cancel</button>
+            <button id="saveFolderEdit" class="primary-button" type="button">Save</button>
+          </div>
+        </form>
+      </dialog>
+    </main>
+  </body>
+</html>

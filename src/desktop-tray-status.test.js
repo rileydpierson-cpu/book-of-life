@@ -3,7 +3,9 @@ import {
   CLOUD_STORAGE_LIMIT_BYTES,
   desktopTrayStatus,
   normalizeSyncStatus,
-  normalizeCloudStorageUsage
+  normalizeCloudStorageUsage,
+  normalizeMediaAvailability,
+  normalizeJournalMirrorStatus
 } from './desktop-tray-status.js';
 
 describe('desktop tray status', () => {
@@ -79,5 +81,45 @@ describe('desktop tray status', () => {
       message: '',
       error: ''
     });
+  });
+
+  it('includes media availability warnings for the tray', () => {
+    const mediaAvailability = normalizeMediaAvailability({
+      warningCount: 2,
+      missingCloudCount: 2,
+      rootUnavailableCount: 1,
+      cloudOnlyCount: 3,
+      missingUnapprovedCount: 1,
+      missingCloudRiskCount: 1,
+      roots: [{ path: '/Photos', rootLabel: 'Photos', available: false, warningCount: 2, error: 'missing' }]
+    });
+    expect(mediaAvailability.warningCount).toBe(2);
+    expect(mediaAvailability.cloudOnlyCount).toBe(3);
+    expect(mediaAvailability.missingUnapprovedCount).toBe(1);
+    expect(mediaAvailability.missingCloudRiskCount).toBe(1);
+    expect(mediaAvailability.roots[0].available).toBe(false);
+
+    const status = desktopTrayStatus({ mediaAvailability });
+    expect(status.mediaAvailability.warningCount).toBe(2);
+    expect(status.mediaAvailability.roots[0].warningCount).toBe(2);
+  });
+
+  it('includes journal mirror status for the tray', () => {
+    const journalMirror = normalizeJournalMirrorStatus({
+      configured: true,
+      status: 'unavailable',
+      localDir: '/App/Journal',
+      mirrorDir: '/External/Journal',
+      available: false,
+      conflictCount: 2,
+      error: 'missing'
+    });
+    expect(journalMirror.configured).toBe(true);
+    expect(journalMirror.status).toBe('unavailable');
+    expect(journalMirror.conflictCount).toBe(2);
+
+    const status = desktopTrayStatus({ journalMirror });
+    expect(status.journalMirror.mirrorDir).toBe('/External/Journal');
+    expect(status.journalMirror.available).toBe(false);
   });
 });
