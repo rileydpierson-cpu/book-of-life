@@ -470,6 +470,13 @@ function createTrayImage() {
 
 function updateTrayMenu() {
   if (!tray) return;
+  const thumbnails = trayStatusSnapshot?.thumbnails || {};
+  const thumbnailPercent = Math.max(0, Math.min(100, Number(thumbnails.percent || 0)));
+  const thumbnailLabel = thumbnails.running || thumbnails.queued
+    ? `Generating thumbnails (${thumbnailPercent}%)`
+    : thumbnails.error
+      ? `Thumbnail generation: ${thumbnails.error}`
+      : 'Thumbnails: ready';
   const mediaWarningCount = Math.max(0, Number(trayStatusSnapshot?.mediaAvailability?.warningCount || 0));
   const mediaLabel = mediaWarningCount
     ? `Media warning: ${mediaWarningCount} original${mediaWarningCount === 1 ? '' : 's'} need attention`
@@ -477,9 +484,10 @@ function updateTrayMenu() {
   const serviceLabel = serverProcess
     ? `Local service: running on ${desktopPort}`
     : `Local service: stopped${serverExit?.signal ? ` (${serverExit.signal})` : ''}`;
-  tray.setToolTip(`Book of Life - ${serviceLabel}${mediaWarningCount ? ` - ${mediaLabel}` : ''}`);
+  tray.setToolTip(`Book of Life - ${serviceLabel}${thumbnails.running || thumbnails.queued ? ` - ${thumbnailLabel}` : ''}${mediaWarningCount ? ` - ${mediaLabel}` : ''}`);
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: serviceLabel, enabled: false },
+    { label: thumbnailLabel, enabled: false },
     { label: mediaLabel, enabled: false },
     { type: 'separator' },
     { label: 'Open Book of Life', click: openLibraryWindow },

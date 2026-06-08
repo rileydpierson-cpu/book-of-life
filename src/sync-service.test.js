@@ -160,4 +160,22 @@ describe('sync service', () => {
     expect(changes.changes.length).toBeGreaterThan(0);
     expect(changes.serverSummary.entries).toBe(1);
   });
+
+  it('wakes long-polling clients when a change is appended', async () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lifeserver-sync-'));
+    const service = new SyncService({
+      cacheDir,
+      indexer: createFakeIndexer(),
+      authenticate: () => ({ ok: true, username: 'alice' }),
+      getFolderTree: () => [],
+      createFolder: async () => ({ rootId: '0', relativePath: '.' }),
+      deletePhoto: async (photoId) => ({ photoId, isoDate: '2026-05-10', trashedTo: '.trash' })
+    });
+    await service.init();
+
+    const waiting = service.waitForChangeAfter(0, 1000);
+    await service.appendChange('entry.upsert', '2026-06-05', { entry: { isoDate: '2026-06-05' } });
+
+    await expect(waiting).resolves.toBe(true);
+  });
 });

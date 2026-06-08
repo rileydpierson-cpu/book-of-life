@@ -5,6 +5,7 @@ const multer = require('multer');
 const { loadConfig } = require('./src/config');
 const { TimelineIndexer } = require('./src/indexer');
 const { ImageService } = require('./src/image-service');
+const { ThumbnailGenerationService } = require('./src/thumbnail-generation-service');
 const {
   isExifWritableImage,
   isVideoMetadataWritable,
@@ -20,6 +21,7 @@ const { DesktopSyncSettingsStore } = require('./src/desktop-sync-settings');
 const { JournalCloudSync } = require('./src/journal-cloud-sync');
 const { JournalMirrorManager } = require('./src/journal-mirror');
 const { SupabaseDesktopSync } = require('./src/supabase-desktop-sync');
+const { CloudRealtimeWakeup } = require('./src/cloud-realtime');
 const { desktopTrayStatus } = require('./src/desktop-tray-status');
 const { DESKTOP_STORAGE_MODES, ENTRY_IMPORT_MODES, MEDIA_CLOUD_POLICIES } = require('./shared/sync-contracts');
 const {
@@ -259,6 +261,19 @@ async function main() {
       journalCloudSync?.suppressEntryWrite?.(isoDate, raw);
     }
   });
+  const thumbnailGenerationService = new ThumbnailGenerationService({
+    indexer,
+    imageService,
+    concurrency: 2,
+    onGenerated: async (photo) => {
+      try {
+        await desktopCloudSync.upsertMediaMetadata(photo, { uploadDerivatives: true });
+      } catch (error) {
+        console.warn(`Cloud derivative publish skipped for ${photo?.filePath || photo?.id || 'unknown'}: ${error.message}`);
+      }
+    }
+  });
+  let cloudRealtimeWakeup = null;
   const appCloudSettings = {
     cloudApiBaseUrl: config.cloud.apiBaseUrl,
     supabaseUrl: config.cloud.supabaseUrl,
@@ -459,6 +474,14 @@ async function main() {
           });
         }
       });
+      for (const entry of result.pulledEntries || []) {
+        if (!entry?.isoDate) continue;
+        await syncService.appendChange('entry.upsert', entry.isoDate, {
+          entry: syncService.serializeEntryRecord(entry.isoDate),
+          cloudVersion: entry.cloudVersion || 0,
+          source: reason
+        });
+      }
       await syncService.appendChange('entry.cloud.sync', result.libraryId, {
         ...result,
         source: reason
@@ -543,18 +566,20 @@ async function main() {
   }
 
   let cloudMediaSyncRunning = false;
-  let cloudMediaMetadataSyncRunning = false;
+  let cloudMediaMetadataSyncPromise = null;
 
   async function syncCloudMediaMetadata(reason = 'background') {
-    if (cloudMediaMetadataSyncRunning) return { ok: true, queued: true };
-    cloudMediaMetadataSyncRunning = true;
-    try {
-      const result = await desktopCloudSync.syncMediaMetadata({ uploadDerivatives: true });
-      console.log(`Cloud media metadata sync (${reason}) synced ${result.synced}, failed ${result.failed}.`);
-      return result;
-    } finally {
-      cloudMediaMetadataSyncRunning = false;
-    }
+    if (cloudMediaMetadataSyncPromise) return cloudMediaMetadataSyncPromise;
+    cloudMediaMetadataSyncPromise = (async () => {
+      try {
+        const result = await desktopCloudSync.syncMediaMetadata({ uploadDerivatives: false });
+        console.log(`Cloud media metadata sync (${reason}) synced ${result.synced}, failed ${result.failed}.`);
+        return result;
+      } finally {
+        cloudMediaMetadataSyncPromise = null;
+      }
+    })();
+    return cloudMediaMetadataSyncPromise;
   }
 
   function queueCloudMediaMetadata(reason = 'background') {
@@ -567,15 +592,47 @@ async function main() {
     });
   }
 
+  function queueCloudRealtimeWork(change = null) {
+    const type = String(change?.change_type || '');
+    if (!type || type.startsWith('entry.')) {
+      queueCloudEntrySync('cloud-realtime');
+    }
+    if (!type || type.startsWith('media.')) {
+      queueCloudMediaMetadata('cloud-realtime');
+      queueCloudMediaActions('cloud-realtime');
+    }
+    if (type === 'folder.upsert') {
+      queueCloudMediaMetadata('cloud-realtime');
+    }
+  }
+
   function queueSingleCloudMediaMetadata(photo, reason = 'media-change') {
     setImmediate(async () => {
       try {
-        await desktopCloudSync.upsertMediaMetadata(photo, { uploadDerivatives: true });
+        await desktopCloudSync.upsertMediaMetadata(photo, { uploadDerivatives: false });
       } catch (error) {
         console.warn(`Cloud media metadata sync skipped for ${photo?.filePath || photo?.id || 'unknown'} (${reason}): ${error.message}`);
       }
     });
   }
+
+  indexer.setIndexChangedHandler(({ reason = 'index-change', photos = [] } = {}) => {
+    setImmediate(async () => {
+      try {
+        if (reason === 'media-added') {
+          for (const photo of photos) {
+            await desktopCloudSync.upsertMediaMetadata(photo, { uploadDerivatives: false });
+          }
+        } else {
+          await syncCloudMediaMetadata(reason);
+        }
+      } catch (error) {
+        console.warn(`Cloud media metadata sync skipped (${reason}): ${error.message}`);
+      } finally {
+        thumbnailGenerationService.queuePhotos(photos);
+      }
+    });
+  });
 
   function queueDesktopHostHeartbeat(reason = 'background') {
     setImmediate(async () => {
@@ -669,6 +726,12 @@ async function main() {
     });
   }
 
+  cloudRealtimeWakeup = new CloudRealtimeWakeup({
+    getSettings: () => desktopSyncSettings.getSettings(),
+    onChange: ({ change }) => queueCloudRealtimeWork(change),
+    logger: console
+  });
+
   async function syncCloudMediaQueue(reason = 'background') {
     if (cloudMediaSyncRunning) return { ok: true, queued: true };
     cloudMediaSyncRunning = true;
@@ -756,7 +819,6 @@ async function main() {
     if (indexer.isBuilding) return { ok: true, queued: true, status: indexer.getRebuildStatus() };
     indexer.rebuild(reason)
       .then(() => {
-        queueCloudMediaMetadata(reason);
         queueCloudOriginalUpload(reason);
       })
       .catch((error) => console.error(`Index rebuild failed (${reason})`, error));
@@ -1029,7 +1091,8 @@ async function main() {
       await syncService.appendChange('sync-settings.upsert', settings.deviceId || defaultCloudScope.deviceId, {
         settings
       });
-      res.json({ ok: true, settings, journalMirror: journalMirror?.getStatus?.() || {} });
+      const realtime = await cloudRealtimeWakeup.refresh('desktop-settings');
+      res.json({ ok: true, settings, journalMirror: journalMirror?.getStatus?.() || {}, cloudRealtime: realtime });
     } catch (error) {
       res.status(500).json({ error: error.message || 'Failed to save desktop sync settings.' });
     }
@@ -1059,8 +1122,9 @@ async function main() {
         libraryId: nextSettings.libraryId,
         source: 'desktop-cloud-connect'
       });
+      const realtime = await cloudRealtimeWakeup.refresh('cloud-connect');
       queueCloudEntrySync('cloud-connect');
-      res.json({ ok: true, settings: nextSettings, status: await desktopCloudSync.status() });
+      res.json({ ok: true, settings: nextSettings, status: await desktopCloudSync.status(), cloudRealtime: realtime });
     } catch (error) {
       res.status(500).json({ ok: false, error: error.message || 'Failed to connect desktop to Book of Life Cloud.' });
     }
@@ -1098,8 +1162,9 @@ async function main() {
         libraryId: nextSettings.libraryId,
         source: 'desktop-cloud-signup'
       });
+      const realtime = await cloudRealtimeWakeup.refresh('cloud-signup');
       queueCloudEntrySync('cloud-signup');
-      res.status(201).json({ ok: true, settings: nextSettings, status: await desktopCloudSync.status() });
+      res.status(201).json({ ok: true, settings: nextSettings, status: await desktopCloudSync.status(), cloudRealtime: realtime });
     } catch (error) {
       res.status(500).json({ ok: false, error: error.message || 'Failed to create Supabase account.' });
     }
@@ -1129,10 +1194,12 @@ async function main() {
         },
         cloudStatus,
         indexStatus: indexer.getRebuildStatus(),
+        thumbnailStatus: thumbnailGenerationService.getStatus(),
         mediaAvailability: indexer.getRootAvailabilitySummary(),
         storageUsage,
         syncStatus: getCloudEntrySyncStatus(),
-        journalMirror: journalMirror?.getStatus?.() || {}
+        journalMirror: journalMirror?.getStatus?.() || {},
+        cloudRealtime: cloudRealtimeWakeup.getStatus()
       }));
     } catch (error) {
       res.status(500).json({ ok: false, error: error.message || 'Failed to read tray status.' });
@@ -1250,6 +1317,10 @@ async function main() {
 
   app.get('/api/sync/changes', requireSyncAuth, async (req, res) => {
     const since = req.query.since !== undefined ? Number(req.query.since) : 0;
+    const waitMs = req.query.waitMs !== undefined ? Number(req.query.waitMs) : 0;
+    if (waitMs > 0) {
+      await syncService.waitForChangeAfter(since, waitMs);
+    }
     res.json(await syncService.listChangesSince(since));
   });
 
@@ -1956,12 +2027,14 @@ async function main() {
       if (!backgroundStartupRebuildQueued) {
         backgroundStartupRebuildQueued = true;
         setImmediate(() => {
-          indexer.scheduleRebuild('startup');
+          startIndexRebuild('startup');
           queueJournalMirrorSync('startup');
           queueCloudEntrySync('startup');
           queueDesktopHostHeartbeat('startup');
-          queueCloudMediaMetadata('startup');
           queueCloudMediaActions('startup');
+          cloudRealtimeWakeup.start('startup').catch((error) => {
+            console.warn(`Cloud realtime wake-up skipped (startup): ${error.message}`);
+          });
           setInterval(() => indexer.scheduleRefresh('interval'), config.indexing.rebuildIntervalMs).unref();
           setInterval(() => queueJournalMirrorSync('interval'), 60 * 1000).unref();
           setInterval(() => queueCloudEntrySync('interval'), 5 * 60 * 1000).unref();

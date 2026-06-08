@@ -6,6 +6,9 @@ const loginStatus = document.querySelector('#loginStatus');
 const indexCard = document.querySelector('#indexCard');
 const indexStatus = document.querySelector('#indexStatus');
 const indexProgress = document.querySelector('#indexProgress');
+const thumbnailCard = document.querySelector('#thumbnailCard');
+const thumbnailStatus = document.querySelector('#thumbnailStatus');
+const thumbnailProgress = document.querySelector('#thumbnailProgress');
 const syncStatus = document.querySelector('#syncStatus');
 const syncProgress = document.querySelector('#syncProgress');
 const syncProgressFill = syncProgress?.querySelector('span');
@@ -63,6 +66,7 @@ function renderStatus(payload) {
   lastPayload = payload;
   const cloud = payload.cloud || {};
   const index = payload.index || {};
+  const thumbnails = payload.thumbnails || {};
   const sync = payload.sync || {};
   const storage = payload.storage || {};
   const mediaAvailability = payload.mediaAvailability || {};
@@ -80,6 +84,17 @@ function renderStatus(payload) {
       ? `${index.stage || 'Indexing'} (${indexPercent}%)`
       : 'Idle';
   setProgress(indexProgress, index.running ? indexPercent : 100);
+
+  const thumbnailPercent = Math.max(0, Math.min(100, Number(thumbnails.percent || 0)));
+  thumbnailCard?.classList.toggle('hidden', !thumbnails.running && !thumbnails.queued && !thumbnails.error);
+  if (thumbnailStatus) {
+    thumbnailStatus.textContent = thumbnails.error && !thumbnails.running
+      ? thumbnails.error
+      : thumbnails.running || thumbnails.queued
+        ? `Generating thumbnails (${thumbnailPercent}%)`
+        : 'Idle';
+  }
+  if (thumbnailProgress) setProgress(thumbnailProgress, thumbnails.running ? thumbnailPercent : 100);
 
   if (!cloud.signedIn) {
     syncStatus.textContent = 'Sign in to sync';

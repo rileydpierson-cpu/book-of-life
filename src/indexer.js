@@ -111,11 +111,28 @@ class TimelineIndexer {
     this.mediaInventorySignature = '';
     this.mediaRootStatus = {};
     this.mediaCloudStore = null;
+    this.onIndexChanged = null;
     this.rebuildProgress = createIdleRebuildProgress();
   }
 
   setMediaCloudStore(mediaCloudStore) {
     this.mediaCloudStore = mediaCloudStore || null;
+  }
+
+  setIndexChangedHandler(handler) {
+    this.onIndexChanged = typeof handler === 'function' ? handler : null;
+  }
+
+  notifyIndexChanged(reason, photos = null) {
+    if (!this.onIndexChanged) return;
+    try {
+      this.onIndexChanged({
+        reason,
+        photos: Array.isArray(photos) ? photos : Array.from(this.state.photosById.values())
+      });
+    } catch (error) {
+      console.warn(`Index change handler skipped (${reason}): ${error.message}`);
+    }
   }
 
   setPhotoRoots(photoRoots = []) {
@@ -187,6 +204,7 @@ class TimelineIndexer {
       await this.persistMediaInventory(inventory);
       progress?.increment();
       progress?.complete();
+      this.notifyIndexChanged(reason);
       const durationMs = Date.now() - startedAt;
       console.log(`Book of Life index rebuilt (${reason}) with ${nextState.dayKeys.length} days in ${formatDuration(durationMs)}.`);
       return {
@@ -1677,6 +1695,7 @@ class TimelineIndexer {
         entries: inventoryEntries,
         signature: this.computeInventorySignature(inventoryEntries)
       });
+      this.notifyIndexChanged('media-added', added);
     }
     return added.map((photo) => ({ ...photo }));
   }
@@ -1782,6 +1801,7 @@ class TimelineIndexer {
       entries: nextInventoryEntries,
       signature: this.computeInventorySignature(nextInventoryEntries)
     });
+    this.notifyIndexChanged(reason);
     console.log(`Book of Life index refreshed (${reason}) with ${changedPaths.length} changed, ${recoveredPaths.length} recovered, ${removedLocalPaths.length} removed, and ${preservedUnavailable.length} unavailable files.`);
     return {
       changed: true,

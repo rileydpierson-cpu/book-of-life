@@ -1,103 +1,54 @@
 import React from 'react';
-import { ActivityIndicator, Linking, Platform, Pressable, Text, View } from 'react-native';
-import { NavigationContainer, DefaultTheme as NavigationDefaultTheme } from '@react-navigation/native';
-import { useFonts } from 'expo-font';
+import { ActivityIndicator, Linking, PermissionsAndroid, Platform, Pressable, Text, View } from 'react-native';
 import * as NavigationBar from 'expo-navigation-bar';
 import { StatusBar } from 'expo-status-bar';
-import { LavishlyYours_400Regular } from '@expo-google-fonts/lavishly-yours';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { WebView, type WebViewNavigation } from 'react-native-webview';
-import { RootNavigator } from './src/navigation/root-navigator';
-import { ThemeProvider, useAppTheme } from './src/theme/theme-provider';
-import { MobileAppProvider } from './src/app/mobile-app-provider';
 
 const LOCAL_APP_ORIGIN = process.env.EXPO_PUBLIC_BOOK_OF_LIFE_LOCAL_APP_ORIGIN || 'http://127.0.0.1:3199';
 const LOCAL_APP_URL = `${LOCAL_APP_ORIGIN}/`;
 
-function NativeNavigationShell() {
-  const { theme, themeName } = useAppTheme();
+const colors = {
+  background: '#f6f1e8',
+  surface: '#fffaf0',
+  border: '#dccfb9',
+  text: '#221d18',
+  muted: '#6e6458',
+  accent: '#2f5f87',
+  onAccent: '#ffffff'
+};
 
-  React.useEffect(() => {
-    if (Platform.OS !== 'android') return;
-    NavigationBar.setButtonStyleAsync(themeName === 'dark' ? 'light' : 'dark').catch(() => {});
-  }, [themeName]);
-
-  return (
-    <>
-      <StatusBar
-        style={themeName === 'dark' ? 'light' : 'dark'}
-        backgroundColor={theme.colors.background}
-      />
-      <NavigationContainer
-        theme={{
-          ...NavigationDefaultTheme,
-          colors: {
-            ...NavigationDefaultTheme.colors,
-            background: theme.colors.background,
-            card: theme.colors.surface,
-            text: theme.colors.text,
-            border: theme.colors.border,
-            primary: theme.colors.accent
-          }
-        }}
-      >
-        <MobileAppProvider>
-          <RootNavigator />
-        </MobileAppProvider>
-      </NavigationContainer>
-    </>
-  );
-}
-
-function MobileWebViewShell() {
-  const { theme, themeName } = useAppTheme();
+export default function App() {
   const webViewRef = React.useRef<WebView>(null);
-  const [nativeFallback, setNativeFallback] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState('');
   const [webViewKey, setWebViewKey] = React.useState(0);
 
   React.useEffect(() => {
     if (Platform.OS !== 'android') return;
-    NavigationBar.setButtonStyleAsync(themeName === 'dark' ? 'light' : 'dark').catch(() => {});
-    NavigationBar.setBackgroundColorAsync(theme.colors.background).catch(() => {});
-  }, [theme.colors.background, themeName]);
+    NavigationBar.setButtonStyleAsync('dark').catch(() => {});
+    const permissions = Number(Platform.Version) >= 33
+      ? [PermissionsAndroid.PERMISSIONS.READ_MEDIA_IMAGES, PermissionsAndroid.PERMISSIONS.READ_MEDIA_VIDEO]
+      : [PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE];
+    PermissionsAndroid.requestMultiple(permissions).catch(() => {});
+  }, []);
 
-  if (nativeFallback) return <NativeNavigationShell />;
+  function reloadLocalApp() {
+    setError('');
+    setLoading(true);
+    webViewRef.current?.reload();
+  }
+
+  function restartLocalAppView() {
+    setError('');
+    setLoading(true);
+    setWebViewKey((current) => current + 1);
+  }
 
   return (
     <SafeAreaProvider>
-      <StatusBar
-        style={themeName === 'dark' ? 'light' : 'dark'}
-        backgroundColor={theme.colors.background}
-      />
-      <SafeAreaView style={{ flex: 1, backgroundColor: theme.colors.background }} edges={['top', 'bottom']}>
-        <View
-          style={{
-            minHeight: 48,
-            paddingHorizontal: 12,
-            borderBottomWidth: 1,
-            borderBottomColor: theme.colors.border,
-            backgroundColor: theme.colors.surface,
-            flexDirection: 'row',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 8
-          }}
-        >
-          <Text style={{ color: theme.colors.text, fontSize: 16, fontWeight: '800' }}>Book of Life</Text>
-          <View style={{ flexDirection: 'row', gap: 8 }}>
-            <ShellButton label="Reload" onPress={() => webViewRef.current?.reload()} />
-            <ShellButton
-              label="Restart"
-              onPress={() => {
-                setWebViewKey((current) => current + 1);
-              }}
-            />
-            <ShellButton label="Native" onPress={() => setNativeFallback(true)} />
-          </View>
-        </View>
-
+      <StatusBar style="dark" backgroundColor={colors.background} />
+      <SafeAreaView style={{ flex: 1, backgroundColor: colors.background }} edges={['top', 'bottom']}>
         <View style={{ flex: 1 }}>
           <WebView
             key={webViewKey}
@@ -138,7 +89,7 @@ function MobileWebViewShell() {
             onNavigationStateChange={(navigation: WebViewNavigation) => {
               if (!navigation.loading) setLoading(false);
             }}
-            style={{ backgroundColor: theme.colors.background }}
+            style={{ backgroundColor: colors.background }}
           />
 
           {loading ? (
@@ -152,12 +103,12 @@ function MobileWebViewShell() {
                 left: 0,
                 alignItems: 'center',
                 justifyContent: 'center',
-                backgroundColor: `${theme.colors.background}dd`,
-                gap: theme.spacing.sm
+                backgroundColor: colors.background,
+                gap: 10
               }}
             >
-              <ActivityIndicator size="large" color={theme.colors.accent} />
-              <Text style={{ color: theme.colors.textMuted }}>Starting local library...</Text>
+              <ActivityIndicator size="large" color={colors.accent} />
+              <Text style={{ color: colors.muted }}>Starting local library...</Text>
             </View>
           ) : null}
 
@@ -168,19 +119,19 @@ function MobileWebViewShell() {
                 left: 16,
                 right: 16,
                 bottom: 16,
-                backgroundColor: theme.colors.surface,
-                borderColor: theme.colors.border,
+                backgroundColor: colors.surface,
+                borderColor: colors.border,
                 borderWidth: 1,
-                borderRadius: theme.radius.md,
+                borderRadius: 8,
                 padding: 14,
                 gap: 10
               }}
             >
-              <Text style={{ color: theme.colors.text, fontWeight: '800' }}>Local app unavailable</Text>
-              <Text style={{ color: theme.colors.textMuted, lineHeight: 20 }}>{error}</Text>
+              <Text style={{ color: colors.text, fontWeight: '800' }}>Local app unavailable</Text>
+              <Text style={{ color: colors.muted, lineHeight: 20 }}>{error}</Text>
               <View style={{ flexDirection: 'row', gap: 8 }}>
-                <ShellButton label="Try again" onPress={() => webViewRef.current?.reload()} />
-                <ShellButton label="Open native fallback" onPress={() => setNativeFallback(true)} />
+                <ShellButton label="Reload" onPress={reloadLocalApp} />
+                <ShellButton label="Restart view" onPress={restartLocalAppView} />
               </View>
             </View>
           ) : null}
@@ -191,57 +142,20 @@ function MobileWebViewShell() {
 }
 
 function ShellButton(props: { label: string; onPress: () => void }) {
-  const { theme } = useAppTheme();
   return (
     <Pressable
       onPress={props.onPress}
-      style={{
-        minHeight: 34,
-        paddingHorizontal: 10,
-        borderRadius: theme.radius.sm,
-        backgroundColor: theme.colors.background,
-        alignItems: 'center',
-        justifyContent: 'center'
-      }}
-    >
-      <Text style={{ color: theme.colors.text, fontSize: 12, fontWeight: '800' }}>{props.label}</Text>
-    </Pressable>
-  );
-}
-
-function StartupScreen() {
-  const { theme } = useAppTheme();
-  return (
-    <View
-      style={{
-        flex: 1,
-        backgroundColor: theme.colors.background,
+      style={({ pressed }) => ({
+        minHeight: 38,
+        paddingHorizontal: 12,
+        borderRadius: 8,
+        backgroundColor: colors.accent,
         alignItems: 'center',
         justifyContent: 'center',
-        gap: theme.spacing.md
-      }}
+        opacity: pressed ? 0.84 : 1
+      })}
     >
-      <ActivityIndicator size="large" color={theme.colors.accent} />
-      <Text
-        style={{
-          color: theme.colors.textMuted,
-          fontSize: 15
-        }}
-      >
-        Loading mobile shell...
-      </Text>
-    </View>
-  );
-}
-
-export default function App() {
-  const [fontsLoaded] = useFonts({
-    LavishlyYours_400Regular
-  });
-
-  return (
-    <ThemeProvider fontsLoaded={fontsLoaded}>
-      {fontsLoaded ? <MobileWebViewShell /> : <StartupScreen />}
-    </ThemeProvider>
+      <Text style={{ color: colors.onAccent, fontSize: 13, fontWeight: '800' }}>{props.label}</Text>
+    </Pressable>
   );
 }

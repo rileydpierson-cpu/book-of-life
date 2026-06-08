@@ -11,14 +11,31 @@ data class MobileEntryRecord(
   val raw: String,
   val title: String,
   val updatedAt: String,
-  val cloudVersion: Long
+  val cloudVersion: Long,
+  val dirty: Boolean = false
+)
+
+data class MobileMediaRecord(
+  val id: String,
+  val localUri: String?,
+  val cloudId: String?,
+  val fileName: String,
+  val mediaType: String,
+  val isoDate: String?,
+  val capturedAt: String?,
+  val width: Int,
+  val height: Int,
+  val folder: String?,
+  val originalInCloud: Boolean,
+  val desktopHostDeviceId: String?,
+  val updatedAt: String
 )
 
 class MobileLocalStore(context: Context) : SQLiteOpenHelper(
   context.applicationContext,
   "book_of_life_mobile_local.db",
   null,
-  1
+  2
 ) {
   override fun onCreate(db: SQLiteDatabase) {
     db.execSQL(
@@ -102,7 +119,7 @@ class MobileLocalStore(context: Context) : SQLiteOpenHelper(
   fun getEntry(isoDate: String): MobileEntryRecord? {
     readableDatabase.query(
       "entries",
-      arrayOf("iso_date", "raw", "title", "updated_at", "cloud_version"),
+      arrayOf("iso_date", "raw", "title", "updated_at", "cloud_version", "dirty"),
       "iso_date = ?",
       arrayOf(isoDate),
       null,
@@ -116,7 +133,8 @@ class MobileLocalStore(context: Context) : SQLiteOpenHelper(
         raw = cursor.getString(1),
         title = cursor.getString(2),
         updatedAt = cursor.getString(3),
-        cloudVersion = cursor.getLong(4)
+        cloudVersion = cursor.getLong(4),
+        dirty = cursor.getInt(5) != 0
       )
     }
   }
@@ -139,7 +157,143 @@ class MobileLocalStore(context: Context) : SQLiteOpenHelper(
     }
     writableDatabase.insertWithOnConflict("entries", null, values, SQLiteDatabase.CONFLICT_REPLACE)
     enqueueMutation("entry.upsert", isoDate, """{"isoDate":"${escapeJson(isoDate)}"}""")
-    return MobileEntryRecord(isoDate, raw, title, now, currentVersion)
+    return MobileEntryRecord(isoDate, raw, title, now, currentVersion, true)
+  }
+
+  fun listEntries(limit: Int = 200): List<MobileEntryRecord> {
+    val rows = mutableListOf<MobileEntryRecord>()
+    readableDatabase.query(
+      "entries",
+      arrayOf("iso_date", "raw", "title", "updated_at", "cloud_version", "dirty"),
+      null,
+      null,
+      null,
+      null,
+      "iso_date DESC",
+      limit.coerceAtLeast(1).toString()
+    ).use { cursor ->
+      while (cursor.moveToNext()) {
+        rows.add(
+          MobileEntryRecord(
+            isoDate = cursor.getString(0),
+            raw = cursor.getString(1),
+            title = cursor.getString(2),
+            updatedAt = cursor.getString(3),
+            cloudVersion = cursor.getLong(4),
+            dirty = cursor.getInt(5) != 0
+          )
+        )
+      }
+    }
+    return rows
+  }
+
+  fun listDirtyEntries(): List<MobileEntryRecord> = listEntries(10_000).filter { it.dirty }
+
+  fun saveCloudEntry(isoDate: String, raw: String, cloudVersion: Long, updatedAt: String) {
+    val title = raw.lineSequence()
+      .map { it.trim().trimStart('#').trim() }
+      .firstOrNull { it.isNotBlank() }
+      ?.take(120)
+      ?: ""
+    val values = ContentValues().apply {
+      put("iso_date", isoDate)
+      put("raw", raw)
+      put("title", title)
+      put("updated_at", updatedAt.ifBlank { Instant.now().toString() })
+      put("cloud_version", cloudVersion)
+      put("dirty", 0)
+    }
+    writableDatabase.insertWithOnConflict("entries", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+    writableDatabase.delete("pending_mutations", "mutation_type = ? AND entity_id = ?", arrayOf("entry.upsert", isoDate))
+  }
+
+  fun markEntryClean(isoDate: String, cloudVersion: Long, updatedAt: String) {
+    val values = ContentValues().apply {
+      put("cloud_version", cloudVersion)
+      put("updated_at", updatedAt.ifBlank { Instant.now().toString() })
+      put("dirty", 0)
+    }
+    writableDatabase.update("entries", values, "iso_date = ?", arrayOf(isoDate))
+    writableDatabase.delete("pending_mutations", "mutation_type = ? AND entity_id = ?", arrayOf("entry.upsert", isoDate))
+  }
+
+  fun upsertMedia(
+    id: String,
+    localUri: String?,
+    cloudId: String?,
+    fileName: String,
+    mediaType: String,
+    isoDate: String?,
+    capturedAt: String?,
+    width: Int,
+    height: Int,
+    folder: String?,
+    originalInCloud: Boolean,
+    desktopHostDeviceId: String?,
+    updatedAt: String
+  ) {
+    val values = ContentValues().apply {
+      put("id", id)
+      put("local_uri", localUri)
+      put("cloud_id", cloudId)
+      put("file_name", fileName)
+      put("media_type", mediaType)
+      put("iso_date", isoDate)
+      put("captured_at", capturedAt)
+      put("width", width)
+      put("height", height)
+      put("folder", folder)
+      put("original_in_cloud", if (originalInCloud) 1 else 0)
+      put("desktop_host_device_id", desktopHostDeviceId)
+      put("updated_at", updatedAt.ifBlank { Instant.now().toString() })
+    }
+    writableDatabase.insertWithOnConflict("media_items", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+  }
+
+  fun mediaCloudId(id: String): String? {
+    readableDatabase.query("media_items", arrayOf("cloud_id"), "id = ?", arrayOf(id), null, null, null, "1").use { cursor ->
+      return if (cursor.moveToFirst()) cursor.getString(0) else null
+    }
+  }
+
+  fun getMedia(id: String): MobileMediaRecord? {
+    return listMedia("id = ?", arrayOf(id), "1").firstOrNull()
+  }
+
+  fun listMedia(limit: Int = 5_000): List<MobileMediaRecord> = listMedia(null, null, limit.toString())
+
+  private fun listMedia(selection: String?, selectionArgs: Array<String>?, limit: String): List<MobileMediaRecord> {
+    val rows = mutableListOf<MobileMediaRecord>()
+    readableDatabase.query(
+      "media_items",
+      arrayOf("id", "local_uri", "cloud_id", "file_name", "media_type", "iso_date", "captured_at", "width", "height", "folder", "original_in_cloud", "desktop_host_device_id", "updated_at"),
+      selection,
+      selectionArgs,
+      null,
+      null,
+      "captured_at DESC",
+      limit
+    ).use { cursor ->
+      while (cursor.moveToNext()) {
+        rows.add(MobileMediaRecord(
+          id = cursor.getString(0),
+          localUri = cursor.getString(1),
+          cloudId = cursor.getString(2),
+          fileName = cursor.getString(3),
+          mediaType = cursor.getString(4),
+          isoDate = cursor.getString(5),
+          capturedAt = cursor.getString(6),
+          width = cursor.getInt(7),
+          height = cursor.getInt(8),
+          folder = cursor.getString(9),
+          originalInCloud = cursor.getInt(10) != 0,
+          desktopHostDeviceId = cursor.getString(11),
+          updatedAt = cursor.getString(12)
+        ))
+      }
+    }
+    return rows
   }
 
   fun countEntries(): Int = count("entries")
@@ -171,6 +325,10 @@ class MobileLocalStore(context: Context) : SQLiteOpenHelper(
     writableDatabase.insertWithOnConflict("sync_state", null, values, SQLiteDatabase.CONFLICT_REPLACE)
   }
 
+  fun removeState(key: String) {
+    writableDatabase.delete("sync_state", "key = ?", arrayOf(key))
+  }
+
   private fun enqueueMutation(type: String, entityId: String, payloadJson: String) {
     val now = Instant.now().toString()
     val values = ContentValues().apply {
@@ -185,7 +343,7 @@ class MobileLocalStore(context: Context) : SQLiteOpenHelper(
     writableDatabase.insert("pending_mutations", null, values)
   }
 
-  private fun getState(key: String): String? {
+  fun getState(key: String): String? {
     readableDatabase.query(
       "sync_state",
       arrayOf("value"),

@@ -32,6 +32,7 @@ class SyncService {
       appliedMutations: {},
       devices: {}
     };
+    this.changeWaiters = new Set();
     this.loaded = false;
   }
 
@@ -132,7 +133,33 @@ class SyncService {
       this.state.changes = this.state.changes.slice(-5000);
     }
     await this.persist();
+    this.notifyChangeWaiters();
     return sequence;
+  }
+
+  notifyChangeWaiters() {
+    const waiters = Array.from(this.changeWaiters);
+    this.changeWaiters.clear();
+    for (const resolve of waiters) resolve();
+  }
+
+  async waitForChangeAfter(sequence, timeoutMs = 25000) {
+    await this.ensureLoaded();
+    const since = Math.max(0, Number(sequence || 0));
+    if (this.currentSequence() > since) return true;
+    const boundedTimeoutMs = Math.min(30000, Math.max(0, Number(timeoutMs || 0)));
+    if (!boundedTimeoutMs) return false;
+    return new Promise((resolve) => {
+      const done = (changed) => {
+        clearTimeout(timer);
+        this.changeWaiters.delete(notify);
+        resolve(changed);
+      };
+      const notify = () => done(true);
+      const timer = setTimeout(() => done(false), boundedTimeoutMs);
+      timer.unref?.();
+      this.changeWaiters.add(notify);
+    });
   }
 
   serializeEntryRecord(isoDate) {

@@ -3,16 +3,21 @@ package com.anonymous.bookoflifemobile.local
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import android.util.Size
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.net.InetAddress
+import java.net.HttpURLConnection
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.URL
 import java.net.URLDecoder
+import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.time.Instant
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 import kotlin.concurrent.thread
 
 object MobileLocalServer {
@@ -20,6 +25,10 @@ object MobileLocalServer {
   const val BASE_URL = "http://127.0.0.1:$PORT/"
   private const val TAG = "BookOfLifeLocalServer"
   private const val ASSET_ROOT = "mobile-web"
+  private const val SUPABASE_URL = "https://mqbmkqikhqvhvwyaqemg.supabase.co"
+  private const val SUPABASE_KEY = "sb_publishable_8xCIi6EckUw25Yg6R2hEDQ_gsc3i8_D"
+  private const val STARTUP_MODE_KEY = "startup_mode"
+  private const val CLOUD_SESSION_KEY = "cloud_session"
 
   @Volatile private var started = false
   @Volatile private var serverSocket: ServerSocket? = null
@@ -54,7 +63,11 @@ object MobileLocalServer {
       .put("folders", store.countFolders())
       .put("pendingMutations", store.countPendingMutations())
       .put("lastSyncAt", store.lastSyncAt())
+      .put("lastSyncResult", store.getState("last_sync_result")?.let { JSONObject(it) })
       .put("lastMediaScanAt", store.lastMediaScanAt())
+      .put("lastMediaScanResult", store.getState("last_media_scan_result")?.let { JSONObject(it) })
+      .put("cloudLibraryId", store.getState("cloud_library_id"))
+      .put("cloudDeviceId", store.getState("cloud_device_id"))
       .put("generatedAt", Instant.now().toString())
     return payload.toString()
   }
@@ -80,7 +93,7 @@ object MobileLocalServer {
       try {
         val headerBytes = readHeaders(input)
         if (headerBytes.isEmpty()) return
-        val headerText = headerBytes.toString(StandardCharsets.UTF_8.name())
+        val headerText = headerBytes.toString(StandardCharsets.UTF_8)
         val headerLines = headerText.split("\r\n")
         val requestLine = headerLines.firstOrNull().orEmpty()
         val requestParts = requestLine.split(" ")
@@ -107,45 +120,75 @@ object MobileLocalServer {
   }
 
   private fun route(method: String, rawTarget: String, body: String): LocalResponse {
-    val uri = Uri.parse(rawTarget)
-    val path = normalizePath(uri.path ?: "/")
+        val uri = Uri.parse(rawTarget)
+        // Android Uri treats the colon in mobile media IDs as a scheme separator.
+        // Route using the raw request path while retaining Uri for query parameters.
+        val path = normalizePath(rawTarget.substringBefore('?'))
     if (path.startsWith("/api/")) return routeApi(method, path, uri, body)
-    if (path.startsWith("/media/")) return LocalResponse(404, "application/json; charset=utf-8", """{"error":"Media not cached on this phone yet."}""".toByteArray())
+    if (method == "POST" && path == "/auth/logout") {
+      store.removeState(CLOUD_SESSION_KEY)
+      store.removeState(STARTUP_MODE_KEY)
+      return json("""{"ok":true,"redirectTo":"/"}""")
+    }
+    if (method == "GET" && path.startsWith("/media/")) return serveMedia(path)
     return serveAsset(path)
   }
 
   private fun routeApi(method: String, path: String, uri: Uri, body: String): LocalResponse {
     if (method == "GET" && path == "/api/auth/status") {
-      return json("""{"ok":true,"enabled":false,"authenticated":true,"username":"mobile-local"}""")
+      val session = cloudSession()
+      return json("""{"ok":true,"enabled":true,"authenticated":${session != null},"username":${jsonNullable(session?.optJSONObject("user")?.optString("email"))},"mode":${jsonNullable(store.getState(STARTUP_MODE_KEY))}}""")
     }
     if (method == "GET" && path == "/api/bootstrap") return json(bootstrapJson())
-    if (method == "GET" && path == "/api/timeline") return json(emptyChunkJson())
-    if (method == "GET" && path == "/api/gallery") return json(emptyChunkJson())
+    if (method == "GET" && path == "/api/timeline") return json(timelineJson())
+    if (method == "GET" && path == "/api/gallery") return json(timelineJson(includeJournal = false))
     if (method == "GET" && path == "/api/gallery/index") return json("""{"total":0,"days":[]}""")
     if (method == "GET" && path == "/api/search") {
-      val query = escapeJson(uri.getQueryParameter("q") ?: "")
-      return json("""{"query":"$query","total":0,"days":[],"folders":[]}""")
+      return json(searchJson(uri.getQueryParameter("q") ?: ""))
     }
-    if (method == "GET" && path.startsWith("/api/year/")) return json("""{"year":"${escapeJson(path.substringAfterLast('/'))}","months":[],"days":[]}""")
-    if (method == "GET" && path.startsWith("/api/month/")) return json("""{"monthKey":"${escapeJson(path.substringAfterLast('/'))}","days":[]}""")
+    if (method == "GET" && path.startsWith("/api/year/")) return json(yearJson(path.substringAfterLast('/')))
+    if (method == "GET" && path.startsWith("/api/month/")) return json(monthJson(path.substringAfterLast('/')))
     if (method == "GET" && path == "/api/upload/folders") return json("""{"roots":[]}""")
+    if (method != "GET" && path.startsWith("/api/upload/")) return unsupported("Mobile media upload is not implemented in this local-only build.", 202)
     if (method == "GET" && path == "/api/folders/browse") {
       return json("""{"rootId":"0","rootLabel":"Phone","relativePath":".","folders":[],"media":[]}""")
     }
     if (method == "GET" && path == "/api/mobile/status") return json(statusJson())
     if (method == "POST" && path == "/api/mobile/sync-now") {
       store.setState("last_sync_requested_at", Instant.now().toString())
+      MobileBackgroundScheduler.syncNow(appContext)
       return json("""{"ok":true,"queued":true}""")
     }
     if (method == "POST" && path == "/api/mobile/scan-now") {
       store.setState("last_media_scan_requested_at", Instant.now().toString())
+      MobileBackgroundScheduler.scanNow(appContext)
       return json("""{"ok":true,"queued":true}""")
     }
+    if (method == "POST" && path == "/api/mobile/use-local") {
+      store.setState(STARTUP_MODE_KEY, "local")
+      return json("""{"ok":true,"mode":"local","redirectTo":"/"}""")
+    }
     if (path.startsWith("/api/entry/")) return routeEntry(method, path, uri, body)
-    if (path.startsWith("/api/media/")) return json("""{"ok":false,"queued":true,"pending":true}""", status = if (method == "GET") 404 else 202)
-    if (path.startsWith("/api/desktop/")) return json(desktopStatusJson())
-    if (path.startsWith("/api/sync/")) return json("""{"ok":true,"changes":[],"entries":[],"media":[],"cursor":null}""")
+    if (path.startsWith("/api/media/")) return unsupported("Mobile media operations are not implemented in this local-only build.", if (method == "GET") 404 else 202)
+    if (path.startsWith("/api/desktop/")) return routeDesktopApi(method, path, body)
+    if (path.startsWith("/api/sync/")) return unsupported("Mobile sync is not implemented in this local-only build.", 404)
     return json("""{"error":"Mobile API route not implemented yet.","path":"${escapeJson(path)}"}""", status = 404)
+  }
+
+  private fun routeDesktopApi(method: String, path: String, body: String): LocalResponse {
+    if (method == "GET" && path == "/api/desktop/sync-settings") return json("""{"settings":${desktopSettingsJson()}}""")
+    if (method == "POST" && path == "/api/desktop/sync-settings") return json("""{"ok":true,"settings":${desktopSettingsJson()},"ignored":true,"mode":"android-local"}""")
+    if (method == "GET" && path == "/api/desktop/cloud/status") return json(desktopCloudStatusJson())
+    if (method == "POST" && path == "/api/desktop/cloud/connect") return cloudAuth(body, signup = false)
+    if (method == "POST" && path == "/api/desktop/cloud/signup") return cloudAuth(body, signup = true)
+    if (method == "POST" && path == "/api/desktop/cloud/sync") return unsupported("Cloud sync is not implemented in this local-only mobile build.", 202)
+    if (method == "GET" && path == "/api/desktop/index/status") return json(desktopIndexStatusJson())
+    if (method == "POST" && path == "/api/desktop/index/rebuild") return unsupported("Mobile indexing is not implemented in this local-only build.", 202)
+    if (method == "GET" && path == "/api/desktop/tray/status") return json(desktopTrayStatusJson())
+    if (method == "GET" && path == "/api/desktop/onboarding/status") return json(desktopOnboardingStatusJson())
+    if (method == "POST" && path == "/api/desktop/onboarding/complete") return json("""{"ok":true,"complete":true,"settings":${desktopSettingsJson()},"mode":"android-local"}""")
+    if (path.startsWith("/api/desktop/relay/")) return unsupported("Desktop media relay is not available on mobile.", 404)
+    return unsupported("Desktop-only API is not available in the mobile local shell.", if (method == "GET") 404 else 202)
   }
 
   private fun routeEntry(method: String, path: String, uri: Uri, body: String): LocalResponse {
@@ -174,6 +217,7 @@ object MobileLocalServer {
 
   private fun serveAsset(path: String): LocalResponse {
     val assetPath = when {
+      path == "/" && store.getState(STARTUP_MODE_KEY).isNullOrBlank() -> "$ASSET_ROOT/desktop-onboarding.html"
       path == "/" -> "$ASSET_ROOT/index.html"
       path == "/login" -> "$ASSET_ROOT/login.html"
       path.startsWith("/edit/") -> "$ASSET_ROOT/editor.html"
@@ -196,23 +240,78 @@ object MobileLocalServer {
 
   private fun bootstrapJson(): String {
     val today = LocalDate.now().format(DateTimeFormatter.ISO_DATE)
+    val entries = store.listEntries(10_000)
+    val entriesByDate = entries.associateBy { it.isoDate }
+    val mediaByDate = store.listMedia().filter { isIsoDate(it.isoDate.orEmpty()) && (it.localUri == null || it.mediaType != "video") }.groupBy { it.isoDate!! }
+    val dates = (entriesByDate.keys + mediaByDate.keys).distinct().sortedDescending()
+    val days = dates.map { dayJson(entriesByDate[it], mediaByDate[it].orEmpty(), it) }
+    val totalWords = entries.sumOf { wordCount(it.raw) }
     return """
       {
         "generatedAt":"${Instant.now()}",
-        "totalDays":0,
+        "totalDays":${dates.size},
         "totalEntries":${store.countEntries()},
-        "totalWords":0,
+        "totalWords":$totalWords,
         "totalMedia":${store.countMedia()},
-        "firstDate":null,
-        "lastDate":null,
-        "today":${emptyDayJson(today)},
-        "years":[],
-        "monthsByYear":[],
-        "railDates":[],
+        "firstDate":${jsonNullable(dates.lastOrNull())},
+        "lastDate":${jsonNullable(dates.firstOrNull())},
+        "today":${dayJson(entriesByDate[today], mediaByDate[today].orEmpty(), today)},
+        "years":[${yearSummariesJson(dates, entriesByDate, mediaByDate)}],
+        "monthsByYear":[${monthsByYearJson(dates, entriesByDate, mediaByDate)}],
+        "railDates":[${railDatesJson(dates, entriesByDate, mediaByDate)}],
+        "days":[${days.joinToString(",")}],
         "chunkSize":24,
         "mobile":{"mode":"android-local","statusUrl":"/api/mobile/status"}
       }
     """.trimIndent()
+  }
+
+  private fun timelineJson(includeJournal: Boolean = true): String {
+    val entries = store.listEntries(10_000).associateBy { it.isoDate }
+    val media = store.listMedia().filter { isIsoDate(it.isoDate.orEmpty()) && (it.localUri == null || it.mediaType != "video") }.groupBy { it.isoDate!! }
+    val dates = (entries.keys + media.keys).distinct().sortedDescending()
+    val days = dates.map { dayJson(if (includeJournal) entries[it] else null, media[it].orEmpty(), it) }
+    return """
+      {
+        "total":${days.size},
+        "startIndex":0,
+        "endIndex":${days.size - 1},
+        "hasOlder":false,
+        "hasNewer":false,
+        "days":[${days.joinToString(",")}]
+      }
+    """.trimIndent()
+  }
+
+  private fun searchJson(rawQuery: String): String {
+    val query = rawQuery.trim()
+    val matches = if (query.isBlank()) {
+      emptyList()
+    } else {
+      store.listEntries(10_000).filter {
+        it.isoDate.contains(query, ignoreCase = true) ||
+          it.title.contains(query, ignoreCase = true) ||
+          it.raw.contains(query, ignoreCase = true)
+      }
+    }
+    return """{"query":"${escapeJson(query)}","total":${matches.size},"days":[${matches.joinToString(",") { dayJson(it) }}],"folders":[]}"""
+  }
+
+  private fun yearJson(year: String): String {
+    val cleanYear = year.take(4)
+    val entries = store.listEntries(10_000).filter { it.isoDate.startsWith(cleanYear) }.associateBy { it.isoDate }
+    val media = store.listMedia().filter { it.isoDate?.startsWith(cleanYear) == true && (it.localUri == null || it.mediaType != "video") }.groupBy { it.isoDate!! }
+    val dates = (entries.keys + media.keys).distinct().sortedDescending()
+    return """{"year":${cleanYear.toIntOrNull() ?: 0},"months":[${monthSummariesJson(dates, entries, media)}]}"""
+  }
+
+  private fun monthJson(monthKey: String): String {
+    val cleanMonth = monthKey.take(7)
+    val entries = store.listEntries(10_000).filter { it.isoDate.startsWith(cleanMonth) }.associateBy { it.isoDate }
+    val media = store.listMedia().filter { it.isoDate?.startsWith(cleanMonth) == true && (it.localUri == null || it.mediaType != "video") }.groupBy { it.isoDate!! }
+    val dates = (entries.keys + media.keys).distinct().sortedDescending()
+    val summary = monthSummaryJson(cleanMonth, dates, entries, media, includeDays = true)
+    return summary
   }
 
   private fun desktopStatusJson(): String {
@@ -232,13 +331,137 @@ object MobileLocalServer {
     """.trimIndent()
   }
 
+  private fun desktopSettingsJson(): String {
+    return """
+      {
+        "desktopName":"Book of Life Mobile",
+        "libraryName":"Book of Life",
+        "storageMode":"device-only",
+        "mediaFolders":[],
+        "deviceUploadRootId":"0",
+        "deviceUploadFolderName":"Device Uploads",
+        "cloudSession":null,
+        "updatedAt":"${Instant.now()}"
+      }
+    """.trimIndent()
+  }
+
+  private fun desktopCloudStatusJson(): String {
+    val session = cloudSession()
+    val signedIn = session != null
+    val email = session?.optJSONObject("user")?.optString("email").orEmpty()
+    return """
+      {
+        "configured":true,
+        "signedIn":$signedIn,
+        "email":"${escapeJson(email)}",
+        "mode":"android-local",
+        "error":null
+      }
+    """.trimIndent()
+  }
+
+  private fun desktopIndexStatusJson(): String {
+    return """{"state":"idle","running":false,"reason":"mobile-local","startedAt":null,"finishedAt":null}"""
+  }
+
+  private fun desktopTrayStatusJson(): String {
+    return """
+      {
+        "ok":true,
+        "mode":"android-local",
+        "service":{"running":true,"url":"$BASE_URL"},
+        "server":{"url":"$BASE_URL"},
+        "cloud":{"configured":false,"signedIn":false},
+        "sync":{"running":false,"queued":false,"pendingMutations":${store.countPendingMutations()},"lastSyncedAt":${jsonNullable(store.lastSyncAt())}},
+        "mediaAvailability":{"warningCount":0,"roots":[]},
+        "storageUsage":{"cacheBytes":0},
+        "generatedAt":"${Instant.now()}"
+      }
+    """.trimIndent()
+  }
+
+  private fun desktopOnboardingStatusJson(): String {
+    return """
+      {
+        "complete":${!store.getState(STARTUP_MODE_KEY).isNullOrBlank()},
+        "mode":"android-local",
+        "settings":${desktopSettingsJson()},
+        "cloud":${desktopCloudStatusJson()},
+        "index":${desktopIndexStatusJson()},
+        "server":{"url":"$BASE_URL"}
+      }
+    """.trimIndent()
+  }
+
+  private fun cloudSession(): JSONObject? {
+    val raw = store.getState(CLOUD_SESSION_KEY) ?: return null
+    return try {
+      JSONObject(raw)
+    } catch (_: Throwable) {
+      null
+    }
+  }
+
+  private fun cloudAuth(body: String, signup: Boolean): LocalResponse {
+    val request = try {
+      JSONObject(body.ifBlank { "{}" })
+    } catch (_: Throwable) {
+      JSONObject()
+    }
+    val email = request.optString("email", "").trim()
+    val password = request.optString("password", "")
+    if (email.isBlank() || password.isBlank()) {
+      return json("""{"error":"Enter your email and password."}""", status = 400)
+    }
+
+    return try {
+      val endpoint = if (signup) "/auth/v1/signup" else "/auth/v1/token?grant_type=password"
+      val connection = URL("$SUPABASE_URL$endpoint").openConnection() as HttpURLConnection
+      connection.requestMethod = "POST"
+      connection.connectTimeout = 15_000
+      connection.readTimeout = 20_000
+      connection.doOutput = true
+      connection.setRequestProperty("apikey", SUPABASE_KEY)
+      connection.setRequestProperty("Content-Type", "application/json")
+      val payload = JSONObject().put("email", email).put("password", password).toString()
+      connection.outputStream.use { it.write(payload.toByteArray(StandardCharsets.UTF_8)) }
+      val status = connection.responseCode
+      val responseText = (if (status in 200..299) connection.inputStream else connection.errorStream)
+        ?.bufferedReader(StandardCharsets.UTF_8)
+        ?.use { it.readText() }
+        .orEmpty()
+      val response = JSONObject(responseText.ifBlank { "{}" })
+      if (status !in 200..299) {
+        val message = response.optString("msg", response.optString("error_description", response.optString("message", "Cloud sign in failed.")))
+        return json("""{"error":"${escapeJson(message)}"}""", status = 400)
+      }
+      if (response.optString("access_token").isBlank()) {
+        val message = if (signup) {
+          "Check your email to confirm the account, then log in."
+        } else {
+          "Cloud sign in did not return a session."
+        }
+        return json("""{"error":"${escapeJson(message)}"}""", status = 400)
+      }
+      store.setState(CLOUD_SESSION_KEY, response.toString())
+      store.setState(STARTUP_MODE_KEY, "cloud")
+      MobileBackgroundScheduler.syncNow(appContext)
+      MobileBackgroundScheduler.scanNow(appContext)
+      json("""{"ok":true,"mode":"android-local","redirectTo":"/","settings":${desktopSettingsJson()},"cloud":${desktopCloudStatusJson()}}""")
+    } catch (error: Throwable) {
+      Log.w(TAG, "Cloud authentication failed", error)
+      json("""{"error":"Could not reach Book of Life Cloud. Check your internet connection and try again."}""", status = 400)
+    }
+  }
+
   private fun emptyChunkJson(): String = """{"total":0,"startIndex":0,"endIndex":-1,"hasOlder":false,"hasNewer":false,"days":[]}"""
 
   private fun emptyDayJson(isoDate: String): String {
     return """
       {
         "isoDate":"$isoDate",
-        "dateLabel":"$isoDate",
+        "dateLabel":"${escapeJson(longDateLabel(isoDate))}",
         "hasTimelineItem":false,
         "hasJournal":false,
         "wordCount":0,
@@ -252,8 +475,152 @@ object MobileLocalServer {
   }
 
   private fun dayJson(entry: MobileEntryRecord): String {
-    val words = entry.raw.split(Regex("\\s+")).count { it.isNotBlank() }
-    val preview = entry.raw.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty().take(180)
+    return dayJson(entry, emptyList(), entry.isoDate)
+  }
+
+  private fun dayJson(entry: MobileEntryRecord?, media: List<MobileMediaRecord>, isoDate: String): String {
+    if (entry == null && media.isEmpty()) return emptyDayJson(isoDate)
+    val raw = entry?.raw.orEmpty()
+    val words = wordCount(raw)
+    val preview = raw.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty().take(180)
+    return """
+      {
+        "isoDate":"$isoDate",
+        "dateLabel":"${escapeJson(longDateLabel(isoDate))}",
+        "monthKey":"${isoDate.take(7)}",
+        "monthLabel":"${escapeJson(monthLabel(isoDate))}",
+        "hasTimelineItem":true,
+        "hasJournal":${raw.isNotBlank()},
+        "wordCount":$words,
+        "photoCount":${media.size},
+        "photos":[${media.joinToString(",") { mediaJson(it) }}],
+        "previewText":"${escapeJson(preview)}",
+        "previewLines":["${escapeJson(preview)}"],
+        "isPreviewTruncated":${raw.length > preview.length},
+        "journal":${if (entry == null) "null" else """{"raw":"${escapeJson(raw)}","title":"${escapeJson(entry.title)}","previewText":"${escapeJson(preview)}","previewLines":["${escapeJson(preview)}"],"isPreviewTruncated":${raw.length > preview.length},"fullHtml":"${escapeJson(raw)}","wordCount":$words}"""}
+      }
+    """.trimIndent()
+  }
+
+  private fun yearSummariesJson(
+    dates: List<String>,
+    entries: Map<String, MobileEntryRecord>,
+    media: Map<String, List<MobileMediaRecord>>
+  ): String {
+    return dates.groupBy { it.take(4) }.entries.joinToString(",") { (year, yearDates) ->
+      val covers = yearDates.flatMap { media[it].orEmpty() }.take(4)
+      """{"year":${year.toIntOrNull() ?: 0},"firstDate":"${yearDates.last()}","journalCount":${yearDates.count { entries[it] != null }},"photoCount":${yearDates.sumOf { media[it].orEmpty().size }},"coverPhotoIds":[${covers.joinToString(",") { """"${escapeJson(it.id)}"""" }}],"coverUrls":[${covers.joinToString(",") { """"/media/thumb/${escapeJson(it.id)}"""" }}]}"""
+    }
+  }
+
+  private fun monthsByYearJson(
+    dates: List<String>,
+    entries: Map<String, MobileEntryRecord>,
+    media: Map<String, List<MobileMediaRecord>>
+  ): String {
+    return dates.groupBy { it.take(4) }.entries.joinToString(",") { (year, yearDates) ->
+      """{"year":${year.toIntOrNull() ?: 0},"months":[${monthSummariesJson(yearDates, entries, media)}]}"""
+    }
+  }
+
+  private fun monthSummariesJson(
+    dates: List<String>,
+    entries: Map<String, MobileEntryRecord>,
+    media: Map<String, List<MobileMediaRecord>>
+  ): String {
+    return dates.groupBy { it.take(7) }.entries.joinToString(",") { (month, monthDates) ->
+      monthSummaryJson(month, monthDates, entries, media)
+    }
+  }
+
+  private fun monthSummaryJson(
+    month: String,
+    dates: List<String>,
+    entries: Map<String, MobileEntryRecord>,
+    media: Map<String, List<MobileMediaRecord>>,
+    includeDays: Boolean = false
+  ): String {
+    val covers = dates.flatMap { media[it].orEmpty() }.take(4)
+    val days = if (includeDays) {
+      dates.joinToString(",") { isoDate ->
+        val previews = media[isoDate].orEmpty().take(4)
+        """{"isoDate":"$isoDate","dateLabel":"${escapeJson(longDateLabel(isoDate))}","shortLabel":"${escapeJson(shortDateLabel(isoDate))}","photoCount":${media[isoDate].orEmpty().size},"hasJournal":${entries[isoDate] != null},"wordCount":${wordCount(entries[isoDate]?.raw.orEmpty())},"previewThumbs":[${previews.joinToString(",") { """{"id":"${escapeJson(it.id)}","type":"${if (it.mediaType == "video") "video" else "photo"}","thumbUrl":"/media/thumb/${escapeJson(it.id)}","previewUrl":"/media/preview/${escapeJson(it.id)}"}""" }}]}"""
+      }
+    } else {
+      ""
+    }
+    return """{"key":"${escapeJson(month)}","year":${month.take(4).toIntOrNull() ?: 0},"monthIndex":${(month.takeLast(2).toIntOrNull() ?: 1) - 1},"label":"${escapeJson(monthLabel("$month-01"))}","firstDate":"${dates.last()}","journalCount":${dates.count { entries[it] != null }},"photoCount":${dates.sumOf { media[it].orEmpty().size }},"coverPhotoIds":[${covers.joinToString(",") { """"${escapeJson(it.id)}"""" }}],"coverUrls":[${covers.joinToString(",") { """"/media/thumb/${escapeJson(it.id)}"""" }}]${if (includeDays) ""","days":[$days]""" else ""}}"""
+  }
+
+  private fun railDatesJson(
+    dates: List<String>,
+    entries: Map<String, MobileEntryRecord>,
+    media: Map<String, List<MobileMediaRecord>>
+  ): String {
+    val total = dates.size
+    return dates.mapIndexed { descendingIndex, isoDate ->
+      """{"index":${total - descendingIndex - 1},"isoDate":"$isoDate","label":"${escapeJson(shortDateLabel(isoDate))}","longLabel":"${escapeJson(longDateLabel(isoDate))}","hasJournal":${entries[isoDate] != null},"photoCount":${media[isoDate].orEmpty().size}}"""
+    }.joinToString(",")
+  }
+
+  private fun parsedDate(isoDate: String): LocalDate? = try {
+    LocalDate.parse(isoDate.take(10), DateTimeFormatter.ISO_DATE)
+  } catch (_: Throwable) {
+    null
+  }
+
+  private fun longDateLabel(isoDate: String): String =
+    parsedDate(isoDate)?.format(DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy", Locale.US)) ?: isoDate
+
+  private fun shortDateLabel(isoDate: String): String =
+    parsedDate(isoDate)?.format(DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.US)) ?: isoDate
+
+  private fun monthLabel(isoDate: String): String =
+    parsedDate(isoDate)?.format(DateTimeFormatter.ofPattern("MMMM yyyy", Locale.US)) ?: isoDate.take(7)
+
+  private fun mediaJson(media: MobileMediaRecord): String {
+    val type = if (media.mediaType == "video") "video" else "photo"
+    return """{"id":"${escapeJson(media.id)}","fileName":"${escapeJson(media.fileName)}","type":"$type","isoDate":"${escapeJson(media.isoDate.orEmpty())}","capturedAt":"${escapeJson(media.capturedAt.orEmpty())}","width":${media.width},"height":${media.height},"folder":"${escapeJson(media.folder.orEmpty())}","thumbUrl":"/media/thumb/${escapeJson(media.id)}","previewUrl":"/media/preview/${escapeJson(media.id)}","displayUrl":"/media/display/${escapeJson(media.id)}","fullUrl":"/media/full/${escapeJson(media.id)}","originalAvailable":${media.localUri != null || media.originalInCloud},"cloudOriginal":{"inCloud":${media.originalInCloud}}}"""
+  }
+
+  private fun serveMedia(path: String): LocalResponse {
+    val parts = path.trim('/').split('/', limit = 3)
+    if (parts.size < 3) return json("""{"error":"Invalid media path."}""", status = 400)
+    val variant = parts[1]
+    val media = store.getMedia(parts[2]) ?: return json("""{"error":"Media not found."}""", status = 404)
+    if (media.localUri != null) {
+      return try {
+        if (variant == "thumb" || variant == "preview") {
+          val thumbnail = appContext.contentResolver.loadThumbnail(Uri.parse(media.localUri), Size(640, 640), null)
+          val output = ByteArrayOutputStream()
+          thumbnail.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, output)
+          thumbnail.recycle()
+          return LocalResponse(200, "image/jpeg", output.toByteArray(), cacheStatic = true)
+        }
+        val bytes = appContext.contentResolver.openInputStream(Uri.parse(media.localUri))?.use { it.readBytes() }
+          ?: return json("""{"error":"Local media unavailable."}""", status = 404)
+        LocalResponse(200, if (media.mediaType == "video") "video/mp4" else "image/jpeg", bytes, cacheStatic = true)
+      } catch (_: Throwable) {
+        json("""{"error":"Local media unavailable."}""", status = 404)
+      }
+    }
+    val cloudId = media.cloudId ?: return json("""{"error":"Cloud media unavailable."}""", status = 404)
+    val token = MobileCloudSync.accessToken(store) ?: return json("""{"error":"Sign in required."}""", status = 401)
+    val cloudVariant = if (variant == "display") "full" else variant
+    return try {
+      val connection = URL("https://book-of-life-two.vercel.app/api/media/${URLEncoder.encode(cloudId, StandardCharsets.UTF_8.name())}/variant/$cloudVariant?libraryId=${URLEncoder.encode(store.getState("cloud_library_id").orEmpty(), StandardCharsets.UTF_8.name())}").openConnection() as HttpURLConnection
+      connection.setRequestProperty("Authorization", "Bearer $token")
+      connection.connectTimeout = 20_000
+      connection.readTimeout = 30_000
+      val status = connection.responseCode
+      if (status !in 200..299) return json("""{"error":"Cloud media unavailable."}""", status = 404)
+      LocalResponse(200, connection.contentType ?: "application/octet-stream", connection.inputStream.use { it.readBytes() }, cacheStatic = true)
+    } catch (_: Throwable) {
+      json("""{"error":"Cloud media unavailable."}""", status = 404)
+    }
+  }
+
+  private fun mediaOnlyDayJson(entry: MobileEntryRecord): String {
     return """
       {
         "isoDate":"${entry.isoDate}",
@@ -262,13 +629,12 @@ object MobileLocalServer {
         "monthLabel":"${entry.isoDate.take(7)}",
         "hasTimelineItem":true,
         "hasJournal":${entry.raw.isNotBlank()},
-        "wordCount":$words,
+        "wordCount":${wordCount(entry.raw)},
         "photoCount":0,
         "photos":[],
-        "previewText":"${escapeJson(preview)}",
-        "previewLines":["${escapeJson(preview)}"],
-        "isPreviewTruncated":${entry.raw.length > preview.length},
-        "journal":{"raw":"${escapeJson(entry.raw)}","title":"${escapeJson(entry.title)}","wordCount":$words}
+        "previewText":"",
+        "previewLines":[],
+        "isPreviewTruncated":false
       }
     """.trimIndent()
   }
@@ -323,8 +689,14 @@ object MobileLocalServer {
 
   private fun isIsoDate(value: String): Boolean = Regex("^\\d{4}-\\d{2}-\\d{2}$").matches(value)
 
+  private fun wordCount(raw: String): Int = raw.split(Regex("\\s+")).count { it.isNotBlank() }
+
   private fun json(value: String, status: Int = 200): LocalResponse {
     return LocalResponse(status, "application/json; charset=utf-8", value.toByteArray(StandardCharsets.UTF_8))
+  }
+
+  private fun unsupported(message: String, status: Int): LocalResponse {
+    return json("""{"ok":false,"unsupported":true,"mode":"android-local","error":"${escapeJson(message)}"}""", status = status)
   }
 
   private fun jsonNullable(value: String?): String = if (value == null) "null" else """"${escapeJson(value)}""""

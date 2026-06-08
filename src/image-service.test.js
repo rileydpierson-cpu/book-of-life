@@ -47,3 +47,22 @@ describe('ImageService unavailable originals', () => {
     expect(service.originalUnavailableMessage({ availability: 'missing-unapproved' })).toContain('missing');
   });
 });
+
+describe('ImageService derivative cache state', () => {
+  it('reports only missing current derivatives as work', () => {
+    const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bol-image-derivatives-'));
+    fs.mkdirSync(path.join(cacheDir, 'thumbs'), { recursive: true });
+    const service = new ImageService({ paths: { cacheDir } }, { getPhoto: () => null });
+    const image = { id: 'image', filePath: '/photo.jpg', mtimeMs: 1, size: 2, type: 'image' };
+    const video = { id: 'video', filePath: '/video.mp4', mtimeMs: 1, size: 2, type: 'video' };
+
+    expect(service.needsDerivatives(image)).toBe(true);
+    fs.writeFileSync(service.thumbCachePath(image), '');
+    expect(service.needsDerivatives(image)).toBe(false);
+
+    fs.writeFileSync(service.thumbCachePath(video), '');
+    expect(service.needsDerivatives(video)).toBe(true);
+    fs.writeFileSync(service.videoPreviewCachePath(video), '');
+    expect(service.needsDerivatives(video)).toBe(false);
+  });
+});

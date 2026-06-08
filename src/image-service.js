@@ -197,12 +197,11 @@ class ImageService {
   }
 
   async ensureThumb(photo) {
-    const key = hash(`${photo.filePath}|${photo.mtimeMs}|${photo.size}|thumb-v6`);
-    const outputPath = path.join(this.cacheDir, 'thumbs', `${key}.webp`);
+    const outputPath = this.thumbCachePath(photo);
     if (fs.existsSync(outputPath)) return outputPath;
     if (this.isOriginalUnavailable(photo)) throw new Error('Original media is unavailable.');
 
-    return this.withLock(`thumb:${key}`, async () => {
+    return this.withLock(`thumb:${path.basename(outputPath)}`, async () => {
       if (fs.existsSync(outputPath)) return outputPath;
 
       if (photo.type === 'video') {
@@ -262,12 +261,11 @@ class ImageService {
   }
 
   async ensureVideoPreview(photo) {
-    const key = hash(`${photo.filePath}|${photo.mtimeMs}|${photo.size}|preview-v1`);
-    const outputPath = path.join(this.cacheDir, 'thumbs', `${key}.webm`);
+    const outputPath = this.videoPreviewCachePath(photo);
     if (fs.existsSync(outputPath)) return outputPath;
     if (this.isOriginalUnavailable(photo)) throw new Error('Original media is unavailable.');
 
-    return this.withLock(`preview:${key}`, async () => {
+    return this.withLock(`preview:${path.basename(outputPath)}`, async () => {
       if (fs.existsSync(outputPath)) return outputPath;
 
       const tempOutput = `${outputPath}.tmp.webm`;
@@ -313,6 +311,22 @@ class ImageService {
 
       throw new Error(`Failed to generate WebM preview for ${photo.filePath}`);
     });
+  }
+
+  thumbCachePath(photo) {
+    const key = hash(`${photo.filePath}|${photo.mtimeMs}|${photo.size}|thumb-v6`);
+    return path.join(this.cacheDir, 'thumbs', `${key}.webp`);
+  }
+
+  videoPreviewCachePath(photo) {
+    const key = hash(`${photo.filePath}|${photo.mtimeMs}|${photo.size}|preview-v1`);
+    return path.join(this.cacheDir, 'thumbs', `${key}.webm`);
+  }
+
+  needsDerivatives(photo) {
+    if (!photo || this.isOriginalUnavailable(photo)) return false;
+    if (!fs.existsSync(this.thumbCachePath(photo))) return true;
+    return photo.type === 'video' && !fs.existsSync(this.videoPreviewCachePath(photo));
   }
 
   displaySettingsSignature() {

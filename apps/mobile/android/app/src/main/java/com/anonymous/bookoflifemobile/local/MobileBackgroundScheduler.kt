@@ -5,6 +5,7 @@ import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import java.util.concurrent.TimeUnit
 
@@ -35,6 +36,18 @@ object MobileBackgroundScheduler {
       MEDIA_SCAN_WORK,
       ExistingPeriodicWorkPolicy.UPDATE,
       scanRequest
+    )
+  }
+
+  fun syncNow(context: Context) {
+    WorkManager.getInstance(context.applicationContext).enqueue(
+      OneTimeWorkRequestBuilder<MobileSyncWorker>().build()
+    )
+  }
+
+  fun scanNow(context: Context) {
+    WorkManager.getInstance(context.applicationContext).enqueue(
+      OneTimeWorkRequestBuilder<MobileMediaScanWorker>().build()
     )
   }
 }

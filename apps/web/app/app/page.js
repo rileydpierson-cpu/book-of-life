@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createClient, isBrowserSupabaseConfigured } from '../../utils/supabase/client.js';
 
 const TABS = [
@@ -77,6 +77,8 @@ export default function WebAppPage() {
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('Checking your cloud session...');
   const [busy, setBusy] = useState(false);
+  const loadEverythingRef = useRef(null);
+  const realtimeTimerRef = useRef(null);
 
   const entryMap = useMemo(() => new Map(entries.map((entry) => [entry.isoDate, entry])), [entries]);
   const selectedEntry = entryMap.get(isoDate) || null;
@@ -184,6 +186,41 @@ export default function WebAppPage() {
       setBusy(false);
     }
   }
+
+  loadEverythingRef.current = loadEverything;
+
+  useEffect(() => {
+    if (!supabase || !libraryId) return undefined;
+    const channel = supabase
+      .channel(`book-of-life-sync-${libraryId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'sync_changes',
+          filter: `library_id=eq.${libraryId}`
+        },
+        () => {
+          if (realtimeTimerRef.current) clearTimeout(realtimeTimerRef.current);
+          realtimeTimerRef.current = setTimeout(() => {
+            realtimeTimerRef.current = null;
+            loadEverythingRef.current?.();
+          }, 900);
+        }
+      )
+      .subscribe((state) => {
+        if (state === 'SUBSCRIBED') setStatus('Realtime sync connected.');
+      });
+
+    return () => {
+      if (realtimeTimerRef.current) {
+        clearTimeout(realtimeTimerRef.current);
+        realtimeTimerRef.current = null;
+      }
+      supabase.removeChannel(channel);
+    };
+  }, [supabase, libraryId]);
 
   async function fetchJson(url, options = {}) {
     const response = await fetch(url, options);

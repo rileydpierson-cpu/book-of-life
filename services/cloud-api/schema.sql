@@ -113,6 +113,27 @@ create index if not exists sync_changes_library_id_id_idx
 create index if not exists sync_changes_library_id_changed_at_idx
   on sync_changes(library_id, changed_at);
 
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_publication
+    where pubname = 'supabase_realtime'
+  ) then
+    create publication supabase_realtime;
+  end if;
+
+  if not exists (
+    select 1
+    from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'sync_changes'
+  ) then
+    alter publication supabase_realtime add table sync_changes;
+  end if;
+end $$;
+
 create table if not exists sync_mutations (
   id text primary key,
   library_id uuid not null references libraries(id) on delete cascade,

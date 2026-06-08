@@ -66,10 +66,26 @@ function normalizeJournalMirrorStatus(journalMirror = {}) {
   };
 }
 
+function normalizeThumbnailStatus(thumbnailStatus = {}) {
+  return {
+    running: Boolean(thumbnailStatus.running),
+    queued: Boolean(thumbnailStatus.queued),
+    current: Math.max(0, Number(thumbnailStatus.current || 0)),
+    total: Math.max(0, Number(thumbnailStatus.total || 0)),
+    percent: Math.max(0, Math.min(100, Number(thumbnailStatus.percent || 0))),
+    generated: Math.max(0, Number(thumbnailStatus.generated || 0)),
+    failed: Math.max(0, Number(thumbnailStatus.failed || 0)),
+    startedAt: String(thumbnailStatus.startedAt || ''),
+    completedAt: String(thumbnailStatus.completedAt || ''),
+    error: String(thumbnailStatus.error || '')
+  };
+}
+
 function desktopTrayStatus({
   localService = {},
   cloudStatus = {},
   indexStatus = {},
+  thumbnailStatus = {},
   mediaAvailability = {},
   journalMirror = {},
   storageUsage = {},
@@ -94,6 +110,7 @@ function desktopTrayStatus({
       error: cloudStatus.error || ''
     },
     index: indexStatus || {},
+    thumbnails: normalizeThumbnailStatus(thumbnailStatus),
     mediaAvailability: normalizeMediaAvailability(mediaAvailability),
     journalMirror: normalizeJournalMirrorStatus(journalMirror),
     sync: normalizeSyncStatus({
@@ -112,5 +129,6 @@ module.exports = {
   normalizeSyncStatus,
   normalizeCloudStorageUsage,
   normalizeMediaAvailability,
-  normalizeJournalMirrorStatus
+  normalizeJournalMirrorStatus,
+  normalizeThumbnailStatus
 };

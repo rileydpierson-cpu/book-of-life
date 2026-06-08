@@ -70,6 +70,7 @@ let editingFolderId = '';
 let messageIndex = 0;
 let messageTimer = null;
 let progressTimer = null;
+let mobileMode = false;
 
 function showPanel(name) {
   panelTrack.dataset.panel = name;
@@ -280,6 +281,7 @@ async function pollIndexStatus({ allowOpen = false, simple = false } = {}) {
 
 async function loadStatus() {
   const payload = await fetchJson('/api/desktop/onboarding/status');
+  mobileMode = payload.mode === 'android-local';
   settings = payload.settings || {};
   cloudSignedIn = Boolean(payload.cloud?.signedIn);
   skippedLogin = !cloudSignedIn;
@@ -345,6 +347,11 @@ async function connectCloud() {
       cloudPolicy: folder.cloudPolicy || 'metadata-only'
     }));
     renderFolders();
+    if (mobileMode) {
+      actionStatus.textContent = 'Connected. Opening your mobile library.';
+      setTimeout(() => openLibrary(), 420);
+      return;
+    }
     actionStatus.textContent = 'Connected. Choose the folders to watch next.';
     setTimeout(() => showPanel('folders'), 420);
   } catch (error) {
@@ -355,9 +362,20 @@ async function connectCloud() {
   }
 }
 
-function startLocalSetup() {
+async function startLocalSetup() {
   cloudSignedIn = false;
   skippedLogin = true;
+  if (mobileMode) {
+    localOnlyButton.disabled = true;
+    try {
+      await postJson('/api/mobile/use-local', {});
+      await openLibrary();
+    } catch (error) {
+      setAuthMessage(error.message || 'Could not start local mode.', 'error');
+      localOnlyButton.disabled = false;
+    }
+    return;
+  }
   folders = folders.map((folder) => ({ ...folder, cloudPolicy: 'metadata-only' }));
   renderFolders();
   setAuthMessage('Continuing locally. Nothing will upload unless you connect later.', 'success');

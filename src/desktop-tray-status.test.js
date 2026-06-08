@@ -5,7 +5,8 @@ import {
   normalizeSyncStatus,
   normalizeCloudStorageUsage,
   normalizeMediaAvailability,
-  normalizeJournalMirrorStatus
+  normalizeJournalMirrorStatus,
+  normalizeThumbnailStatus
 } from './desktop-tray-status.js';
 
 describe('desktop tray status', () => {
@@ -121,5 +122,25 @@ describe('desktop tray status', () => {
     const status = desktopTrayStatus({ journalMirror });
     expect(status.journalMirror.mirrorDir).toBe('/External/Journal');
     expect(status.journalMirror.available).toBe(false);
+  });
+
+  it('includes normalized thumbnail generation progress', () => {
+    const thumbnails = normalizeThumbnailStatus({
+      running: true,
+      queued: true,
+      current: 3,
+      total: 8,
+      percent: 38,
+      generated: 2,
+      failed: 1,
+      startedAt: '2026-06-07T12:00:00.000Z',
+      error: 'one file failed'
+    });
+    const status = desktopTrayStatus({ thumbnailStatus: thumbnails });
+
+    expect(status.thumbnails).toEqual({
+      ...thumbnails,
+      completedAt: ''
+    });
   });
 });

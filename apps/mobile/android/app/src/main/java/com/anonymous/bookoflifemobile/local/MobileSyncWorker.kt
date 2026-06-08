@@ -3,7 +3,6 @@ package com.anonymous.bookoflifemobile.local
 import android.content.Context
 import androidx.work.Worker
 import androidx.work.WorkerParameters
-import java.time.Instant
 
 class MobileSyncWorker(
   context: Context,
@@ -12,11 +11,12 @@ class MobileSyncWorker(
   override fun doWork(): Result {
     return try {
       MobileLocalServer.ensureStarted(applicationContext)
-      MobileLocalStore(applicationContext).use { store ->
-        store.setState("last_sync_at", Instant.now().toString())
-      }
+      MobileCloudSync.sync(applicationContext)
       Result.success()
-    } catch (_: Throwable) {
+    } catch (error: Throwable) {
+      MobileLocalStore(applicationContext).use { store ->
+        store.setState("last_sync_error", error.message ?: "Cloud sync failed.")
+      }
       Result.retry()
     }
   }

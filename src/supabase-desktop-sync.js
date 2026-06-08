@@ -291,6 +291,7 @@ class SupabaseDesktopSync {
     let remoteByDate = new Map();
     let nextCursor = Number(settings.entryChangeCursor || 0);
     const pushedDates = new Set();
+    const pulledEntries = [];
 
     onProgress?.({
       phase: full ? 'full-fetch' : 'checking',
@@ -406,6 +407,11 @@ class SupabaseDesktopSync {
           await this.onBeforeLocalEntryWrite({ isoDate: remote.iso_date, raw: remote.raw || '' });
         }
         await this.indexer.saveEntry(remote.iso_date, remote.raw || '');
+        pulledEntries.push({
+          isoDate: remote.iso_date,
+          raw: remote.raw || '',
+          cloudVersion: remote.cloud_version || 0
+        });
         pulled += 1;
       }
       current += 1;
@@ -436,6 +442,7 @@ class SupabaseDesktopSync {
       mode,
       pushed,
       pulled,
+      pulledEntries,
       remoteEntries: remoteByDate.size,
       cursor: nextCursor,
       syncedAt
@@ -584,12 +591,14 @@ class SupabaseDesktopSync {
         isoDate: photo.isoDate || null,
         fileName: photo.fileName || photo.baseName || 'media',
         metadata,
-        hasThumb: Boolean(thumb),
-        hasPreview: Boolean(preview),
-        thumbStoragePath: thumb?.storagePath || '',
-        thumbContentType: thumb?.contentType || '',
-        previewStoragePath: preview?.storagePath || '',
-        previewContentType: preview?.contentType || '',
+        ...(uploadDerivatives ? {
+          hasThumb: Boolean(thumb),
+          hasPreview: Boolean(preview),
+          thumbStoragePath: thumb?.storagePath || '',
+          thumbContentType: thumb?.contentType || '',
+          previewStoragePath: preview?.storagePath || '',
+          previewContentType: preview?.contentType || ''
+        } : {}),
         originalOnHost: photo.originalAvailable !== false,
         originalSize: Number(photo.size || 0),
         originalContentType: photo.mimeType || 'application/octet-stream',

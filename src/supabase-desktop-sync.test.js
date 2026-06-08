@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { SupabaseDesktopSync } from './supabase-desktop-sync.js';
 
 function createHarness({ settings: initialSettings, dirtyEntries = [] } = {}) {
@@ -155,5 +155,44 @@ describe('supabase desktop entry sync', () => {
     expect(result.cursor).toBe(11);
     expect(harness.cleanMarks[0].isoDate).toBe('2026-06-04');
     expect(harness.getSettings().entryChangeCursor).toBe(11);
+  });
+});
+
+describe('supabase desktop media sync', () => {
+  it('publishes metadata without clearing or generating derivatives in metadata-only mode', async () => {
+    const harness = createHarness();
+    harness.sync.ensureReadySettings = async () => ({
+      libraryId: '11111111-1111-4111-8111-111111111111',
+      deviceId: '22222222-2222-4222-8222-222222222222',
+      cloudSession: { accessToken: 'token' },
+      cloudApiBaseUrl: 'https://cloud.example'
+    });
+    harness.sync.ensureRelayToken = async (settings) => settings;
+    harness.sync.ensureDevice = async (settings) => settings;
+    harness.sync.uploadDerivative = vi.fn();
+    const requests = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      return {
+        ok: true,
+        json: async () => ({ media: { id: 'cloud-media' } })
+      };
+    });
+
+    try {
+      await harness.sync.upsertMediaMetadata({
+        id: 'local-media',
+        fileName: 'photo.jpg',
+        type: 'image',
+        originalAvailable: true
+      }, { uploadDerivatives: false });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    expect(harness.sync.uploadDerivative).not.toHaveBeenCalled();
+    expect(requests[0]).not.toHaveProperty('hasThumb');
+    expect(requests[0]).not.toHaveProperty('thumbStoragePath');
   });
 });
