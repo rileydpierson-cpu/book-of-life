@@ -220,6 +220,62 @@ alter table media_actions add column if not exists target_location_id uuid refer
 create index if not exists media_actions_library_status_idx
   on media_actions(library_id, status, created_at);
 
+create table if not exists device_backup_preferences (
+  library_id uuid not null references libraries(id) on delete cascade,
+  device_id uuid not null references devices(id) on delete cascade,
+  cloud_originals_enabled boolean not null default false,
+  desktop_backup_enabled boolean not null default false,
+  desktop_target_device_id uuid references devices(id) on delete set null,
+  allow_mobile_data boolean not null default false,
+  initial_bootstrap_completed_at timestamptz,
+  updated_at timestamptz not null default now(),
+  primary key (library_id, device_id)
+);
+
+create table if not exists device_backup_requests (
+  id uuid primary key default gen_random_uuid(),
+  library_id uuid not null references libraries(id) on delete cascade,
+  source_device_id uuid not null references devices(id) on delete cascade,
+  target_device_id uuid not null references devices(id) on delete cascade,
+  status text not null default 'pending',
+  destination_label text not null default '',
+  free_bytes bigint not null default 0,
+  transfer_token text not null default '',
+  transfer_token_expires_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists device_backup_requests_target_status_idx
+  on device_backup_requests(target_device_id, status, created_at);
+
+create table if not exists media_backup_transfers (
+  id uuid primary key default gen_random_uuid(),
+  library_id uuid not null references libraries(id) on delete cascade,
+  media_id uuid not null references media_items(id) on delete cascade,
+  source_device_id uuid references devices(id) on delete set null,
+  destination_type text not null,
+  destination_device_id uuid references devices(id) on delete cascade,
+  destination_key text not null default '',
+  request_id uuid references device_backup_requests(id) on delete set null,
+  file_name text not null default '',
+  staging_storage_path text not null default '',
+  status text not null default 'queued',
+  current_bytes bigint not null default 0,
+  total_bytes bigint not null default 0,
+  error text not null default '',
+  updated_at timestamptz not null default now(),
+  completed_at timestamptz,
+  unique (media_id, destination_type, destination_key)
+);
+
+alter table media_backup_transfers add column if not exists destination_key text not null default '';
+alter table media_backup_transfers add column if not exists file_name text not null default '';
+alter table media_backup_transfers add column if not exists staging_storage_path text not null default '';
+
+create index if not exists media_backup_transfers_library_status_idx
+  on media_backup_transfers(library_id, status, updated_at);
+
 alter table libraries enable row level security;
 alter table devices enable row level security;
 alter table entries enable row level security;
@@ -229,6 +285,9 @@ alter table media_locations enable row level security;
 alter table sync_changes enable row level security;
 alter table sync_mutations enable row level security;
 alter table media_actions enable row level security;
+alter table device_backup_preferences enable row level security;
+alter table device_backup_requests enable row level security;
+alter table media_backup_transfers enable row level security;
 
 insert into storage.buckets (id, name, public)
 values ('media-originals', 'media-originals', false)
@@ -236,6 +295,10 @@ on conflict (id) do nothing;
 
 insert into storage.buckets (id, name, public)
 values ('media-derivatives', 'media-derivatives', false)
+on conflict (id) do nothing;
+
+insert into storage.buckets (id, name, public)
+values ('media-staging', 'media-staging', false)
 on conflict (id) do nothing;
 
 drop policy if exists "Users can read own libraries" on libraries;
@@ -591,6 +654,60 @@ create policy "Users can update own media actions"
     )
   );
 
+drop policy if exists "Users can manage own backup preferences" on device_backup_preferences;
+create policy "Users can manage own backup preferences"
+  on device_backup_preferences for all
+  using (
+    exists (
+      select 1 from libraries
+      where libraries.id = device_backup_preferences.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  )
+  with check (
+    exists (
+      select 1 from libraries
+      where libraries.id = device_backup_preferences.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can manage own backup requests" on device_backup_requests;
+create policy "Users can manage own backup requests"
+  on device_backup_requests for all
+  using (
+    exists (
+      select 1 from libraries
+      where libraries.id = device_backup_requests.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  )
+  with check (
+    exists (
+      select 1 from libraries
+      where libraries.id = device_backup_requests.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can manage own media backup transfers" on media_backup_transfers;
+create policy "Users can manage own media backup transfers"
+  on media_backup_transfers for all
+  using (
+    exists (
+      select 1 from libraries
+      where libraries.id = media_backup_transfers.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  )
+  with check (
+    exists (
+      select 1 from libraries
+      where libraries.id = media_backup_transfers.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
 drop policy if exists "Users can upload own media originals" on storage.objects;
 create policy "Users can upload own media originals"
   on storage.objects for insert
@@ -616,6 +733,26 @@ create policy "Users can update own media originals"
   )
   with check (
     bucket_id = 'media-originals'
+    and exists (
+      select 1 from libraries
+      where storage.objects.name like ('libraries/' || libraries.id || '/%')
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can manage own staged media" on storage.objects;
+create policy "Users can manage own staged media"
+  on storage.objects for all
+  using (
+    bucket_id = 'media-staging'
+    and exists (
+      select 1 from libraries
+      where storage.objects.name like ('libraries/' || libraries.id || '/%')
+        and libraries.owner_user_id = auth.uid()
+    )
+  )
+  with check (
+    bucket_id = 'media-staging'
     and exists (
       select 1 from libraries
       where storage.objects.name like ('libraries/' || libraries.id || '/%')

@@ -1,0 +1,2 @@
+const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/legacy-editor-1NeyRr5V.js","assets/create-media-viewer-CdhXR5rN.js"])))=>i.map(i=>d[i]);
+import"./modulepreload-polyfill-B5Qt9EMX.js";import{l as i,_ as a}from"./load-script-C4zpFZx5.js";await i("/vendor/exifr/full.umd.js");await i("/vendor/markdown-it/dist/markdown-it.min.js");await a(()=>import("./legacy-editor-1NeyRr5V.js"),__vite__mapDeps([0,1]));

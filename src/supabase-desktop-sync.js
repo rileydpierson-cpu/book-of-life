@@ -649,6 +649,8 @@ class SupabaseDesktopSync {
       photo.cloudCanonicalId = payload.media.id || '';
       photo.locations = Array.isArray(payload.media.locations) ? payload.media.locations : [];
       photo.availabilitySummary = payload.media.availability || {};
+      photo.transfers = Array.isArray(payload.media.transfers) ? payload.media.transfers : [];
+      photo.backupStatus = payload.media.backupStatus || {};
     }
     return payload.media || null;
   }
@@ -685,6 +687,54 @@ class SupabaseDesktopSync {
       `/api/media/actions?libraryId=${encodeURIComponent(settings.libraryId)}&hostDeviceId=${encodeURIComponent(settings.deviceId)}&status=pending`
     );
     return Array.isArray(payload.actions) ? payload.actions : [];
+  }
+
+  async listPendingBackupRequests() {
+    const settings = await this.ensureReadySettings();
+    const payload = await cloudApiFetch(
+      settings,
+      `/api/backups/requests?libraryId=${encodeURIComponent(settings.libraryId)}&targetDeviceId=${encodeURIComponent(settings.deviceId)}`
+    );
+    return (Array.isArray(payload.requests) ? payload.requests : []).filter((request) => request.status === 'pending');
+  }
+
+  async listBackupRequests() {
+    const settings = await this.ensureReadySettings();
+    const payload = await cloudApiFetch(
+      settings,
+      `/api/backups/requests?libraryId=${encodeURIComponent(settings.libraryId)}&targetDeviceId=${encodeURIComponent(settings.deviceId)}`
+    );
+    return Array.isArray(payload.requests) ? payload.requests : [];
+  }
+
+  async respondToBackupRequest(id, { status, destinationLabel = '', freeBytes = 0 } = {}) {
+    const settings = await this.ensureReadySettings();
+    return cloudApiFetch(settings, '/api/backups/requests', {
+      method: 'PATCH',
+      body: JSON.stringify({ id, status, destinationLabel, freeBytes })
+    });
+  }
+
+  async listStagedBackupTransfers() {
+    const settings = await this.ensureReadySettings();
+    const payload = await cloudApiFetch(
+      settings,
+      `/api/backups/transfers?libraryId=${encodeURIComponent(settings.libraryId)}&destinationDeviceId=${encodeURIComponent(settings.deviceId)}&status=staging`
+    );
+    return Array.isArray(payload.transfers) ? payload.transfers : [];
+  }
+
+  async stagedBackupDownload(transferId) {
+    const settings = await this.ensureReadySettings();
+    return cloudApiFetch(settings, `/api/backups/staging?transferId=${encodeURIComponent(transferId)}`);
+  }
+
+  async completeStagedBackup(transferId) {
+    const settings = await this.ensureReadySettings();
+    return cloudApiFetch(settings, '/api/backups/staging', {
+      method: 'DELETE',
+      body: JSON.stringify({ transferId })
+    });
   }
 
   async queueMediaAction(photo, actionType, payload = {}, { previousLocalMediaId = '' } = {}) {

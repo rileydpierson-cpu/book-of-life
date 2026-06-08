@@ -164,6 +164,16 @@ function normalizeDesktopSyncSettings(value = {}) {
           deviceId,
           normalizeDevicePermissions(permissions)
         ]))
+      : {},
+    deviceBackupDestinations: isObject(settings.deviceBackupDestinations)
+      ? Object.fromEntries(Object.entries(settings.deviceBackupDestinations).map(([deviceId, destination]) => [
+          deviceId,
+          {
+            path: String(destination?.path || '').trim(),
+            label: String(destination?.label || '').trim(),
+            requestId: String(destination?.requestId || '').trim()
+          }
+        ]))
       : {}
   };
 }

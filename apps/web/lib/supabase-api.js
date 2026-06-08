@@ -97,9 +97,27 @@ export function toMedia(row) {
       availability: location.availability || 'available',
       pendingActions: actions.filter((action) => action.targetLocationId === location.id && action.status === 'pending'),
       failedActions: actions.filter((action) => action.targetLocationId === location.id && action.status === 'failed'),
+      online: location.devices?.last_seen_at ? Date.now() - Date.parse(location.devices.last_seen_at) < 20 * 60 * 1000 : false,
       lastSeenAt: location.last_seen_at || '',
       updatedAt: location.updated_at || ''
     }));
+  const transfers = (Array.isArray(row.media_backup_transfers) ? row.media_backup_transfers : []).map((transfer) => ({
+    id: transfer.id,
+    destinationType: transfer.destination_type || '',
+    destinationDeviceId: transfer.destination_device_id || '',
+    destinationKey: transfer.destination_key || '',
+    status: transfer.status || 'queued',
+    currentBytes: Number(transfer.current_bytes || 0),
+    totalBytes: Number(transfer.total_bytes || 0),
+    error: transfer.error || '',
+    fileName: transfer.file_name || '',
+    updatedAt: transfer.updated_at || '',
+    completedAt: transfer.completed_at || ''
+  }));
+  const availableLocations = locations.filter((location) => location.availability === 'available');
+  const desktopBackupDeviceIds = [...new Set(availableLocations.filter((location) => location.deviceType === 'desktop').map((location) => location.deviceId).filter(Boolean))];
+  const syncingDestinations = transfers.filter((transfer) => ['queued', 'running', 'staging'].includes(transfer.status));
+  const failedDestinations = transfers.filter((transfer) => ['failed', 'permission-required'].includes(transfer.status));
   return {
     id: row.id,
     libraryId: row.library_id,
@@ -123,6 +141,15 @@ export function toMedia(row) {
     originalContentType: row.original_content_type || '',
     locations,
     actions,
+    transfers,
+    backupStatus: {
+      cloudBackedUp: Boolean(row.original_in_cloud),
+      desktopBackupDeviceIds,
+      syncingDestinations,
+      failedDestinations,
+      availableRemoteDeviceTypes: [...new Set(availableLocations.map((location) => location.deviceType).filter(Boolean))],
+      hasUsableOriginalRoute: Boolean(row.original_in_cloud || availableLocations.length)
+    },
     availability: {
       localCopies: locations.filter((location) => location.availability === 'available').length,
       originalInCloud: Boolean(row.original_in_cloud),

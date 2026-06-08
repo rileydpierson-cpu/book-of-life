@@ -709,6 +709,10 @@ video.viewer-video {
   color: var(--ink);
 }
 
+.viewer-location-row.is-error strong {
+  color: #b42331;
+}
+
 .viewer-location-list {
   display: grid;
   gap: 6px;

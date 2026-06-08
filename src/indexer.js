@@ -1206,6 +1206,29 @@ class TimelineIndexer {
       const key = `${entry.deviceId || ''}:${entry.localMediaId || entry.id || ''}`;
       return entries.findIndex((candidate) => `${candidate.deviceId || ''}:${candidate.localMediaId || candidate.id || ''}` === key) === index;
     });
+    const availableLocations = locations.filter((entry) => entry.availability === 'available');
+    const transfers = Array.isArray(photo.transfers) ? photo.transfers : [];
+    const cloudBackupStatus = photo.backupStatus || {};
+    const backupStatus = {
+      ...cloudBackupStatus,
+      cloudBackedUp: Boolean(cloudBackupStatus.cloudBackedUp || photo.cloudOriginal?.inCloud || photo.availabilitySummary?.originalInCloud),
+      desktopBackupDeviceIds: [...new Set((Array.isArray(cloudBackupStatus.desktopBackupDeviceIds)
+        ? cloudBackupStatus.desktopBackupDeviceIds
+        : availableLocations
+        .filter((entry) => entry.deviceType === 'desktop' && entry.deviceId && entry.deviceId !== this.localDevice.id)
+        .map((entry) => entry.deviceId))
+        .filter((deviceId) => deviceId !== this.localDevice.id))],
+      syncingDestinations: Array.isArray(cloudBackupStatus.syncingDestinations) ? cloudBackupStatus.syncingDestinations : transfers.filter((entry) => ['queued', 'running', 'staging'].includes(entry.status)),
+      failedDestinations: Array.isArray(cloudBackupStatus.failedDestinations) ? cloudBackupStatus.failedDestinations : transfers.filter((entry) => ['failed', 'permission-required'].includes(entry.status)),
+      currentDeviceHasOriginal: location.availability === 'available',
+      currentDeviceId: this.localDevice.id,
+      currentDeviceType: this.localDevice.type,
+      availableRemoteDeviceTypes: [...new Set(availableLocations
+        .filter((entry) => entry.deviceId !== this.localDevice.id)
+        .map((entry) => entry.deviceType)
+        .filter(Boolean))],
+      hasUsableOriginalRoute: Boolean(cloudBackupStatus.hasUsableOriginalRoute || photo.cloudOriginal?.inCloud || photo.availabilitySummary?.originalInCloud || availableLocations.length)
+    };
     return {
       id: photo.id,
       type: photo.type,
@@ -1232,6 +1255,8 @@ class TimelineIndexer {
       folderRootId: photo.folderRootId || '',
       relativePath: photo.relativePath || photo.fileName,
       locations,
+      transfers,
+      backupStatus,
       availabilitySummary: photo.availabilitySummary || {
         localCopies: locations.filter((entry) => entry.availability === 'available').length
       },

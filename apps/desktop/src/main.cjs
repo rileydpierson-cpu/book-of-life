@@ -34,6 +34,7 @@ let trayStatusSnapshot = null;
 let trayStatusTimer = null;
 let lastMediaWarningCount = 0;
 let lastMediaWarningNotificationAt = 0;
+const handledBackupRequestIds = new Set();
 const serverLog = {
   stdout: [],
   stderr: []
@@ -218,6 +219,11 @@ async function refreshTrayStatusSnapshot() {
     const response = await fetch(`${baseUrl}/api/desktop/tray/status`, { cache: 'no-store' });
     if (!response.ok) throw new Error(`Tray status failed (${response.status})`);
     trayStatusSnapshot = await response.json();
+    for (const request of trayStatusSnapshot?.backupRequests || []) {
+      if (!request?.id || handledBackupRequestIds.has(request.id)) continue;
+      handledBackupRequestIds.add(request.id);
+      void showBackupApproval(request);
+    }
     const mediaWarningCount = Math.max(0, Number(trayStatusSnapshot?.mediaAvailability?.warningCount || 0));
     const notificationCooldownMs = 6 * 60 * 60 * 1000;
     if (
@@ -247,6 +253,49 @@ async function refreshTrayStatusSnapshot() {
     }
   }
   return trayStatusSnapshot;
+}
+
+async function showBackupApproval(request) {
+  const phoneName = request.source?.device_name || 'your phone';
+  const defaultDestination = path.join(app.getPath('home'), 'Photos', phoneName.replace(/[\\/:*?"<>|]+/g, '-'));
+  const defaultDisk = fs.statfsSync(app.getPath('home'));
+  const defaultFreeGb = ((Number(defaultDisk.bavail || 0) * Number(defaultDisk.bsize || 0)) / (1024 ** 3)).toFixed(1);
+  const result = await dialog.showMessageBox({
+    type: 'question',
+    title: 'Phone photo backup',
+    message: `Backup photos from ${phoneName} to this device?`,
+    detail: `Synced photos will appear in ${defaultDestination}.\n${defaultFreeGb} GB free. Choose location to change it.`,
+    buttons: ['Choose location and accept', 'Decline'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true
+  });
+  if (result.response !== 0) {
+    await fetch(`${baseUrl}/api/desktop/backups/requests/${encodeURIComponent(request.id)}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'declined', sourceDeviceId: request.source_device_id })
+    }).catch(() => null);
+    return;
+  }
+  const picked = await dialog.showOpenDialog({
+    title: `Choose where to back up photos from ${phoneName}`,
+    defaultPath: defaultDestination,
+    properties: ['openDirectory', 'createDirectory']
+  });
+  if (picked.canceled || !picked.filePaths?.[0]) {
+    await fetch(`${baseUrl}/api/desktop/backups/requests/${encodeURIComponent(request.id)}/respond`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'declined', sourceDeviceId: request.source_device_id })
+    }).catch(() => null);
+    return;
+  }
+  await fetch(`${baseUrl}/api/desktop/backups/requests/${encodeURIComponent(request.id)}/respond`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: 'accepted', sourceDeviceId: request.source_device_id, destinationPath: picked.filePaths[0] })
+  });
 }
 
 function startTrayStatusCache() {
@@ -478,6 +527,10 @@ function updateTrayMenu() {
       ? `Thumbnail generation: ${thumbnails.error}`
       : 'Thumbnails: ready';
   const mediaWarningCount = Math.max(0, Number(trayStatusSnapshot?.mediaAvailability?.warningCount || 0));
+  const pendingBackupRequests = Math.max(0, Number(trayStatusSnapshot?.backups?.pendingRequests || 0));
+  const backupLabel = pendingBackupRequests
+    ? `Device backups: ${pendingBackupRequests} awaiting confirmation`
+    : 'Device backups: ready';
   const mediaLabel = mediaWarningCount
     ? `Media warning: ${mediaWarningCount} original${mediaWarningCount === 1 ? '' : 's'} need attention`
     : 'Media: all available';
@@ -489,6 +542,7 @@ function updateTrayMenu() {
     { label: serviceLabel, enabled: false },
     { label: thumbnailLabel, enabled: false },
     { label: mediaLabel, enabled: false },
+    { label: backupLabel, enabled: false },
     { type: 'separator' },
     { label: 'Open Book of Life', click: openLibraryWindow },
     { label: 'Open Onboarding', click: openOnboardingWindow },

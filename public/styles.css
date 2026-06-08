@@ -2245,22 +2245,33 @@ body[data-active-view="calendar"]::-webkit-scrollbar {
   color: white;
   pointer-events: none;
 }
-.media-tile.is-unavailable {
-  outline: 1px solid rgba(245, 158, 11, 0.72);
-  outline-offset: -1px;
+.media-status-icons {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  pointer-events: none;
 }
-.media-badge-warning {
-  right: 30px;
-  color: #f59e0b;
-  background: rgba(20, 20, 24, 0.72);
+.media-status-icon {
+  width: 22px;
+  height: 22px;
+  display: inline-grid;
+  place-items: center;
   border-radius: 999px;
-}
-.media-badge-cloud {
-  right: 30px;
-  color: #7dd3fc;
+  color: #fff;
   background: rgba(20, 20, 24, 0.72);
-  border-radius: 999px;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.22);
+  font-size: 14px;
 }
+.media-status-cloud { color: #7dd3fc; }
+.media-status-server { color: #a7f3d0; }
+.media-status-loading { color: #fde68a; }
+.media-status-phone { color: #c4b5fd; }
+.media-status-error { color: #fca5a5; }
+.media-status-offline { color: #d1d5db; }
 .media-badge-dot {
   width: 10px;
   height: 10px;

@@ -14,6 +14,8 @@ const syncProgress = document.querySelector('#syncProgress');
 const syncProgressFill = syncProgress?.querySelector('span');
 const storageStatus = document.querySelector('#storageStatus');
 const storageProgress = document.querySelector('#storageProgress');
+const backupRequestCard = document.querySelector('#backupRequestCard');
+const backupRequestStatus = document.querySelector('#backupRequestStatus');
 const mediaAvailabilityCard = document.querySelector('#mediaAvailabilityCard');
 const mediaAvailabilityStatus = document.querySelector('#mediaAvailabilityStatus');
 const journalMirrorCard = document.querySelector('#journalMirrorCard');
@@ -69,6 +71,7 @@ function renderStatus(payload) {
   const thumbnails = payload.thumbnails || {};
   const sync = payload.sync || {};
   const storage = payload.storage || {};
+  const backups = payload.backups || {};
   const mediaAvailability = payload.mediaAvailability || {};
   const journalMirror = payload.journalMirror || {};
   trayError.textContent = cloud.error || '';
@@ -122,6 +125,12 @@ function renderStatus(payload) {
   } else {
     storageStatus.textContent = `${formatBytes(storage.usedBytes)} of 1 GB`;
     setProgress(storageProgress, storage.percent);
+  }
+
+  const pendingBackupRequests = Math.max(0, Number(backups.pendingRequests || 0));
+  backupRequestCard?.classList.toggle('hidden', !pendingBackupRequests);
+  if (backupRequestStatus) {
+    backupRequestStatus.textContent = `${pendingBackupRequests} phone backup request${pendingBackupRequests === 1 ? '' : 's'} awaiting confirmation`;
   }
 
   const warningCount = Math.max(0, Number(mediaAvailability.warningCount || 0));

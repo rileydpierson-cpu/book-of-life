@@ -12,6 +12,7 @@ import java.util.concurrent.TimeUnit
 object MobileBackgroundScheduler {
   private const val SYNC_WORK = "book-of-life-mobile-sync"
   private const val MEDIA_SCAN_WORK = "book-of-life-mobile-media-scan"
+  private const val BOOTSTRAP_WORK = "book-of-life-mobile-bootstrap"
 
   fun schedule(context: Context) {
     val appContext = context.applicationContext
@@ -42,6 +43,16 @@ object MobileBackgroundScheduler {
   fun syncNow(context: Context) {
     WorkManager.getInstance(context.applicationContext).enqueue(
       OneTimeWorkRequestBuilder<MobileSyncWorker>().build()
+    )
+  }
+
+  fun bootstrapNow(context: Context) {
+    WorkManager.getInstance(context.applicationContext).enqueueUniqueWork(
+      BOOTSTRAP_WORK,
+      androidx.work.ExistingWorkPolicy.REPLACE,
+      OneTimeWorkRequestBuilder<MobileBootstrapWorker>()
+        .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+        .build()
     )
   }
 

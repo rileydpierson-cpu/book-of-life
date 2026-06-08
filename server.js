@@ -610,10 +610,12 @@ async function main() {
     if (!type || type.startsWith('media.')) {
       queueCloudMediaMetadata('cloud-realtime');
       queueCloudMediaActions('cloud-realtime');
+      queueDesktopBackupReceipts('cloud-realtime');
     }
     if (type === 'folder.upsert') {
       queueCloudMediaMetadata('cloud-realtime');
     }
+    if (type.startsWith('backup.')) queueDesktopBackupReceipts('cloud-realtime');
   }
 
   function queueSingleCloudMediaMetadata(photo, reason = 'media-change') {
@@ -738,6 +740,48 @@ async function main() {
         console.warn(`Cloud media actions skipped (${reason}): ${error.message}`);
       }
     });
+  }
+
+  let desktopBackupReceiptRunning = false;
+  async function receiveStagedDesktopBackups(reason = 'background') {
+    if (desktopBackupReceiptRunning) return { ok: true, queued: true };
+    desktopBackupReceiptRunning = true;
+    let received = 0;
+    let failed = 0;
+    try {
+      const settings = await desktopSyncSettings.getSettings();
+      const destinations = settings.deviceBackupDestinations || {};
+      const transfers = await desktopCloudSync.listStagedBackupTransfers();
+      for (const transfer of transfers) {
+        try {
+          const destination = destinations[transfer.source_device_id];
+          if (!destination?.path) continue;
+          const ticket = await desktopCloudSync.stagedBackupDownload(transfer.id);
+          const response = await fetch(ticket.signedUrl);
+          if (!response.ok) throw new Error(`Staged backup download failed (${response.status}).`);
+          await fs.promises.mkdir(destination.path, { recursive: true });
+          const fileName = sanitizeFileName(transfer.file_name || `photo-${transfer.media_id}`);
+          const destinationPath = uniqueDestinationPath(destination.path, fileName);
+          await fs.promises.writeFile(destinationPath, Buffer.from(await response.arrayBuffer()));
+          const added = await indexer.addMediaFiles([destinationPath]);
+          for (const photo of added) queueSingleCloudMediaMetadata(photo, 'desktop-backup-received');
+          await desktopCloudSync.completeStagedBackup(transfer.id);
+          received += 1;
+        } catch (error) {
+          failed += 1;
+          console.warn(`Desktop backup receipt failed (${reason}): ${error.message}`);
+        }
+      }
+      return { ok: true, received, failed };
+    } finally {
+      desktopBackupReceiptRunning = false;
+    }
+  }
+
+  function queueDesktopBackupReceipts(reason = 'background') {
+    setImmediate(() => receiveStagedDesktopBackups(reason).catch((error) => {
+      console.warn(`Desktop backup receipt queue skipped (${reason}): ${error.message}`);
+    }));
   }
 
   cloudRealtimeWakeup = new CloudRealtimeWakeup({
@@ -994,6 +1038,39 @@ async function main() {
     }
   });
 
+  app.put('/api/desktop/relay/backup/:requestId', async (req, res) => {
+    let destinationPath = '';
+    try {
+      const requestId = String(req.params.requestId || '');
+      const token = String(req.headers['x-book-of-life-backup-token'] || '');
+      const requests = await desktopCloudSync.listBackupRequests();
+      const request = requests.find((item) => item.id === requestId && item.status === 'accepted' && item.transfer_token === token);
+      if (!request) {
+        res.status(401).json({ error: 'Unauthorized backup request.' });
+        return;
+      }
+      const settings = await desktopSyncSettings.getSettings();
+      const destination = settings.deviceBackupDestinations?.[request.source_device_id];
+      if (!destination?.path) throw new Error('This phone backup destination is not configured.');
+      await fs.promises.mkdir(destination.path, { recursive: true });
+      const fileName = sanitizeFileName(String(req.query.fileName || 'photo'));
+      destinationPath = uniqueDestinationPath(destination.path, fileName);
+      await new Promise((resolve, reject) => {
+        const output = fs.createWriteStream(destinationPath, { flags: 'wx' });
+        req.on('error', reject);
+        output.on('error', reject);
+        output.on('finish', resolve);
+        req.pipe(output);
+      });
+      const added = await indexer.addMediaFiles([destinationPath]);
+      for (const photo of added) queueSingleCloudMediaMetadata(photo, 'desktop-backup-direct');
+      res.json({ ok: true, received: true, fileName: path.basename(destinationPath) });
+    } catch (error) {
+      if (destinationPath) await fs.promises.rm(destinationPath, { force: true }).catch(() => {});
+      res.status(500).json({ error: error.message || 'Direct desktop backup failed.' });
+    }
+  });
+
   async function requireSyncAuth(req, res, next) {
     const header = String(req.headers.authorization || '');
     const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
@@ -1159,6 +1236,52 @@ async function main() {
     }
   });
 
+  app.get('/api/desktop/backups/requests', async (_req, res) => {
+    try {
+      res.json({ ok: true, requests: await desktopCloudSync.listPendingBackupRequests() });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error.message || 'Failed to load backup requests.' });
+    }
+  });
+
+  app.post('/api/desktop/backups/requests/:requestId/respond', async (req, res) => {
+    try {
+      const status = req.body?.status === 'accepted' ? 'accepted' : 'declined';
+      const destinationPath = status === 'accepted' ? path.resolve(String(req.body?.destinationPath || '')) : '';
+      const sourceDeviceId = String(req.body?.sourceDeviceId || '');
+      if (status === 'accepted' && !destinationPath) throw new Error('Choose a destination folder.');
+      let freeBytes = 0;
+      if (destinationPath) {
+        await fs.promises.mkdir(destinationPath, { recursive: true });
+        const disk = await fs.promises.statfs(destinationPath).catch(() => null);
+        freeBytes = disk ? Number(disk.bavail || 0) * Number(disk.bsize || 0) : 0;
+        const settings = await desktopSyncSettings.getSettings();
+        const label = path.basename(destinationPath) || 'Device Photos';
+        const nextFolders = Array.isArray(settings.mediaFolders) ? settings.mediaFolders.slice() : [];
+        if (!nextFolders.some((folder) => path.resolve(folder.path) === destinationPath)) {
+          nextFolders.push({ id: `device-backup-${sourceDeviceId}`, path: destinationPath, label, enabled: true, cloudPolicy: 'derivatives' });
+        }
+        const nextSettings = await saveDesktopSettings({
+          mediaFolders: nextFolders,
+          deviceBackupDestinations: {
+            ...(settings.deviceBackupDestinations || {}),
+            [sourceDeviceId]: { path: destinationPath, label, requestId: req.params.requestId }
+          }
+        });
+        await applyDesktopRuntimeSettings(nextSettings);
+        startIndexRebuild('device-backup-approved');
+      }
+      const result = await desktopCloudSync.respondToBackupRequest(req.params.requestId, {
+        status,
+        destinationLabel: destinationPath ? path.basename(destinationPath) : '',
+        freeBytes
+      });
+      res.json({ ok: true, request: result.request, freeBytes });
+    } catch (error) {
+      res.status(500).json({ ok: false, error: error.message || 'Failed to respond to backup request.' });
+    }
+  });
+
   app.post('/api/desktop/cloud/signup', async (req, res) => {
     try {
       const settings = req.body?.settings && typeof req.body.settings === 'object' ? req.body.settings : {};
@@ -1200,6 +1323,7 @@ async function main() {
         usedBytes: 0,
         error: error.message
       }));
+      const backupRequests = await desktopCloudSync.listPendingBackupRequests().catch(() => []);
       res.json(desktopTrayStatus({
         localService: {
           running: true,
@@ -1211,6 +1335,7 @@ async function main() {
         thumbnailStatus: thumbnailGenerationService.getStatus(),
         mediaAvailability: indexer.getRootAvailabilitySummary(),
         storageUsage,
+        backupRequests,
         syncStatus: getCloudEntrySyncStatus(),
         journalMirror: journalMirror?.getStatus?.() || {},
         cloudRealtime: cloudRealtimeWakeup.getStatus()
@@ -2061,6 +2186,7 @@ async function main() {
           setInterval(() => queueCloudEntrySync('interval'), 5 * 60 * 1000).unref();
           setInterval(() => queueDesktopHostHeartbeat('interval'), 5 * 60 * 1000).unref();
           setInterval(() => queueCloudMediaActions('interval'), 60 * 1000).unref();
+          setInterval(() => queueDesktopBackupReceipts('interval'), 60 * 1000).unref();
         });
       }
       resolve(server);

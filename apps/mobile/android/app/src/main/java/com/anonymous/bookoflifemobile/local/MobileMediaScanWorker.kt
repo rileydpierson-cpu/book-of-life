@@ -3,6 +3,8 @@ package com.anonymous.bookoflifemobile.local
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.os.Build
 import android.provider.MediaStore
 import androidx.work.Worker
@@ -18,10 +20,13 @@ class MobileMediaScanWorker(
   params: WorkerParameters
 ) : Worker(context, params) {
   private var publishBudget = 100
+  private var backupPreferences = JSONObject()
+  private var acceptedDesktopRequest: JSONObject? = null
 
   override fun doWork(): Result {
     return try {
       MobileLocalServer.ensureStarted(applicationContext)
+      setForegroundAsync(MobileSyncProgress.update(applicationContext, "scan", "Indexing photos on this device"))
       MobileLocalStore(applicationContext).use { store ->
         if (!hasMediaPermission()) {
           store.setState("last_media_scan_error", "Media permission is required.")
@@ -32,6 +37,12 @@ class MobileMediaScanWorker(
         val libraryId = registration?.optString("libraryId").orEmpty()
         val deviceId = registration?.optString("deviceId").orEmpty().ifBlank { store.getState("cloud_device_id").orEmpty() }.ifBlank { "android-local" }
         val deviceName = registration?.optString("deviceName").orEmpty().ifBlank { "${Build.MANUFACTURER} ${Build.MODEL}".trim() }.ifBlank { "Android" }
+        backupPreferences = try { JSONObject(store.getState("mobile_backup_preferences") ?: "{}") } catch (_: Throwable) { JSONObject() }
+        if (token != null && libraryId.isNotBlank() && backupPreferences.optBoolean("desktopBackupEnabled")) {
+          val requests = MobileCloudSync.request(token, "GET", "/api/backups/requests?libraryId=$libraryId").optJSONArray("requests") ?: org.json.JSONArray()
+          acceptedDesktopRequest = (0 until requests.length()).map { requests.getJSONObject(it) }
+            .firstOrNull { it.optString("source_device_id") == deviceId && it.optString("status") == "accepted" }
+        }
         var indexed = 0
         var published = 0
         indexed += scanCollection(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image", store, token, libraryId, deviceId, deviceName) { published += it }
@@ -39,11 +50,13 @@ class MobileMediaScanWorker(
         store.setState("last_media_scan_at", Instant.now().toString())
         store.setState("last_media_scan_result", JSONObject().put("indexed", indexed).put("published", published).toString())
       }
+      MobileSyncProgress.update(applicationContext, "complete", "Photo index updated", running = false)
       Result.success()
     } catch (error: Throwable) {
       MobileLocalStore(applicationContext).use { store ->
         store.setState("last_media_scan_error", error.message ?: "Media scan failed.")
       }
+      MobileSyncProgress.update(applicationContext, "error", "Photo indexing failed", running = false, error = error.message ?: "Media scan failed.")
       Result.retry()
     }
   }
@@ -118,7 +131,7 @@ class MobileMediaScanWorker(
           .put("size", size)
           .put("availability", "available")
         val locationsJson = mergeLocations(existingRecord?.locationsJson, location, deviceId)
-        store.upsertMedia(localId, localUri, store.mediaCloudId(localId), fileName, type, isoDate, capturedAt, width, height, folder, false, deviceId, Instant.now().toString(), contentHash, "media-store", locationsJson)
+        store.upsertMedia(localId, localUri, store.mediaCloudId(localId), fileName, type, isoDate, capturedAt, width, height, folder, false, deviceId, Instant.now().toString(), contentHash, "media-store", locationsJson, existingRecord?.backupStatusJson ?: "{}")
         indexed += 1
 
         val needsCloudRepair = existingRecord?.cloudId.isNullOrBlank()
@@ -126,7 +139,14 @@ class MobileMediaScanWorker(
           || existingRecord?.fileName.isNullOrBlank()
           || existingRecord?.locationsJson.isNullOrBlank()
           || existingRecord?.locationsJson == "[]"
-        if (publishBudget > 0 && token != null && libraryId.isNotBlank() && deviceId.isNotBlank() && needsCloudRepair) {
+        val existingBackupStatus = try { JSONObject(existingRecord?.backupStatusJson ?: "{}") } catch (_: Throwable) { JSONObject() }
+        val targetDesktopId = acceptedDesktopRequest?.optString("target_device_id").orEmpty()
+        val desktopBackupComplete = existingBackupStatus.optJSONArray("desktopBackupDeviceIds")?.let { ids ->
+          (0 until ids.length()).any { ids.optString(it) == targetDesktopId }
+        } ?: false
+        val needsConfiguredBackup = (backupPreferences.optBoolean("cloudOriginalsEnabled") && existingRecord?.originalInCloud != true) ||
+          (targetDesktopId.isNotBlank() && !desktopBackupComplete)
+        if (publishBudget > 0 && token != null && libraryId.isNotBlank() && deviceId.isNotBlank() && (needsCloudRepair || needsConfiguredBackup)) {
           val metadata = JSONObject()
             .put("type", type)
             .put("captured_at", capturedAt)
@@ -174,13 +194,83 @@ class MobileMediaScanWorker(
               .put("originalSize", size)
               .put("originalContentType", mimeType))
           }
-          store.upsertMedia(localId, localUri, cloudId, fileName, type, isoDate, capturedAt, width, height, folder, false, deviceId, Instant.now().toString(), contentHash, "media-store", locationsJson)
+          if (backupPreferences.optBoolean("cloudOriginalsEnabled") && existingRecord?.originalInCloud != true && originalBackupNetworkAllowed(backupPreferences.optBoolean("allowMobileData"))) {
+            runCatching {
+              MobileCloudSync.request(token, "POST", "/api/backups/transfers", JSONObject()
+                .put("libraryId", libraryId).put("mediaId", cloudId).put("sourceDeviceId", deviceId)
+                .put("destinationType", "cloud").put("status", "running").put("totalBytes", size))
+              val original = MobileCloudSync.uploadOriginal(applicationContext, token, libraryId, cloudId, fileName, localUri, mimeType)
+              MobileCloudSync.request(token, "POST", "/api/media", JSONObject()
+                .put("libraryId", libraryId).put("hostDeviceId", deviceId).put("deviceId", deviceId)
+                .put("contentHash", contentHash).put("localMediaId", cloudLocalId).put("fileName", fileName)
+                .put("metadata", metadata).put("location", location).put("originalOnHost", true)
+                .put("originalInCloud", true).put("originalStoragePath", original.getString("storagePath"))
+                .put("originalSize", size).put("originalContentType", mimeType))
+              MobileCloudSync.request(token, "POST", "/api/backups/transfers", JSONObject()
+                .put("libraryId", libraryId).put("mediaId", cloudId).put("sourceDeviceId", deviceId)
+                .put("destinationType", "cloud").put("status", "completed").put("currentBytes", size).put("totalBytes", size))
+            }.onFailure { error ->
+              runCatching {
+                MobileCloudSync.request(token, "POST", "/api/backups/transfers", JSONObject()
+                  .put("libraryId", libraryId).put("mediaId", cloudId).put("sourceDeviceId", deviceId)
+                  .put("destinationType", "cloud").put("status", "failed").put("totalBytes", size).put("error", error.message ?: "Upload failed."))
+              }
+            }
+          }
+          val desktopRequest = acceptedDesktopRequest
+          if (desktopRequest != null && !desktopBackupComplete && originalBackupNetworkAllowed(backupPreferences.optBoolean("allowMobileData"))) {
+            val targetDeviceId = desktopRequest.optString("target_device_id")
+            runCatching {
+              val target = desktopRequest.optJSONObject("target") ?: JSONObject()
+              val direct = MobileCloudSync.uploadDirectDesktopBackup(
+                applicationContext,
+                target.optString("host_url"),
+                desktopRequest.optString("id"),
+                desktopRequest.optString("transfer_token"),
+                fileName,
+                localUri,
+                mimeType
+              )
+              if (direct) {
+                MobileCloudSync.request(token, "POST", "/api/backups/transfers", JSONObject()
+                  .put("libraryId", libraryId).put("mediaId", cloudId).put("sourceDeviceId", deviceId)
+                  .put("destinationType", "desktop").put("destinationDeviceId", targetDeviceId)
+                  .put("requestId", desktopRequest.optString("id")).put("fileName", fileName)
+                  .put("status", "completed").put("currentBytes", size).put("totalBytes", size))
+              } else {
+                val staged = MobileCloudSync.uploadStagedOriginal(applicationContext, token, libraryId, cloudId, targetDeviceId, fileName, localUri, mimeType)
+                MobileCloudSync.request(token, "POST", "/api/backups/transfers", JSONObject()
+                  .put("libraryId", libraryId).put("mediaId", cloudId).put("sourceDeviceId", deviceId)
+                  .put("destinationType", "desktop").put("destinationDeviceId", targetDeviceId)
+                  .put("requestId", desktopRequest.optString("id")).put("fileName", fileName)
+                  .put("stagingStoragePath", staged.getString("storagePath")).put("status", "staging")
+                  .put("currentBytes", size).put("totalBytes", size))
+              }
+            }.onFailure { error ->
+              runCatching {
+                MobileCloudSync.request(token, "POST", "/api/backups/transfers", JSONObject()
+                  .put("libraryId", libraryId).put("mediaId", cloudId).put("sourceDeviceId", deviceId)
+                  .put("destinationType", "desktop").put("destinationDeviceId", targetDeviceId)
+                  .put("requestId", desktopRequest.optString("id")).put("fileName", fileName)
+                  .put("status", "failed").put("totalBytes", size).put("error", error.message ?: "Desktop backup failed."))
+              }
+            }
+          }
+          store.upsertMedia(localId, localUri, cloudId, fileName, type, isoDate, capturedAt, width, height, folder, false, deviceId, Instant.now().toString(), contentHash, "media-store", locationsJson, existingRecord?.backupStatusJson ?: "{}")
           publishBudget -= 1
           onPublished(1)
         }
       }
     }
     return indexed
+  }
+
+  private fun originalBackupNetworkAllowed(allowMobileData: Boolean): Boolean {
+    val manager = applicationContext.getSystemService(ConnectivityManager::class.java) ?: return false
+    val network = manager.activeNetwork ?: return false
+    val capabilities = manager.getNetworkCapabilities(network) ?: return false
+    return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+      (allowMobileData || capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED))
   }
 
   private fun hashContent(localUri: String): String {

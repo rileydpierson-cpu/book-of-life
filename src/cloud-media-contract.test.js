@@ -9,6 +9,16 @@ describe('cloud media contract', () => {
       content_hash: 'abc123',
       file_name: 'photo.jpg',
       has_thumb: true,
+      media_backup_transfers: [{
+        id: 'transfer-1',
+        destination_type: 'desktop',
+        destination_device_id: 'desktop-2',
+        destination_key: 'desktop-2',
+        status: 'staging',
+        current_bytes: 10,
+        total_bytes: 20,
+        error: ''
+      }],
       media_locations: [{
         id: 'location-1',
         device_id: 'desktop-1',
@@ -28,5 +38,11 @@ describe('cloud media contract', () => {
       relativePath: 'Trips/photo.jpg'
     });
     expect(media.availability).toMatchObject({ localCopies: 1, hasThumb: true });
+    expect(media.backupStatus).toMatchObject({
+      cloudBackedUp: false,
+      desktopBackupDeviceIds: ['desktop-1'],
+      hasUsableOriginalRoute: true
+    });
+    expect(media.backupStatus.syncingDestinations).toHaveLength(1);
   });
 });

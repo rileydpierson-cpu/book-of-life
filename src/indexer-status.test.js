@@ -242,5 +242,11 @@ describe('missing media availability', () => {
       localMediaId: photo.id,
       availability: 'available'
     });
+    expect(serialized.backupStatus).toMatchObject({
+      currentDeviceHasOriginal: true,
+      currentDeviceId: 'desktop-1',
+      currentDeviceType: 'desktop',
+      hasUsableOriginalRoute: true
+    });
   });
 });

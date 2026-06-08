@@ -31,14 +31,15 @@ data class MobileMediaRecord(
   val updatedAt: String,
   val contentHash: String?,
   val folderRootId: String?,
-  val locationsJson: String
+  val locationsJson: String,
+  val backupStatusJson: String
 )
 
 class MobileLocalStore(context: Context) : SQLiteOpenHelper(
   context.applicationContext,
   "book_of_life_mobile_local.db",
   null,
-  3
+  4
 ) {
   override fun onCreate(db: SQLiteDatabase) {
     db.execSQL(
@@ -77,6 +78,7 @@ class MobileLocalStore(context: Context) : SQLiteOpenHelper(
         desktop_host_device_id TEXT,
         content_hash TEXT,
         locations_json TEXT NOT NULL DEFAULT '[]',
+        backup_status_json TEXT NOT NULL DEFAULT '{}',
         updated_at TEXT NOT NULL
       )
       """.trimIndent()
@@ -122,6 +124,9 @@ class MobileLocalStore(context: Context) : SQLiteOpenHelper(
     if (oldVersion < 3) {
       runCatching { db.execSQL("ALTER TABLE media_items ADD COLUMN content_hash TEXT") }
       runCatching { db.execSQL("ALTER TABLE media_items ADD COLUMN locations_json TEXT NOT NULL DEFAULT '[]'") }
+    }
+    if (oldVersion < 4) {
+      runCatching { db.execSQL("ALTER TABLE media_items ADD COLUMN backup_status_json TEXT NOT NULL DEFAULT '{}'") }
     }
   }
 
@@ -243,7 +248,8 @@ class MobileLocalStore(context: Context) : SQLiteOpenHelper(
     updatedAt: String,
     contentHash: String? = null,
     folderRootId: String? = null,
-    locationsJson: String = "[]"
+    locationsJson: String = "[]",
+    backupStatusJson: String = "{}"
   ) {
     val values = ContentValues().apply {
       put("id", id)
@@ -261,6 +267,7 @@ class MobileLocalStore(context: Context) : SQLiteOpenHelper(
       put("desktop_host_device_id", desktopHostDeviceId)
       put("content_hash", contentHash)
       put("locations_json", locationsJson)
+      put("backup_status_json", backupStatusJson)
       put("updated_at", updatedAt.ifBlank { Instant.now().toString() })
     }
     writableDatabase.insertWithOnConflict("media_items", null, values, SQLiteDatabase.CONFLICT_REPLACE)
@@ -292,7 +299,7 @@ class MobileLocalStore(context: Context) : SQLiteOpenHelper(
     val rows = mutableListOf<MobileMediaRecord>()
     readableDatabase.query(
       "media_items",
-      arrayOf("id", "local_uri", "cloud_id", "file_name", "media_type", "iso_date", "captured_at", "width", "height", "folder", "original_in_cloud", "desktop_host_device_id", "updated_at", "content_hash", "folder_root_id", "locations_json"),
+      arrayOf("id", "local_uri", "cloud_id", "file_name", "media_type", "iso_date", "captured_at", "width", "height", "folder", "original_in_cloud", "desktop_host_device_id", "updated_at", "content_hash", "folder_root_id", "locations_json", "backup_status_json"),
       selection,
       selectionArgs,
       null,
@@ -317,7 +324,8 @@ class MobileLocalStore(context: Context) : SQLiteOpenHelper(
           updatedAt = cursor.getString(12),
           contentHash = cursor.getString(13),
           folderRootId = cursor.getString(14),
-          locationsJson = cursor.getString(15) ?: "[]"
+          locationsJson = cursor.getString(15) ?: "[]",
+          backupStatusJson = cursor.getString(16) ?: "{}"
         ))
       }
     }

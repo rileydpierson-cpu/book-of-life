@@ -13,6 +13,7 @@ import java.net.HttpURLConnection
 import java.net.URLEncoder
 import java.net.URL
 import java.io.ByteArrayOutputStream
+import java.io.BufferedInputStream
 import java.nio.charset.StandardCharsets
 import java.time.Instant
 
@@ -23,13 +24,14 @@ object MobileCloudSync {
   private const val DEVICE_ID_KEY = "cloud_device_id"
   private const val CHANGE_CURSOR_KEY = "cloud_change_cursor"
 
-  fun sync(context: Context): JSONObject {
+  fun sync(context: Context, progress: ((String, String, Int, Int) -> Unit)? = null): JSONObject {
     MobileLocalStore(context).use { store ->
       val token = accessToken(store) ?: return JSONObject().put("skipped", true).put("reason", "not-signed-in")
       val registration = ensureRegistration(context, store, token)
       val libraryId = registration.getString("libraryId")
       val deviceId = registration.getString("deviceId")
 
+      progress?.invoke("entries", "Uploading journal changes", 0, store.listDirtyEntries().size)
       var pushed = 0
       for (entry in store.listDirtyEntries()) {
         val saved = request(
@@ -49,8 +51,10 @@ object MobileCloudSync {
           saved.optString("updatedAt", Instant.now().toString())
         )
         pushed += 1
+        progress?.invoke("entries", "Uploading journal changes", pushed, store.listDirtyEntries().size)
       }
 
+      progress?.invoke("entries", "Downloading journal index", 0, 0)
       val remoteEntries = request(token, "GET", "/api/entries?libraryId=${encode(libraryId)}").optJSONArray("entries") ?: JSONArray()
       var pulled = 0
       for (index in 0 until remoteEntries.length()) {
@@ -64,6 +68,7 @@ object MobileCloudSync {
         }
       }
 
+      progress?.invoke("media", "Downloading media index and device folders", 0, 0)
       val media = request(token, "GET", "/api/media?libraryId=${encode(libraryId)}").optJSONArray("media") ?: JSONArray()
       for (index in 0 until media.length()) {
         val item = media.getJSONObject(index)
@@ -99,8 +104,10 @@ object MobileCloudSync {
           updatedAt = item.optString("updatedAt"),
           contentHash = contentHash ?: existing?.contentHash,
           folderRootId = currentLocation?.optString("storageRootId").orEmpty().ifBlank { existing?.folderRootId.orEmpty() },
-          locationsJson = locations.toString()
+          locationsJson = locations.toString(),
+          backupStatusJson = item.optJSONObject("backupStatus")?.toString() ?: existing?.backupStatusJson ?: "{}"
         )
+        progress?.invoke("media", "Downloading media index and device folders", index + 1, media.length())
       }
 
       val actions = request(token, "GET", "/api/media/actions?libraryId=${encode(libraryId)}&hostDeviceId=${encode(deviceId)}&status=pending")
@@ -254,6 +261,65 @@ object MobileCloudSync {
     } catch (_: Throwable) {
       null
     }
+  }
+
+  fun uploadOriginal(context: Context, token: String, libraryId: String, mediaId: String, fileName: String, localUri: String, contentType: String): JSONObject {
+    val ticket = request(token, "POST", "/api/media/original-upload-url", JSONObject()
+      .put("libraryId", libraryId)
+      .put("mediaId", mediaId)
+      .put("fileName", fileName))
+    val connection = URL(ticket.getString("signedUrl")).openConnection() as HttpURLConnection
+    connection.requestMethod = "PUT"
+    connection.connectTimeout = 30_000
+    connection.readTimeout = 120_000
+    connection.doOutput = true
+    connection.setRequestProperty("Content-Type", contentType.ifBlank { "application/octet-stream" })
+    context.contentResolver.openInputStream(Uri.parse(localUri))?.use { raw ->
+      BufferedInputStream(raw).use { input ->
+        connection.outputStream.use { output -> input.copyTo(output, 1024 * 1024) }
+      }
+    } ?: error("Original is unavailable.")
+    if (connection.responseCode !in 200..299) error("Original upload failed (${connection.responseCode}).")
+    return JSONObject().put("storagePath", ticket.getString("objectPath"))
+  }
+
+  fun uploadStagedOriginal(context: Context, token: String, libraryId: String, mediaId: String, targetDeviceId: String, fileName: String, localUri: String, contentType: String): JSONObject {
+    val ticket = request(token, "POST", "/api/backups/staging", JSONObject()
+      .put("libraryId", libraryId)
+      .put("mediaId", mediaId)
+      .put("targetDeviceId", targetDeviceId)
+      .put("fileName", fileName))
+    val connection = URL(ticket.getString("signedUrl")).openConnection() as HttpURLConnection
+    connection.requestMethod = "PUT"
+    connection.connectTimeout = 30_000
+    connection.readTimeout = 120_000
+    connection.doOutput = true
+    connection.setRequestProperty("Content-Type", contentType.ifBlank { "application/octet-stream" })
+    context.contentResolver.openInputStream(Uri.parse(localUri))?.use { raw ->
+      BufferedInputStream(raw).use { input ->
+        connection.outputStream.use { output -> input.copyTo(output, 1024 * 1024) }
+      }
+    } ?: error("Original is unavailable.")
+    if (connection.responseCode !in 200..299) error("Desktop staging upload failed (${connection.responseCode}).")
+    return JSONObject().put("storagePath", ticket.getString("objectPath"))
+  }
+
+  fun uploadDirectDesktopBackup(context: Context, hostUrl: String, requestId: String, transferToken: String, fileName: String, localUri: String, contentType: String): Boolean {
+    if (hostUrl.isBlank() || transferToken.isBlank()) return false
+    val url = "${hostUrl.trimEnd('/')}/api/desktop/relay/backup/${encode(requestId)}?fileName=${encode(fileName)}"
+    val connection = URL(url).openConnection() as HttpURLConnection
+    connection.requestMethod = "PUT"
+    connection.connectTimeout = 15_000
+    connection.readTimeout = 120_000
+    connection.doOutput = true
+    connection.setRequestProperty("Content-Type", contentType.ifBlank { "application/octet-stream" })
+    connection.setRequestProperty("x-book-of-life-backup-token", transferToken)
+    context.contentResolver.openInputStream(Uri.parse(localUri))?.use { raw ->
+      BufferedInputStream(raw).use { input ->
+        connection.outputStream.use { output -> input.copyTo(output, 1024 * 1024) }
+      }
+    } ?: return false
+    return connection.responseCode in 200..299
   }
 
   private fun requestWithoutAuth(method: String, url: String, body: JSONObject?, headers: Map<String, String>): JSONObject {

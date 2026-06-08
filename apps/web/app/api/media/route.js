@@ -22,7 +22,7 @@ export async function GET(request) {
   }
   const { data, error } = await context.supabase
     .from('media_items')
-    .select('*, media_locations(*, devices(device_name, device_type)), media_actions(id, target_location_id, action_type, status, result)')
+    .select('*, media_locations(*, devices(device_name, device_type, last_seen_at)), media_actions(id, target_location_id, action_type, status, result), media_backup_transfers(*)')
     .eq('library_id', libraryId)
     .order('updated_at', { ascending: false })
     .limit(2000);
@@ -162,7 +162,7 @@ export async function POST(request) {
   }
   const hydrated = await context.supabase
     .from('media_items')
-    .select('*, media_locations(*, devices(device_name, device_type)), media_actions(id, target_location_id, action_type, status, result)')
+    .select('*, media_locations(*, devices(device_name, device_type, last_seen_at)), media_actions(id, target_location_id, action_type, status, result), media_backup_transfers(*)')
     .eq('id', data.id)
     .single();
   if (hydrated.error) return apiError(hydrated.error);

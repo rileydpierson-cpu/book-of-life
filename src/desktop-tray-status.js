@@ -89,7 +89,8 @@ function desktopTrayStatus({
   mediaAvailability = {},
   journalMirror = {},
   storageUsage = {},
-  syncStatus = {}
+  syncStatus = {},
+  backupRequests = []
 } = {}) {
   const signedIn = Boolean(cloudStatus.signedIn);
   return {
@@ -111,6 +112,10 @@ function desktopTrayStatus({
     },
     index: indexStatus || {},
     thumbnails: normalizeThumbnailStatus(thumbnailStatus),
+    backupRequests: Array.isArray(backupRequests) ? backupRequests : [],
+    backups: {
+      pendingRequests: Array.isArray(backupRequests) ? backupRequests.length : 0
+    },
     mediaAvailability: normalizeMediaAvailability(mediaAvailability),
     journalMirror: normalizeJournalMirrorStatus(journalMirror),
     sync: normalizeSyncStatus({

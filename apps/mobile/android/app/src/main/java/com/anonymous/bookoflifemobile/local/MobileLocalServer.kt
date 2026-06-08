@@ -129,6 +129,7 @@ object MobileLocalServer {
     if (method == "POST" && path == "/auth/logout") {
       store.removeState(CLOUD_SESSION_KEY)
       store.removeState(STARTUP_MODE_KEY)
+      store.removeState("mobile_setup_saved")
       return json("""{"ok":true,"redirectTo":"/"}""")
     }
     if (method == "GET" && path.startsWith("/media/")) return serveMedia(path)
@@ -155,6 +156,16 @@ object MobileLocalServer {
       return json(folderBrowseJson(uri.getQueryParameter("rootId") ?: uri.getQueryParameter("root") ?: "", uri.getQueryParameter("path") ?: "."))
     }
     if (method == "GET" && path == "/api/mobile/status") return json(statusJson())
+    if (method == "GET" && path == "/api/mobile/setup") return json(mobileSetupJson())
+    if (method == "POST" && path == "/api/mobile/setup") return saveMobileSetup(body)
+    if (method == "GET" && path == "/api/mobile/bootstrap/status") {
+      return json(store.getState(MobileSyncProgress.STATE_KEY) ?: """{"running":false,"phase":"idle","message":"Ready","percent":0}""")
+    }
+    if (method == "POST" && path == "/api/mobile/bootstrap") {
+      store.removeState("initial_bootstrap_error")
+      MobileBackgroundScheduler.bootstrapNow(appContext)
+      return json("""{"ok":true,"queued":true}""")
+    }
     if (method == "POST" && path == "/api/mobile/sync-now") {
       store.setState("last_sync_requested_at", Instant.now().toString())
       MobileBackgroundScheduler.syncNow(appContext)
@@ -404,6 +415,77 @@ object MobileLocalServer {
     }
   }
 
+  private fun mobileSetupJson(): String {
+    val signedIn = cloudSession() != null
+    val completed = store.getState("mobile_setup_completed") == "true"
+    val setupSaved = store.getState("mobile_setup_saved") == "true"
+    val preferences = try { JSONObject(store.getState("mobile_backup_preferences") ?: "{}") } catch (_: Throwable) { JSONObject() }
+    val candidates = JSONArray()
+    if (signedIn) {
+      runCatching {
+        MobileLocalStore(appContext).use { localStore ->
+          val token = MobileCloudSync.accessToken(localStore) ?: return@use
+          val registration = MobileCloudSync.ensureRegistration(appContext, localStore, token)
+          val devices = MobileCloudSync.request(token, "GET", "/api/devices?libraryId=${URLEncoder.encode(registration.getString("libraryId"), StandardCharsets.UTF_8.name())}").optJSONArray("devices") ?: JSONArray()
+          for (index in 0 until devices.length()) {
+            val device = devices.getJSONObject(index)
+            if (device.optString("device_type") != "desktop") continue
+            val lastSeen = runCatching { Instant.parse(device.optString("last_seen_at")).toEpochMilli() }.getOrDefault(0)
+            val online = device.optBoolean("can_use_desktop_host") && device.optString("host_url").isNotBlank() && System.currentTimeMillis() - lastSeen < 20 * 60 * 1000
+            candidates.put(JSONObject()
+              .put("id", device.optString("id"))
+              .put("name", device.optString("device_name").ifBlank { "Desktop" })
+              .put("online", online))
+          }
+        }
+      }
+    }
+    return JSONObject()
+      .put("ok", true)
+      .put("signedIn", signedIn)
+      .put("setupRequired", signedIn && !setupSaved)
+      .put("setupSaved", setupSaved)
+      .put("completed", completed)
+      .put("initialBootstrapCompletedAt", store.getState("initial_bootstrap_completed_at"))
+      .put("initialBootstrapError", store.getState("initial_bootstrap_error"))
+      .put("preferences", preferences)
+      .put("desktopCandidates", candidates)
+      .toString()
+  }
+
+  private fun saveMobileSetup(body: String): LocalResponse {
+    return try {
+      val preferences = JSONObject(body.ifBlank { "{}" })
+      val desktopEnabled = preferences.optBoolean("desktopBackupEnabled")
+      val targetDeviceId = preferences.optString("desktopTargetDeviceId")
+      if (desktopEnabled && targetDeviceId.isBlank()) return json("""{"error":"Choose an online desktop."}""", status = 400)
+      store.setState("mobile_backup_preferences", preferences.toString())
+      store.setState("mobile_setup_saved", "true")
+      val token = MobileCloudSync.accessToken(store) ?: return json("""{"error":"Sign in required."}""", status = 401)
+      val registration = MobileCloudSync.ensureRegistration(appContext, store, token)
+      val libraryId = registration.getString("libraryId")
+      val deviceId = registration.getString("deviceId")
+      MobileCloudSync.request(token, "POST", "/api/backups/preferences", JSONObject()
+        .put("libraryId", libraryId)
+        .put("deviceId", deviceId)
+        .put("cloudOriginalsEnabled", preferences.optBoolean("cloudOriginalsEnabled"))
+        .put("desktopBackupEnabled", desktopEnabled)
+        .put("desktopTargetDeviceId", targetDeviceId)
+        .put("allowMobileData", preferences.optBoolean("allowMobileData")))
+      if (desktopEnabled) {
+        MobileCloudSync.request(token, "POST", "/api/backups/requests", JSONObject()
+          .put("libraryId", libraryId)
+          .put("sourceDeviceId", deviceId)
+          .put("targetDeviceId", targetDeviceId)
+          .put("destinationLabel", "Photos/${registration.optString("deviceName")}"))
+      }
+      MobileBackgroundScheduler.bootstrapNow(appContext)
+      json("""{"ok":true,"queued":true}""")
+    } catch (error: Throwable) {
+      json("""{"error":"${escapeJson(error.message ?: "Could not save backup settings.")}"}""", status = 400)
+    }
+  }
+
   private fun cloudAuth(body: String, signup: Boolean): LocalResponse {
     val request = try {
       JSONObject(body.ifBlank { "{}" })
@@ -447,8 +529,10 @@ object MobileLocalServer {
       }
       store.setState(CLOUD_SESSION_KEY, response.toString())
       store.setState(STARTUP_MODE_KEY, "cloud")
-      MobileBackgroundScheduler.syncNow(appContext)
-      MobileBackgroundScheduler.scanNow(appContext)
+      store.removeState("mobile_setup_completed")
+      store.removeState("mobile_setup_saved")
+      store.removeState("initial_bootstrap_completed_at")
+      store.removeState("initial_bootstrap_error")
       json("""{"ok":true,"mode":"android-local","redirectTo":"/","settings":${desktopSettingsJson()},"cloud":${desktopCloudStatusJson()}}""")
     } catch (error: Throwable) {
       Log.w(TAG, "Cloud authentication failed", error)
@@ -597,7 +681,24 @@ object MobileLocalServer {
     val rootId = selected?.optString("deviceId").orEmpty()
     val storageLabel = selected?.optString("storageRootLabel").orEmpty()
     val folder = listOf(storageLabel, relativeFolder).filter { it.isNotBlank() }.joinToString("/").ifBlank { "." }
-    return """{"id":"${escapeJson(media.id)}","fileName":"${escapeJson(fileName)}","baseName":"${escapeJson(baseName)}","ext":"${escapeJson(ext)}","type":"$type","isoDate":"${escapeJson(media.isoDate.orEmpty())}","capturedAt":"${escapeJson(media.capturedAt.orEmpty())}","width":${media.width},"height":${media.height},"folder":"${escapeJson(folder)}","folderRootId":"${escapeJson(rootId)}","folderRootLabel":"${escapeJson(rootLabel)}","relativePath":"${escapeJson(relativePath)}","locations":$locations,"canEditMedia":false,"thumbUrl":"/media/thumb/${escapeJson(media.id)}","previewUrl":"/media/preview/${escapeJson(media.id)}","displayUrl":"/media/display/${escapeJson(media.id)}","fullUrl":"/media/full/${escapeJson(media.id)}","originalAvailable":${media.localUri != null || media.originalInCloud},"cloudOriginal":{"inCloud":${media.originalInCloud}}}"""
+    val deviceId = store.getState("cloud_device_id").orEmpty()
+    val availableLocations = try {
+      (0 until locations.length()).map { locations.getJSONObject(it) }.filter { it.optString("availability", "available") == "available" }
+    } catch (_: Throwable) { emptyList() }
+    val desktopIds = availableLocations.filter { it.optString("deviceType") == "desktop" && it.optString("deviceId") != deviceId }.map { it.optString("deviceId") }.filter { it.isNotBlank() }
+    val remoteTypes = availableLocations.filter { it.optString("deviceId") != deviceId }.map { it.optString("deviceType") }.filter { it.isNotBlank() }.distinct()
+    val cloudBackupStatus = try { JSONObject(media.backupStatusJson.ifBlank { "{}" }) } catch (_: Throwable) { JSONObject() }
+    val backupStatus = JSONObject(cloudBackupStatus.toString())
+      .put("cloudBackedUp", media.originalInCloud)
+      .put("desktopBackupDeviceIds", JSONArray(desktopIds))
+      .put("syncingDestinations", cloudBackupStatus.optJSONArray("syncingDestinations") ?: JSONArray())
+      .put("failedDestinations", cloudBackupStatus.optJSONArray("failedDestinations") ?: JSONArray())
+      .put("currentDeviceId", deviceId)
+      .put("currentDeviceType", "android")
+      .put("currentDeviceHasOriginal", media.localUri != null)
+      .put("availableRemoteDeviceTypes", JSONArray(remoteTypes))
+      .put("hasUsableOriginalRoute", media.localUri != null || media.originalInCloud || availableLocations.isNotEmpty())
+    return """{"id":"${escapeJson(media.id)}","fileName":"${escapeJson(fileName)}","baseName":"${escapeJson(baseName)}","ext":"${escapeJson(ext)}","type":"$type","isoDate":"${escapeJson(media.isoDate.orEmpty())}","capturedAt":"${escapeJson(media.capturedAt.orEmpty())}","width":${media.width},"height":${media.height},"folder":"${escapeJson(folder)}","folderRootId":"${escapeJson(rootId)}","folderRootLabel":"${escapeJson(rootLabel)}","relativePath":"${escapeJson(relativePath)}","locations":$locations,"backupStatus":$backupStatus,"canEditMedia":false,"thumbUrl":"/media/thumb/${escapeJson(media.id)}","previewUrl":"/media/preview/${escapeJson(media.id)}","displayUrl":"/media/display/${escapeJson(media.id)}","fullUrl":"/media/full/${escapeJson(media.id)}","originalAvailable":${media.localUri != null || media.originalInCloud},"cloudOriginal":{"inCloud":${media.originalInCloud}}}"""
   }
 
   private fun mediaLocations(media: MobileMediaRecord): JSONArray = try {

@@ -509,6 +509,11 @@ export function createMediaViewer(options) {
                 <div class="viewer-location-list" data-role="locations"></div>
               </div>
 
+              <div class="viewer-field viewer-field-static viewer-backup-field">
+                <span class="viewer-field-label">Backup Status</span>
+                <div class="viewer-location-list" data-role="backup-status"></div>
+              </div>
+
               <div class="viewer-field viewer-cloud-field">
                 <span class="viewer-field-label">Cloud Original</span>
                 <span class="viewer-field-control viewer-cloud-control">
@@ -562,6 +567,7 @@ export function createMediaViewer(options) {
         detailsHandle: this.root.querySelector('[data-role="details-handle"]'),
         detailsMeta: this.root.querySelector('[data-role="details-meta"]'),
         locations: this.root.querySelector('[data-role="locations"]'),
+        backupStatus: this.root.querySelector('[data-role="backup-status"]'),
         cloudStatus: this.root.querySelector('[data-role="cloud-status"]'),
         cloudLabel: this.root.querySelector('[data-role="cloud-label"]'),
         cloudToggle: this.root.querySelector('[data-role="cloud-toggle"]'),
@@ -2687,6 +2693,7 @@ export function createMediaViewer(options) {
       [this.dom.fileName, this.dom.folderTrigger, this.dom.description, this.dom.dateTrigger, this.dom.timeTrigger]
         .forEach((node) => { node.title = editReason; });
       this.dom.locations.innerHTML = this.renderLocations(item);
+      this.dom.backupStatus.innerHTML = this.renderBackupStatus(item);
       this.state.selectedFolderRootId = item?.folderRootId || '';
       this.state.selectedFolderPath = item?.folder === '.' ? '' : (item?.folder || '');
       this.updateFolderDraftLabel();
@@ -2723,6 +2730,21 @@ export function createMediaViewer(options) {
         rows.push('<div class="viewer-location-row"><span>Cloud original</span><strong>available</strong></div>');
       }
       return rows.join('') || '<div class="viewer-location-row"><span>No available location</span><strong>unavailable</strong></div>';
+    }
+
+    renderBackupStatus(item) {
+      const status = item?.backupStatus || {};
+      const rows = [];
+      rows.push(`<div class="viewer-location-row"><span>Current device original</span><strong>${status.currentDeviceHasOriginal === false || item?.originalAvailable === false ? 'not available' : 'available'}</strong></div>`);
+      rows.push(`<div class="viewer-location-row"><span>Cloud original</span><strong>${status.cloudBackedUp || item?.cloudOriginal?.inCloud || item?.availabilitySummary?.originalInCloud ? 'backed up' : 'not backed up'}</strong></div>`);
+      for (const transfer of Array.isArray(status.syncingDestinations) ? status.syncingDestinations : []) {
+        rows.push(`<div class="viewer-location-row"><span>${escapeHtml(transfer.destinationType || 'Backup')} backup</span><strong>${escapeHtml(transfer.status || 'syncing')}</strong></div>`);
+      }
+      for (const transfer of Array.isArray(status.failedDestinations) ? status.failedDestinations : []) {
+        rows.push(`<div class="viewer-location-row is-error"><span>${escapeHtml(transfer.destinationType || 'Backup')} backup</span><strong>${escapeHtml(transfer.error || transfer.status || 'failed')}</strong></div>`);
+      }
+      if (status.hasUsableOriginalRoute === false) rows.push('<div class="viewer-location-row is-error"><span>Original route</span><strong>offline</strong></div>');
+      return rows.join('');
     }
 
     animateCarouselToCurrent(startOffsetX = this.state.carouselDragOffsetX) {

@@ -4256,27 +4256,59 @@ function mediaOriginalStatusLabel(item = {}) {
   }
 }
 
+function normalizedMediaBackupStatus(media = {}) {
+  const locations = Array.isArray(media.locations) ? media.locations : [];
+  const status = media.backupStatus || {};
+  const currentDeviceId = status.currentDeviceId || media.currentDeviceId || '';
+  const availableLocations = locations.filter((location) => location.availability === 'available');
+  const currentDeviceHasOriginal = typeof status.currentDeviceHasOriginal === 'boolean'
+    ? status.currentDeviceHasOriginal
+    : availableLocations.some((location) => currentDeviceId && location.deviceId === currentDeviceId) || media.originalAvailable !== false;
+  const remoteDesktopIds = Array.isArray(status.desktopBackupDeviceIds)
+    ? status.desktopBackupDeviceIds.filter((deviceId) => !currentDeviceId || deviceId !== currentDeviceId)
+    : availableLocations.filter((location) => location.deviceType === 'desktop' && (!currentDeviceId || location.deviceId !== currentDeviceId)).map((location) => location.deviceId);
+  const remoteTypes = Array.isArray(status.availableRemoteDeviceTypes)
+    ? status.availableRemoteDeviceTypes
+    : availableLocations.filter((location) => !currentDeviceId || location.deviceId !== currentDeviceId).map((location) => location.deviceType);
+  return {
+    cloudBackedUp: Boolean(status.cloudBackedUp || media.cloudOriginal?.inCloud || media.availabilitySummary?.originalInCloud),
+    desktopBackedUp: remoteDesktopIds.filter(Boolean).length > 0,
+    syncing: Array.isArray(status.syncingDestinations) && status.syncingDestinations.length > 0,
+    failed: Array.isArray(status.failedDestinations) && status.failedDestinations.length > 0,
+    phoneOnly: status.currentDeviceType === 'desktop' && !currentDeviceHasOriginal && remoteTypes.some((type) => type && type !== 'desktop'),
+    offline: status.hasUsableOriginalRoute === false || (!currentDeviceHasOriginal && !media.cloudOriginal?.inCloud && !availableLocations.some((location) => location.online !== false))
+  };
+}
+
+function buildMediaStatusIcons(media, hero = false) {
+  const status = normalizedMediaBackupStatus(media);
+  const icons = [];
+  if (status.cloudBackedUp) icons.push(['cloud-check', 'Original backed up to cloud', 'cloud']);
+  if (status.desktopBackedUp) icons.push(['hard-drives', 'Original backed up to another desktop', 'server']);
+  if (status.syncing) icons.push(['spinner-gap', 'Original backup is syncing', 'loading is-spinning']);
+  if (status.phoneOnly) icons.push(['device-mobile', 'Original is available on another device', 'phone']);
+  if (status.failed) icons.push(['warning-circle', 'An original backup needs attention', 'error']);
+  if (status.offline) icons.push(['cloud-slash', 'No original source is currently reachable', 'offline']);
+  if (!icons.length) return '';
+  return `<div class="media-status-icons ${hero ? 'hero-status-icons' : ''}" aria-label="Media backup status">${icons.map(([icon, label, className]) =>
+    `<span class="media-status-icon media-status-${className}" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">${renderPhIcon(icon, { variant: 'duotone' })}</span>`
+  ).join('')}</div>`;
+}
+
 function buildMediaTile(media, className, { hero = false, label = '', badge = '', style = '' } = {}) {
   const previewSrc = media.type === 'video' ? (media.previewUrl || media.thumbUrl) : media.thumbUrl;
   const previewNode = media.type === 'video'
     ? `<video class="lazy-media" data-src="${previewSrc}" muted autoplay loop playsinline preload="none" poster="${escapeHtml(media.thumbUrl || '')}" aria-hidden="true"></video>`
     : '';
   const likedIndicator = media.liked ? `<span class="media-liked-indicator" aria-hidden="true">${renderPhIcon('heart', { variant: 'fill' })}</span>` : '';
-  const cloudOnly = media.availability === 'cloud-only';
-  const warning = media.originalAvailable === false && !cloudOnly;
-  const statusBadge = cloudOnly
-    ? `<div class="media-badge media-badge-cloud ${hero ? 'hero-badge' : ''}" title="${escapeHtml(mediaOriginalStatusLabel(media))}">${renderPhIcon('cloud', { variant: 'duotone' })}</div>`
-    : warning
-      ? `<div class="media-badge media-badge-warning ${hero ? 'hero-badge' : ''}" title="${escapeHtml(mediaOriginalStatusLabel(media))}">${renderPhIcon('warning', { variant: 'duotone' })}</div>`
-    : '';
   return `
-    <button class="${className} media-tile open-media ${hero ? 'hero-photo' : ''} ${warning ? 'is-unavailable' : ''} ${cloudOnly ? 'is-cloud-only' : ''} ${media.type === 'video' ? '' : 'lazy-media lazy-media-bg'}" type="button" data-media-id="${media.id}" ${style ? `style="${style}"` : ''} ${media.type === 'video' ? '' : `data-src="${previewSrc}"`}>
+    <button class="${className} media-tile open-media ${hero ? 'hero-photo' : ''} ${media.type === 'video' ? '' : 'lazy-media lazy-media-bg'}" type="button" data-media-id="${media.id}" ${style ? `style="${style}"` : ''} ${media.type === 'video' ? '' : `data-src="${previewSrc}"`}>
       <div class="media-skeleton"></div>
       ${previewNode}
       ${likedIndicator}
       ${hero ? '<div class="hero-gradient"></div>' : ''}
       ${label ? `<div class="hero-stamp">${escapeHtml(label)}</div>` : ''}
-      ${statusBadge}
+      ${buildMediaStatusIcons(media, hero)}
       ${media.type === 'video' ? `<div class="media-badge ${hero ? 'hero-badge' : ''}">${renderPhIcon('video-camera', { variant: 'fill' })}</div>` : ''}
       ${badge && media.type !== 'video' ? `<div class="media-badge ${hero ? 'hero-badge' : ''}">${badge}</div>` : ''}
     </button>
