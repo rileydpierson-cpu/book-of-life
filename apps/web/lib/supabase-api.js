@@ -74,12 +74,39 @@ export function toLibrary(row) {
 }
 
 export function toMedia(row) {
+  const actions = (Array.isArray(row.media_actions) ? row.media_actions : []).map((action) => ({
+    id: action.id,
+    targetLocationId: action.target_location_id || '',
+    actionType: action.action_type || '',
+    status: action.status || 'pending',
+    result: action.result || {}
+  }));
+  const locations = (Array.isArray(row.media_locations) ? row.media_locations : [])
+    .map((location) => ({
+      id: location.id,
+      deviceId: location.device_id || '',
+      deviceName: location.devices?.device_name || '',
+      deviceType: location.devices?.device_type || '',
+      localMediaId: location.local_media_id || '',
+      fileName: location.file_name || '',
+      storageRootId: location.storage_root_id || '',
+      storageRootLabel: location.storage_root_label || '',
+      relativePath: location.relative_path || '',
+      fileSignature: location.file_signature || '',
+      size: Number(location.size || 0),
+      availability: location.availability || 'available',
+      pendingActions: actions.filter((action) => action.targetLocationId === location.id && action.status === 'pending'),
+      failedActions: actions.filter((action) => action.targetLocationId === location.id && action.status === 'failed'),
+      lastSeenAt: location.last_seen_at || '',
+      updatedAt: location.updated_at || ''
+    }));
   return {
     id: row.id,
     libraryId: row.library_id,
     hostDeviceId: row.host_device_id || '',
     localMediaId: row.local_media_id || '',
     fileSignature: row.file_signature || '',
+    contentHash: row.content_hash || '',
     isoDate: row.iso_date || '',
     fileName: row.file_name || '',
     metadata: row.metadata || {},
@@ -94,6 +121,14 @@ export function toMedia(row) {
     originalStoragePath: row.original_storage_path || '',
     originalSize: Number(row.original_size || 0),
     originalContentType: row.original_content_type || '',
+    locations,
+    actions,
+    availability: {
+      localCopies: locations.filter((location) => location.availability === 'available').length,
+      originalInCloud: Boolean(row.original_in_cloud),
+      hasThumb: Boolean(row.has_thumb),
+      hasPreview: Boolean(row.has_preview)
+    },
     updatedAt: row.updated_at || ''
   };
 }

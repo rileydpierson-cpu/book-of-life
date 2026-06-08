@@ -5,6 +5,7 @@ import android.net.Uri
 import android.util.Log
 import android.util.Size
 import org.json.JSONObject
+import org.json.JSONArray
 import java.io.ByteArrayOutputStream
 import java.net.InetAddress
 import java.net.HttpURLConnection
@@ -148,10 +149,10 @@ object MobileLocalServer {
     }
     if (method == "GET" && path.startsWith("/api/year/")) return json(yearJson(path.substringAfterLast('/')))
     if (method == "GET" && path.startsWith("/api/month/")) return json(monthJson(path.substringAfterLast('/')))
-    if (method == "GET" && path == "/api/upload/folders") return json("""{"roots":[]}""")
+    if (method == "GET" && path == "/api/upload/folders") return json(folderRootsJson())
     if (method != "GET" && path.startsWith("/api/upload/")) return unsupported("Mobile media upload is not implemented in this local-only build.", 202)
     if (method == "GET" && path == "/api/folders/browse") {
-      return json("""{"rootId":"0","rootLabel":"Phone","relativePath":".","folders":[],"media":[]}""")
+      return json(folderBrowseJson(uri.getQueryParameter("rootId") ?: uri.getQueryParameter("root") ?: "", uri.getQueryParameter("path") ?: "."))
     }
     if (method == "GET" && path == "/api/mobile/status") return json(statusJson())
     if (method == "POST" && path == "/api/mobile/sync-now") {
@@ -580,7 +581,90 @@ object MobileLocalServer {
 
   private fun mediaJson(media: MobileMediaRecord): String {
     val type = if (media.mediaType == "video") "video" else "photo"
-    return """{"id":"${escapeJson(media.id)}","fileName":"${escapeJson(media.fileName)}","type":"$type","isoDate":"${escapeJson(media.isoDate.orEmpty())}","capturedAt":"${escapeJson(media.capturedAt.orEmpty())}","width":${media.width},"height":${media.height},"folder":"${escapeJson(media.folder.orEmpty())}","thumbUrl":"/media/thumb/${escapeJson(media.id)}","previewUrl":"/media/preview/${escapeJson(media.id)}","displayUrl":"/media/display/${escapeJson(media.id)}","fullUrl":"/media/full/${escapeJson(media.id)}","originalAvailable":${media.localUri != null || media.originalInCloud},"cloudOriginal":{"inCloud":${media.originalInCloud}}}"""
+    val locations = mediaLocations(media)
+    val currentDeviceId = store.getState("cloud_device_id").orEmpty()
+    val selected = (0 until locations.length()).map { locations.getJSONObject(it) }
+      .firstOrNull { it.optString("deviceId") == currentDeviceId }
+      ?: locations.optJSONObject(0)
+    val fileName = selected?.optString("fileName").orEmpty().ifBlank { media.fileName }.ifBlank {
+      if (media.mediaType == "video") "Untitled video.mp4" else "Untitled photo.jpg"
+    }
+    val ext = fileName.substringAfterLast('.', "").let { if (it.isBlank()) "" else ".$it" }
+    val baseName = if (ext.isBlank()) fileName else fileName.dropLast(ext.length)
+    val relativePath = selected?.optString("relativePath").orEmpty()
+    val relativeFolder = relativePath.substringBeforeLast('/', "").ifBlank { media.folder.orEmpty().trim('/') }
+    val rootLabel = selected?.optString("deviceName").orEmpty().ifBlank { "Device" }
+    val rootId = selected?.optString("deviceId").orEmpty()
+    val storageLabel = selected?.optString("storageRootLabel").orEmpty()
+    val folder = listOf(storageLabel, relativeFolder).filter { it.isNotBlank() }.joinToString("/").ifBlank { "." }
+    return """{"id":"${escapeJson(media.id)}","fileName":"${escapeJson(fileName)}","baseName":"${escapeJson(baseName)}","ext":"${escapeJson(ext)}","type":"$type","isoDate":"${escapeJson(media.isoDate.orEmpty())}","capturedAt":"${escapeJson(media.capturedAt.orEmpty())}","width":${media.width},"height":${media.height},"folder":"${escapeJson(folder)}","folderRootId":"${escapeJson(rootId)}","folderRootLabel":"${escapeJson(rootLabel)}","relativePath":"${escapeJson(relativePath)}","locations":$locations,"canEditMedia":false,"thumbUrl":"/media/thumb/${escapeJson(media.id)}","previewUrl":"/media/preview/${escapeJson(media.id)}","displayUrl":"/media/display/${escapeJson(media.id)}","fullUrl":"/media/full/${escapeJson(media.id)}","originalAvailable":${media.localUri != null || media.originalInCloud},"cloudOriginal":{"inCloud":${media.originalInCloud}}}"""
+  }
+
+  private fun mediaLocations(media: MobileMediaRecord): JSONArray = try {
+    JSONArray(media.locationsJson.ifBlank { "[]" })
+  } catch (_: Throwable) {
+    JSONArray()
+  }
+
+  private fun allLocations(): List<Pair<MobileMediaRecord, JSONObject>> =
+    store.listMedia().flatMap { media ->
+      val locations = mediaLocations(media)
+      (0 until locations.length()).map { media to locations.getJSONObject(it) }
+    }
+
+  private fun folderRootsJson(): String {
+    val roots = allLocations().map { it.second }.filter { it.optString("deviceId").isNotBlank() }
+      .distinctBy { it.optString("deviceId") }
+    return JSONObject().put("roots", JSONArray(roots.map { location ->
+      val rootId = location.optString("deviceId")
+      val label = location.optString("deviceName").ifBlank { "Device" }
+      JSONObject()
+        .put("rootId", rootId)
+        .put("rootLabel", label)
+        .put("tree", JSONObject()
+          .put("label", label)
+          .put("relativePath", "")
+          .put("displayPath", ".")
+          .put("children", JSONArray())
+          .put("icon", "hard-drives"))
+    })).toString()
+  }
+
+  private fun folderBrowseJson(rootId: String, requestedPath: String): String {
+    val cleanPath = requestedPath.trim('/').takeUnless { it == "." }.orEmpty()
+    val matches = allLocations().filter { (_, location) -> location.optString("deviceId") == rootId }
+    val rootLabel = matches.firstOrNull()?.second?.optString("deviceName").orEmpty().ifBlank { "Device" }
+    val folders = linkedSetOf<String>()
+    val media = JSONArray()
+    for ((record, location) in matches) {
+      val storage = location.optString("storageRootLabel")
+      val relativeFile = location.optString("relativePath").trim('/')
+      val displayFile = listOf(storage, relativeFile).filter { it.isNotBlank() }.joinToString("/")
+      val parent = displayFile.substringBeforeLast('/', "")
+      if (parent == cleanPath) {
+        media.put(JSONObject(mediaJson(record)))
+      } else if (parent.startsWith(if (cleanPath.isBlank()) "" else "$cleanPath/")) {
+        val remainder = parent.removePrefix(if (cleanPath.isBlank()) "" else "$cleanPath/").substringBefore('/')
+        if (remainder.isNotBlank()) folders.add(listOf(cleanPath, remainder).filter { it.isNotBlank() }.joinToString("/"))
+      }
+    }
+    val folderJson = JSONArray(folders.map { folder ->
+      JSONObject().put("label", folder.substringAfterLast('/')).put("relativePath", folder).put("displayPath", folder).put("mediaCount", 0)
+    })
+    val breadcrumbs = JSONArray().put(JSONObject().put("label", rootLabel).put("relativePath", ""))
+    var path = ""
+    cleanPath.split('/').filter { it.isNotBlank() }.forEach { part ->
+      path = listOf(path, part).filter { it.isNotBlank() }.joinToString("/")
+      breadcrumbs.put(JSONObject().put("label", part).put("relativePath", path))
+    }
+    return JSONObject()
+      .put("rootId", rootId)
+      .put("rootLabel", rootLabel)
+      .put("relativePath", cleanPath.ifBlank { "." })
+      .put("breadcrumbs", breadcrumbs)
+      .put("folders", folderJson)
+      .put("media", media)
+      .toString()
   }
 
   private fun serveMedia(path: String): LocalResponse {

@@ -14,7 +14,7 @@ async function mediaForUser(supabase, userId, libraryId, mediaId) {
 
   const { data, error } = await supabase
     .from('media_items')
-    .select('*, devices!media_items_host_device_id_fkey(*)')
+    .select('*, media_locations(*, devices(*))')
     .eq('library_id', libraryId)
     .eq('id', mediaId)
     .maybeSingle();
@@ -29,10 +29,9 @@ async function signedStorageRedirect(supabase, bucket, storagePath) {
   return data?.signedUrl || null;
 }
 
-function relayUrl(host, variant, media) {
+function relayUrl(host, variant, localMediaId) {
   const base = String(host?.host_url || '').replace(/\/+$/, '');
-  const localMediaId = encodeURIComponent(media.local_media_id || media.id);
-  return `${base}/api/desktop/relay/media/${encodeURIComponent(variant)}/${localMediaId}`;
+  return `${base}/api/desktop/relay/media/${encodeURIComponent(variant)}/${encodeURIComponent(localMediaId)}`;
 }
 
 export async function GET(request, { params }) {
@@ -71,7 +70,17 @@ export async function GET(request, { params }) {
     }
   }
 
-  const host = media.devices;
+  const now = Date.now();
+  const hostLocation = (media.media_locations || []).find((location) => {
+    const host = location.devices || {};
+    const expiresAt = Date.parse(host.host_relay_expires_at || '');
+    return location.availability === 'available'
+      && host.can_use_desktop_host
+      && host.host_url
+      && host.host_relay_token
+      && (!expiresAt || expiresAt > now);
+  });
+  const host = hostLocation?.devices;
   const relayToken = String(host?.host_relay_token || '');
   const hostUrl = String(host?.host_url || '');
   const expiresAt = Date.parse(host?.host_relay_expires_at || '');
@@ -84,7 +93,7 @@ export async function GET(request, { params }) {
   }
 
   try {
-    const upstream = await fetch(relayUrl(host, variant, media), {
+    const upstream = await fetch(relayUrl(host, variant, hostLocation.local_media_id || media.local_media_id || media.id), {
       headers: {
         'x-book-of-life-relay-token': relayToken
       }

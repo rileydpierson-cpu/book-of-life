@@ -371,6 +371,11 @@ async function main() {
   }
   await saveDesktopSettings({});
   const startupDesktopSettings = await desktopSyncSettings.getSettings();
+  indexer.setDeviceIdentity({
+    id: startupDesktopSettings.deviceId || '',
+    name: startupDesktopSettings.deviceName || 'Desktop',
+    type: 'desktop'
+  });
   config.paths.photoFolders = normalizeFolderListFromSettings(startupDesktopSettings, config);
   indexer.setPhotoRoots(config.paths.photoFolders);
   await indexer.loadCache();
@@ -548,6 +553,11 @@ async function main() {
   }
 
   async function applyDesktopRuntimeSettings(settings) {
+    indexer.setDeviceIdentity({
+      id: settings.deviceId || '',
+      name: settings.deviceName || 'Desktop',
+      type: 'desktop'
+    });
     const roots = normalizeFolderListFromSettings(settings, config);
     config.paths.photoFolders = roots;
     config.paths.serverPhotoFolders = roots.filter((folder) => folder !== config.paths.deviceSyncRoot);
@@ -676,11 +686,16 @@ async function main() {
             break;
           case 'media.rename':
             photo = await indexer.renamePhoto(photoId, sanitizeFileName(payload.baseName || ''));
-            result = { photoId, renamedTo: photo?.fileName || '' };
+            result = { photoId, localMediaId: photo?.id || '', renamedTo: photo?.fileName || '' };
             break;
           case 'media.move':
-            photo = await indexer.movePhoto(photoId, String(payload.rootId || ''), String(payload.relativePath || ''));
-            result = { photoId, relativePath: photo?.relativePath || '' };
+            photo = indexer.getPhoto(photoId);
+            photo = await indexer.movePhoto(
+              photoId,
+              String(payload.rootId || photo?.folderRootId || ''),
+              String(payload.relativePath || '')
+            );
+            result = { photoId, localMediaId: photo?.id || '', relativePath: photo?.relativePath || '' };
             break;
           case 'media.delete': {
             const deleted = await syncService.deletePhoto(photoId);
@@ -690,7 +705,6 @@ async function main() {
               isoDate: deleted.isoDate
             });
             await desktopCloudSync.markMediaAction(action.id, { status: 'applied', result: deleted });
-            await desktopCloudSync.deleteMediaMetadata(photoId).catch(() => null);
             applied += 1;
             continue;
           }
@@ -1796,7 +1810,9 @@ async function main() {
       await syncService.appendChange('media.upsert', req.params.photoId, {
         media: syncService.serializeMediaRecord(photo)
       });
-      queueSingleCloudMediaMetadata(photo, 'rename');
+      desktopCloudSync.queueMediaAction(photo, 'media.rename', { baseName }, { previousLocalMediaId: req.params.photoId }).catch((error) => {
+        console.warn(`Remote rename queue skipped: ${error.message}`);
+      });
       res.json({ ok: true, photo });
       console.log(`Renamed media ${req.params.photoId} to ${baseName}.`);
     } catch (error) {
@@ -1845,7 +1861,9 @@ async function main() {
       await syncService.appendChange('media.upsert', req.params.photoId, {
         media: syncService.serializeMediaRecord(photo)
       });
-      queueSingleCloudMediaMetadata(photo, 'move');
+      desktopCloudSync.queueMediaAction(photo, 'media.move', { relativePath }, { previousLocalMediaId: req.params.photoId }).catch((error) => {
+        console.warn(`Remote move queue skipped: ${error.message}`);
+      });
       res.json({ ok: true, photo });
       console.log(`Moved media ${req.params.photoId} to root ${rootId} and path ${relativePath}.`);
     } catch (error) {
@@ -1940,14 +1958,17 @@ async function main() {
         res.status(400).json({ error: 'That file is outside the configured photo folders.' });
         return;
       }
+      await desktopCloudSync.queueMediaAction(photo, 'media.delete', {}).catch((error) => {
+        console.warn(`Remote delete queue skipped: ${error.message}`);
+      });
       const deleted = await syncService.deletePhoto(req.params.photoId);
       await syncService.appendChange('media.delete', req.params.photoId, {
         photoId: req.params.photoId,
         deleted: true,
         isoDate: deleted.isoDate
       });
-      desktopCloudSync.deleteMediaMetadata(req.params.photoId).catch((error) => {
-        console.warn(`Cloud media delete sync skipped for ${req.params.photoId}: ${error.message}`);
+      desktopCloudSync.upsertMediaMetadata({ ...photo, originalAvailable: false }, { uploadDerivatives: false }).catch((error) => {
+        console.warn(`Cloud media location update skipped for ${req.params.photoId}: ${error.message}`);
       });
       res.json({ ok: true, photoId: req.params.photoId, isoDate: deleted.isoDate, trashedTo: deleted.trashedTo });
       console.log(`Deleted media ${req.params.photoId}.`);

@@ -28,14 +28,17 @@ data class MobileMediaRecord(
   val folder: String?,
   val originalInCloud: Boolean,
   val desktopHostDeviceId: String?,
-  val updatedAt: String
+  val updatedAt: String,
+  val contentHash: String?,
+  val folderRootId: String?,
+  val locationsJson: String
 )
 
 class MobileLocalStore(context: Context) : SQLiteOpenHelper(
   context.applicationContext,
   "book_of_life_mobile_local.db",
   null,
-  2
+  3
 ) {
   override fun onCreate(db: SQLiteDatabase) {
     db.execSQL(
@@ -72,6 +75,8 @@ class MobileLocalStore(context: Context) : SQLiteOpenHelper(
         full_cache_path TEXT,
         original_in_cloud INTEGER NOT NULL DEFAULT 0,
         desktop_host_device_id TEXT,
+        content_hash TEXT,
+        locations_json TEXT NOT NULL DEFAULT '[]',
         updated_at TEXT NOT NULL
       )
       """.trimIndent()
@@ -114,6 +119,10 @@ class MobileLocalStore(context: Context) : SQLiteOpenHelper(
 
   override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
     onCreate(db)
+    if (oldVersion < 3) {
+      runCatching { db.execSQL("ALTER TABLE media_items ADD COLUMN content_hash TEXT") }
+      runCatching { db.execSQL("ALTER TABLE media_items ADD COLUMN locations_json TEXT NOT NULL DEFAULT '[]'") }
+    }
   }
 
   fun getEntry(isoDate: String): MobileEntryRecord? {
@@ -231,7 +240,10 @@ class MobileLocalStore(context: Context) : SQLiteOpenHelper(
     folder: String?,
     originalInCloud: Boolean,
     desktopHostDeviceId: String?,
-    updatedAt: String
+    updatedAt: String,
+    contentHash: String? = null,
+    folderRootId: String? = null,
+    locationsJson: String = "[]"
   ) {
     val values = ContentValues().apply {
       put("id", id)
@@ -244,8 +256,11 @@ class MobileLocalStore(context: Context) : SQLiteOpenHelper(
       put("width", width)
       put("height", height)
       put("folder", folder)
+      put("folder_root_id", folderRootId)
       put("original_in_cloud", if (originalInCloud) 1 else 0)
       put("desktop_host_device_id", desktopHostDeviceId)
+      put("content_hash", contentHash)
+      put("locations_json", locationsJson)
       put("updated_at", updatedAt.ifBlank { Instant.now().toString() })
     }
     writableDatabase.insertWithOnConflict("media_items", null, values, SQLiteDatabase.CONFLICT_REPLACE)
@@ -257,8 +272,18 @@ class MobileLocalStore(context: Context) : SQLiteOpenHelper(
     }
   }
 
+  fun mediaByCloudId(cloudId: String): MobileMediaRecord? =
+    listMedia("cloud_id = ?", arrayOf(cloudId), "1").firstOrNull()
+
+  fun mediaByContentHash(contentHash: String): MobileMediaRecord? =
+    listMedia("content_hash = ?", arrayOf(contentHash), "1").firstOrNull()
+
   fun getMedia(id: String): MobileMediaRecord? {
     return listMedia("id = ?", arrayOf(id), "1").firstOrNull()
+  }
+
+  fun deleteMedia(id: String) {
+    writableDatabase.delete("media_items", "id = ?", arrayOf(id))
   }
 
   fun listMedia(limit: Int = 5_000): List<MobileMediaRecord> = listMedia(null, null, limit.toString())
@@ -267,7 +292,7 @@ class MobileLocalStore(context: Context) : SQLiteOpenHelper(
     val rows = mutableListOf<MobileMediaRecord>()
     readableDatabase.query(
       "media_items",
-      arrayOf("id", "local_uri", "cloud_id", "file_name", "media_type", "iso_date", "captured_at", "width", "height", "folder", "original_in_cloud", "desktop_host_device_id", "updated_at"),
+      arrayOf("id", "local_uri", "cloud_id", "file_name", "media_type", "iso_date", "captured_at", "width", "height", "folder", "original_in_cloud", "desktop_host_device_id", "updated_at", "content_hash", "folder_root_id", "locations_json"),
       selection,
       selectionArgs,
       null,
@@ -289,7 +314,10 @@ class MobileLocalStore(context: Context) : SQLiteOpenHelper(
           folder = cursor.getString(9),
           originalInCloud = cursor.getInt(10) != 0,
           desktopHostDeviceId = cursor.getString(11),
-          updatedAt = cursor.getString(12)
+          updatedAt = cursor.getString(12),
+          contentHash = cursor.getString(13),
+          folderRootId = cursor.getString(14),
+          locationsJson = cursor.getString(15) ?: "[]"
         ))
       }
     }

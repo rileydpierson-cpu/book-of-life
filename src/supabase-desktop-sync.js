@@ -84,6 +84,38 @@ class SupabaseDesktopSync {
     this.indexer = indexer;
     this.imageService = imageService;
     this.onBeforeLocalEntryWrite = onBeforeLocalEntryWrite;
+    this.mediaContentHashes = new Map();
+  }
+
+  async contentHashForPhoto(photo) {
+    if (!photo?.filePath || photo.originalAvailable === false) return '';
+    const signature = `${photo.filePath}|${photo.mtimeMs || 0}|${photo.size || 0}`;
+    if (!this.mediaContentHashes.has(signature)) {
+      this.mediaContentHashes.set(signature, new Promise((resolve, reject) => {
+        const digest = crypto.createHash('sha256');
+        const stream = fs.createReadStream(photo.filePath);
+        stream.on('data', (chunk) => digest.update(chunk));
+        stream.on('error', reject);
+        stream.on('end', () => resolve(digest.digest('hex')));
+      }).catch((error) => {
+        this.mediaContentHashes.delete(signature);
+        throw error;
+      }));
+    }
+    return this.mediaContentHashes.get(signature);
+  }
+
+  mediaLocationPayload(settings, photo) {
+    return {
+      deviceId: settings.deviceId,
+      localMediaId: photo.id,
+      fileName: photo.fileName || photo.baseName || 'Untitled photo.jpg',
+      storageRootId: photo.folderRootId || '',
+      storageRootLabel: photo.folderRootLabel || settings.deviceName || 'Desktop',
+      relativePath: photo.relativePath || photo.fileName || '',
+      size: Number(photo.size || 0),
+      availability: photo.originalAvailable === false ? 'missing' : 'available'
+    };
   }
 
   async signIn({ email, password }) {
@@ -451,6 +483,7 @@ class SupabaseDesktopSync {
 
   async uploadOriginalMedia(photo) {
     const settings = await this.ensureReadySettings();
+    const contentHash = await this.contentHashForPhoto(photo);
     if (!photo?.filePath) throw new Error('Media file is missing.');
     const fileName = photo.fileName || photo.baseName || 'media';
     const fileBuffer = await fs.promises.readFile(photo.filePath);
@@ -478,7 +511,6 @@ class SupabaseDesktopSync {
 
     const metadata = {
       local_media_id: photo.id,
-      file_path: photo.filePath,
       relative_path: photo.relativePath || '',
       folder: photo.folder || '',
       folder_root_id: photo.folderRootId || '',
@@ -491,7 +523,9 @@ class SupabaseDesktopSync {
       method: 'POST',
       body: JSON.stringify({
         libraryId: settings.libraryId,
+        deviceId: isUuid(settings.deviceId) ? settings.deviceId : null,
         hostDeviceId: isUuid(settings.deviceId) ? settings.deviceId : null,
+        contentHash,
         isoDate: photo.isoDate || null,
         fileName,
         metadata,
@@ -501,6 +535,7 @@ class SupabaseDesktopSync {
         originalSize: Number(photo.size || fileBuffer.length || 0),
         originalContentType: photo.mimeType || 'application/octet-stream',
         localMediaId: photo.id,
+        location: this.mediaLocationPayload(settings, photo),
         fileSignature: `${photo.id || ''}:${photo.mtimeMs || 0}:${photo.size || 0}`
       })
     });
@@ -546,10 +581,11 @@ class SupabaseDesktopSync {
     };
   }
 
-  async upsertMediaMetadata(photo, { uploadDerivatives = true } = {}) {
+  async upsertMediaMetadata(photo, { uploadDerivatives = true, previousLocalMediaId = '' } = {}) {
     let settings = await this.ensureReadySettings();
     settings = await this.ensureRelayToken(settings);
     await this.ensureDevice(settings);
+    const contentHash = await this.contentHashForPhoto(photo).catch(() => '');
 
     let thumb = null;
     let preview = null;
@@ -568,7 +604,6 @@ class SupabaseDesktopSync {
 
     const metadata = {
       local_media_id: photo.id,
-      file_path: photo.filePath || '',
       relative_path: photo.relativePath || '',
       folder: photo.folder || '',
       folder_root_id: photo.folderRootId || '',
@@ -587,7 +622,9 @@ class SupabaseDesktopSync {
       method: 'POST',
       body: JSON.stringify({
         libraryId: settings.libraryId,
+        deviceId: isUuid(settings.deviceId) ? settings.deviceId : null,
         hostDeviceId: isUuid(settings.deviceId) ? settings.deviceId : null,
+        contentHash,
         isoDate: photo.isoDate || null,
         fileName: photo.fileName || photo.baseName || 'media',
         metadata,
@@ -603,9 +640,16 @@ class SupabaseDesktopSync {
         originalSize: Number(photo.size || 0),
         originalContentType: photo.mimeType || 'application/octet-stream',
         localMediaId: photo.id,
+        previousLocalMediaId,
+        location: this.mediaLocationPayload(settings, photo),
         fileSignature: `${photo.id || ''}:${photo.mtimeMs || 0}:${photo.size || 0}`
       })
     });
+    if (payload.media && photo && typeof photo === 'object') {
+      photo.cloudCanonicalId = payload.media.id || '';
+      photo.locations = Array.isArray(payload.media.locations) ? payload.media.locations : [];
+      photo.availabilitySummary = payload.media.availability || {};
+    }
     return payload.media || null;
   }
 
@@ -641,6 +685,23 @@ class SupabaseDesktopSync {
       `/api/media/actions?libraryId=${encodeURIComponent(settings.libraryId)}&hostDeviceId=${encodeURIComponent(settings.deviceId)}&status=pending`
     );
     return Array.isArray(payload.actions) ? payload.actions : [];
+  }
+
+  async queueMediaAction(photo, actionType, payload = {}, { previousLocalMediaId = '' } = {}) {
+    const settings = await this.ensureReadySettings();
+    const media = await this.upsertMediaMetadata(photo, { uploadDerivatives: false, previousLocalMediaId });
+    if (!media?.id) return { ok: false, skipped: true };
+    return cloudApiFetch(settings, '/api/media/actions', {
+      method: 'POST',
+      body: JSON.stringify({
+        libraryId: settings.libraryId,
+        mediaId: media.id,
+        deviceId: isUuid(settings.deviceId) ? settings.deviceId : null,
+        excludeDeviceId: isUuid(settings.deviceId) ? settings.deviceId : null,
+        actionType,
+        payload
+      })
+    });
   }
 
   async markMediaAction(actionId, { status, result = {} }) {

@@ -1,13 +1,18 @@
 package com.anonymous.bookoflifemobile.local
 
 import android.content.Context
+import android.content.ContentValues
+import android.net.Uri
 import android.os.Build
+import android.provider.MediaStore
+import android.util.Size
 import android.provider.Settings
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URLEncoder
 import java.net.URL
+import java.io.ByteArrayOutputStream
 import java.nio.charset.StandardCharsets
 import java.time.Instant
 
@@ -63,21 +68,82 @@ object MobileCloudSync {
       for (index in 0 until media.length()) {
         val item = media.getJSONObject(index)
         val metadata = item.optJSONObject("metadata") ?: JSONObject()
+        val cloudId = item.getString("id")
+        val contentHash = item.optString("contentHash").ifBlank { null }
+        val locations = item.optJSONArray("locations") ?: JSONArray()
+        val currentLocation = (0 until locations.length())
+          .map { locations.getJSONObject(it) }
+          .firstOrNull { it.optString("deviceId") == deviceId }
+        val existing = contentHash?.let { store.mediaByContentHash(it) } ?: store.mediaByCloudId(cloudId)
+        if (existing != null && existing.id != "cloud:$cloudId") store.deleteMedia("cloud:$cloudId")
+        val fileName = currentLocation?.optString("fileName").orEmpty()
+          .ifBlank { item.optString("fileName") }
+          .ifBlank { if (metadata.optString("type") == "video") "Untitled video.mp4" else "Untitled photo.jpg" }
+        val relativePath = currentLocation?.optString("relativePath").orEmpty()
+        val folder = relativePath.substringBeforeLast('/', "").ifBlank {
+          metadata.optString("folder").trim('/').takeUnless { it.equals("Temp", ignoreCase = true) }.orEmpty()
+        }.ifBlank { null }
         store.upsertMedia(
-          id = "cloud:${item.getString("id")}",
-          localUri = null,
-          cloudId = item.getString("id"),
-          fileName = item.optString("fileName"),
+          id = existing?.id ?: "cloud:$cloudId",
+          localUri = existing?.localUri,
+          cloudId = cloudId,
+          fileName = fileName,
           mediaType = metadata.optString("type", "image"),
           isoDate = item.optString("isoDate").ifBlank { null },
           capturedAt = metadata.optString("captured_at").ifBlank { null },
           width = metadata.optInt("width"),
           height = metadata.optInt("height"),
-          folder = metadata.optString("folder").ifBlank { null },
+          folder = folder,
           originalInCloud = item.optBoolean("originalInCloud"),
           desktopHostDeviceId = item.optString("hostDeviceId").ifBlank { null },
-          updatedAt = item.optString("updatedAt")
+          updatedAt = item.optString("updatedAt"),
+          contentHash = contentHash ?: existing?.contentHash,
+          folderRootId = currentLocation?.optString("storageRootId").orEmpty().ifBlank { existing?.folderRootId.orEmpty() },
+          locationsJson = locations.toString()
         )
+      }
+
+      val actions = request(token, "GET", "/api/media/actions?libraryId=${encode(libraryId)}&hostDeviceId=${encode(deviceId)}&status=pending")
+        .optJSONArray("actions") ?: JSONArray()
+      var appliedActions = 0
+      for (index in 0 until actions.length()) {
+        val action = actions.getJSONObject(index)
+        val payload = action.optJSONObject("payload") ?: JSONObject()
+        val record = store.getMedia(payload.optString("photoId"))
+        val result = JSONObject()
+        val status = try {
+          if (record?.localUri == null) error("Local media is unavailable.")
+          when (action.optString("action_type")) {
+            "media.rename" -> {
+              val ext = record.fileName.substringAfterLast('.', "").let { if (it.isBlank()) "" else ".$it" }
+              val nextName = payload.optString("baseName").trim().ifBlank { error("Filename cannot be empty.") } + ext
+              val values = ContentValues().apply { put(MediaStore.MediaColumns.DISPLAY_NAME, nextName) }
+              if (context.contentResolver.update(Uri.parse(record.localUri), values, null, null) <= 0) error("Android did not rename this media.")
+              result.put("photoId", record.id).put("renamedTo", nextName)
+            }
+            "media.move" -> {
+              val nextPath = payload.optString("relativePath").trim('/').let { if (it.isBlank()) "" else "$it/" }
+              val values = ContentValues().apply { put(MediaStore.MediaColumns.RELATIVE_PATH, nextPath) }
+              if (context.contentResolver.update(Uri.parse(record.localUri), values, null, null) <= 0) error("Android did not move this media.")
+              result.put("photoId", record.id).put("relativePath", nextPath.trim('/'))
+            }
+            "media.delete" -> {
+              if (context.contentResolver.delete(Uri.parse(record.localUri), null, null) <= 0) error("Android did not delete this media.")
+              store.deleteMedia(record.id)
+              result.put("photoId", record.id).put("deleted", true)
+            }
+            else -> error("Unsupported mobile media action.")
+          }
+          appliedActions += 1
+          "applied"
+        } catch (error: Throwable) {
+          result.put("error", error.message ?: "Permission required on this device.")
+          "pending"
+        }
+        request(token, "PATCH", "/api/media/actions/${encode(action.getString("id"))}", JSONObject()
+          .put("libraryId", libraryId)
+          .put("status", status)
+          .put("result", result))
       }
 
       val cursor = request(token, "GET", "/api/sync/entry-summary?libraryId=${encode(libraryId)}").optLong("cursor", 0)
@@ -87,6 +153,7 @@ object MobileCloudSync {
         .put("pushedEntries", pushed)
         .put("pulledEntries", pulled)
         .put("cloudMedia", media.length())
+        .put("appliedMediaActions", appliedActions)
         .put("libraryId", libraryId)
         .put("deviceId", deviceId)
         .toString())
@@ -123,7 +190,10 @@ object MobileCloudSync {
     val device = request(token, "POST", "/api/devices", payload).getJSONObject("device")
     deviceId = device.getString("id")
     store.setState(DEVICE_ID_KEY, deviceId)
-    return JSONObject().put("libraryId", libraryId).put("deviceId", deviceId)
+    return JSONObject()
+      .put("libraryId", libraryId)
+      .put("deviceId", deviceId)
+      .put("deviceName", device.optString("device_name").ifBlank { payload.optString("deviceName") })
   }
 
   fun accessToken(store: MobileLocalStore): String? {
@@ -155,6 +225,35 @@ object MobileCloudSync {
 
   fun request(token: String, method: String, path: String, body: JSONObject? = null): JSONObject {
     return requestWithoutAuth(method, "$API_BASE$path", body, mapOf("Authorization" to "Bearer $token"))
+  }
+
+  fun uploadThumbnail(context: Context, token: String, libraryId: String, mediaId: String, localUri: String): JSONObject? {
+    return try {
+      val thumbnail = context.contentResolver.loadThumbnail(Uri.parse(localUri), Size(640, 640), null)
+      val output = ByteArrayOutputStream()
+      thumbnail.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, output)
+      thumbnail.recycle()
+      val bytes = output.toByteArray()
+      val ticket = request(token, "POST", "/api/media/derivative-upload-url", JSONObject()
+        .put("libraryId", libraryId)
+        .put("mediaId", mediaId)
+        .put("variant", "thumb")
+        .put("fileName", "$mediaId.jpg"))
+      val connection = URL(ticket.getString("signedUrl")).openConnection() as HttpURLConnection
+      connection.requestMethod = "PUT"
+      connection.connectTimeout = 20_000
+      connection.readTimeout = 30_000
+      connection.doOutput = true
+      connection.setRequestProperty("Content-Type", "image/jpeg")
+      connection.setRequestProperty("Cache-Control", "max-age=31536000")
+      connection.outputStream.use { it.write(bytes) }
+      if (connection.responseCode !in 200..299) error("Thumbnail upload failed (${connection.responseCode}).")
+      JSONObject()
+        .put("storagePath", ticket.getString("objectPath"))
+        .put("contentType", "image/jpeg")
+    } catch (_: Throwable) {
+      null
+    }
   }
 
   private fun requestWithoutAuth(method: String, url: String, body: JSONObject?, headers: Map<String, String>): JSONObject {

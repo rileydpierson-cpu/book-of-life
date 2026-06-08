@@ -58,6 +58,7 @@ create table if not exists media_items (
   host_device_id uuid references devices(id),
   local_media_id text,
   file_signature text,
+  content_hash text,
   iso_date date,
   file_name text not null default '',
   metadata jsonb not null default '{}',
@@ -78,6 +79,7 @@ create table if not exists media_items (
 alter table media_items add column if not exists host_device_id uuid references devices(id);
 alter table media_items add column if not exists local_media_id text;
 alter table media_items add column if not exists file_signature text;
+alter table media_items add column if not exists content_hash text;
 alter table media_items add column if not exists iso_date date;
 alter table media_items add column if not exists file_name text not null default '';
 alter table media_items add column if not exists metadata jsonb not null default '{}';
@@ -95,8 +97,63 @@ alter table media_items add column if not exists original_content_type text not 
 alter table media_items add column if not exists updated_at timestamptz not null default now();
 
 drop index if exists media_items_library_local_media_id_idx;
-create unique index if not exists media_items_library_local_media_id_idx
-  on media_items(library_id, local_media_id);
+drop index if exists media_items_library_content_hash_idx;
+create unique index if not exists media_items_library_content_hash_idx
+  on media_items(library_id, content_hash)
+  where content_hash is not null and content_hash <> '';
+
+create table if not exists media_locations (
+  id uuid primary key default gen_random_uuid(),
+  library_id uuid not null references libraries(id) on delete cascade,
+  media_id uuid not null references media_items(id) on delete cascade,
+  device_id uuid not null references devices(id) on delete cascade,
+  local_media_id text not null,
+  file_name text not null default '',
+  storage_root_id text not null default '',
+  storage_root_label text not null default '',
+  relative_path text not null default '',
+  file_signature text not null default '',
+  size bigint not null default 0,
+  availability text not null default 'available',
+  last_seen_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (library_id, device_id, local_media_id)
+);
+
+create index if not exists media_locations_media_id_idx on media_locations(media_id);
+
+insert into media_locations (
+  library_id,
+  media_id,
+  device_id,
+  local_media_id,
+  file_name,
+  storage_root_id,
+  storage_root_label,
+  relative_path,
+  file_signature,
+  size,
+  availability,
+  last_seen_at,
+  updated_at
+)
+select
+  library_id,
+  id,
+  host_device_id,
+  coalesce(nullif(local_media_id, ''), id::text),
+  coalesce(nullif(file_name, ''), 'Untitled photo.jpg'),
+  coalesce(metadata->>'folder_root_id', ''),
+  '',
+  coalesce(metadata->>'relative_path', metadata->>'folder', ''),
+  coalesce(file_signature, ''),
+  original_size,
+  case when original_on_host then 'available' else 'missing' end,
+  updated_at,
+  updated_at
+from media_items
+where host_device_id is not null
+on conflict (library_id, device_id, local_media_id) do nothing;
 
 create table if not exists sync_changes (
   id bigserial primary key,
@@ -158,6 +215,8 @@ create table if not exists media_actions (
   updated_at timestamptz not null default now()
 );
 
+alter table media_actions add column if not exists target_location_id uuid references media_locations(id) on delete cascade;
+
 create index if not exists media_actions_library_status_idx
   on media_actions(library_id, status, created_at);
 
@@ -166,6 +225,7 @@ alter table devices enable row level security;
 alter table entries enable row level security;
 alter table entry_revisions enable row level security;
 alter table media_items enable row level security;
+alter table media_locations enable row level security;
 alter table sync_changes enable row level security;
 alter table sync_mutations enable row level security;
 alter table media_actions enable row level security;
@@ -325,6 +385,68 @@ create policy "Users can update own media"
     exists (
       select 1 from libraries
       where libraries.id = media_items.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can delete own media" on media_items;
+create policy "Users can delete own media"
+  on media_items for delete
+  using (
+    exists (
+      select 1 from libraries
+      where libraries.id = media_items.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can read own media locations" on media_locations;
+create policy "Users can read own media locations"
+  on media_locations for select
+  using (
+    exists (
+      select 1 from libraries
+      where libraries.id = media_locations.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can create own media locations" on media_locations;
+create policy "Users can create own media locations"
+  on media_locations for insert
+  with check (
+    exists (
+      select 1 from libraries
+      where libraries.id = media_locations.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can update own media locations" on media_locations;
+create policy "Users can update own media locations"
+  on media_locations for update
+  using (
+    exists (
+      select 1 from libraries
+      where libraries.id = media_locations.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  )
+  with check (
+    exists (
+      select 1 from libraries
+      where libraries.id = media_locations.library_id
+        and libraries.owner_user_id = auth.uid()
+    )
+  );
+
+drop policy if exists "Users can delete own media locations" on media_locations;
+create policy "Users can delete own media locations"
+  on media_locations for delete
+  using (
+    exists (
+      select 1 from libraries
+      where libraries.id = media_locations.library_id
         and libraries.owner_user_id = auth.uid()
     )
   );

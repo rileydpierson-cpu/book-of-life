@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { SupabaseDesktopSync } from './supabase-desktop-sync.js';
 
 function createHarness({ settings: initialSettings, dirtyEntries = [] } = {}) {
@@ -159,6 +162,36 @@ describe('supabase desktop entry sync', () => {
 });
 
 describe('supabase desktop media sync', () => {
+  it('creates stable content hashes and device-rooted location payloads', async () => {
+    const harness = createHarness();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bol-media-location-'));
+    const filePath = path.join(root, 'photo.jpg');
+    fs.writeFileSync(filePath, 'same photo bytes');
+    const photo = {
+      id: 'local-photo',
+      filePath,
+      fileName: 'photo.jpg',
+      folderRootId: '0',
+      folderRootLabel: 'Pictures',
+      relativePath: 'Trips/photo.jpg',
+      size: fs.statSync(filePath).size,
+      mtimeMs: fs.statSync(filePath).mtimeMs,
+      originalAvailable: true
+    };
+
+    const contentHash = await harness.sync.contentHashForPhoto(photo);
+    const location = harness.sync.mediaLocationPayload({ deviceId: 'desktop-1', deviceName: 'Rilo Desktop' }, photo);
+
+    expect(contentHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(location).toMatchObject({
+      deviceId: 'desktop-1',
+      localMediaId: 'local-photo',
+      storageRootLabel: 'Pictures',
+      relativePath: 'Trips/photo.jpg',
+      availability: 'available'
+    });
+  });
+
   it('publishes metadata without clearing or generating derivatives in metadata-only mode', async () => {
     const harness = createHarness();
     harness.sync.ensureReadySettings = async () => ({

@@ -227,4 +227,20 @@ describe('missing media availability', () => {
     expect(updated).toBeTruthy();
     expect(indexer.thumbUrlForPhoto(updated)).not.toBe(before);
   });
+
+  it('serializes local media beneath the registered device root with locations', async () => {
+    const { indexer, photo } = await createIndexedPhoto();
+    indexer.setDeviceIdentity({ id: 'desktop-1', name: 'Rilo Desktop', type: 'desktop' });
+
+    const serialized = indexer.serializePhoto(photo);
+
+    expect(serialized.folderRootLabel).toBe('Rilo Desktop');
+    expect(serialized.fileName).toBe('photo.jpg');
+    expect(serialized.locations[0]).toMatchObject({
+      deviceId: 'desktop-1',
+      deviceName: 'Rilo Desktop',
+      localMediaId: photo.id,
+      availability: 'available'
+    });
+  });
 });

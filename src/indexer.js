@@ -111,12 +111,21 @@ class TimelineIndexer {
     this.mediaInventorySignature = '';
     this.mediaRootStatus = {};
     this.mediaCloudStore = null;
+    this.localDevice = { id: '', name: 'Desktop', type: 'desktop' };
     this.onIndexChanged = null;
     this.rebuildProgress = createIdleRebuildProgress();
   }
 
   setMediaCloudStore(mediaCloudStore) {
     this.mediaCloudStore = mediaCloudStore || null;
+  }
+
+  setDeviceIdentity({ id = '', name = '', type = 'desktop' } = {}) {
+    this.localDevice = {
+      id: String(id || ''),
+      name: String(name || '').trim() || 'Desktop',
+      type: String(type || 'desktop')
+    };
   }
 
   setIndexChangedHandler(handler) {
@@ -1176,6 +1185,27 @@ class TimelineIndexer {
   }
 
   serializePhoto(photo) {
+    const physicalRootLabel = photo.folderRootLabel || '';
+    const location = {
+      id: `local:${photo.id}`,
+      deviceId: this.localDevice.id,
+      deviceName: this.localDevice.name,
+      deviceType: this.localDevice.type,
+      localMediaId: photo.id,
+      fileName: photo.fileName || '',
+      storageRootId: photo.folderRootId || '',
+      storageRootLabel: physicalRootLabel,
+      relativePath: photo.relativePath || photo.fileName || '',
+      size: Number(photo.size || 0),
+      availability: photo.originalAvailable === false ? 'missing' : 'available'
+    };
+    const locations = [
+      location,
+      ...(Array.isArray(photo.locations) ? photo.locations : [])
+    ].filter((entry, index, entries) => {
+      const key = `${entry.deviceId || ''}:${entry.localMediaId || entry.id || ''}`;
+      return entries.findIndex((candidate) => `${candidate.deviceId || ''}:${candidate.localMediaId || candidate.id || ''}` === key) === index;
+    });
     return {
       id: photo.id,
       type: photo.type,
@@ -1198,9 +1228,13 @@ class TimelineIndexer {
       width: photo.width || 0,
       height: photo.height || 0,
       folder: photo.folder || '.',
-      folderRootLabel: photo.folderRootLabel || '',
+      folderRootLabel: this.localDevice.name,
       folderRootId: photo.folderRootId || '',
       relativePath: photo.relativePath || photo.fileName,
+      locations,
+      availabilitySummary: photo.availabilitySummary || {
+        localCopies: locations.filter((entry) => entry.availability === 'available').length
+      },
       tags: Array.isArray(photo.tags) ? photo.tags : [],
       description: typeof photo.description === 'string' ? photo.description : '',
       liked: Boolean(photo.liked)

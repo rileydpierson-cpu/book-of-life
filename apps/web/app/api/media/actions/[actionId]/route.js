@@ -39,6 +39,23 @@ export async function PATCH(request, { params }) {
   if (!data) return Response.json({ ok: false, error: 'Action not found.' }, { status: 404 });
 
   if (data.media_id) {
+    if (status === 'applied' && data.target_location_id) {
+      const locationPatch = {
+        availability: data.action_type === 'media.delete' ? 'missing' : 'available',
+        updated_at: new Date().toISOString(),
+        last_seen_at: new Date().toISOString()
+      };
+      if (data.action_type === 'media.rename' && body.result?.renamedTo) {
+        locationPatch.file_name = String(body.result.renamedTo);
+      }
+      if (data.action_type === 'media.move' && body.result?.relativePath) {
+        locationPatch.relative_path = String(body.result.relativePath);
+      }
+      if (body.result?.localMediaId) {
+        locationPatch.local_media_id = String(body.result.localMediaId);
+      }
+      await context.supabase.from('media_locations').update(locationPatch).eq('id', data.target_location_id);
+    }
     await context.supabase.from('sync_changes').insert({
       library_id: libraryId,
       change_type: 'media.upsert',

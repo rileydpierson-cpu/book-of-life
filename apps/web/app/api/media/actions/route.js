@@ -56,7 +56,7 @@ async function ownedMedia(supabase, userId, libraryId, mediaId) {
   if (!library.data) return null;
   const media = await supabase
     .from('media_items')
-    .select('*')
+    .select('*, media_locations(*)')
     .eq('library_id', libraryId)
     .eq('id', mediaId)
     .maybeSingle();
@@ -84,20 +84,30 @@ export async function POST(request) {
   if (!media) return Response.json({ ok: false, error: 'Media not found.' }, { status: 404 });
 
   const payload = body.payload && typeof body.payload === 'object' ? body.payload : {};
+  const locationActions = new Set(['media.rename', 'media.move', 'media.delete']);
+  const excludeDeviceId = String(body.excludeDeviceId || '');
+  const targets = locationActions.has(actionType) && Array.isArray(media.media_locations) && media.media_locations.length
+    ? media.media_locations
+    : [{ id: null, device_id: media.host_device_id || null, local_media_id: media.local_media_id || '' }];
+  const filteredTargets = targets.filter((target) => !excludeDeviceId || target.device_id !== excludeDeviceId);
+  if (!filteredTargets.length) {
+    return Response.json({ ok: true, actions: [], action: null }, { status: 200 });
+  }
   const action = await context.supabase
     .from('media_actions')
-    .insert({
+    .insert(filteredTargets.map((target) => ({
       library_id: libraryId,
       media_id: mediaId,
       requested_by_device_id: body.deviceId || null,
-      host_device_id: media.host_device_id || null,
+      host_device_id: target.device_id || null,
+      target_location_id: target.id || null,
       action_type: actionType,
-      payload,
+      payload: { ...payload, photoId: target.local_media_id || payload.photoId || '' },
       status: 'pending',
       updated_at: new Date().toISOString()
-    })
+    })))
     .select('*')
-    .single();
+    ;
   if (action.error) return apiError(action.error);
 
   const nextMetadata = {
@@ -114,7 +124,7 @@ export async function POST(request) {
   }
   nextMetadata.pendingActions = [
     ...(Array.isArray(media.metadata?.pendingActions) ? media.metadata.pendingActions : []),
-    { id: action.data.id, actionType, createdAt: action.data.created_at }
+    ...(action.data || []).map((item) => ({ id: item.id, actionType, createdAt: item.created_at, targetLocationId: item.target_location_id }))
   ];
   await context.supabase
     .from('media_items')
@@ -129,10 +139,10 @@ export async function POST(request) {
       media: {
         id: mediaId,
         metadata: nextMetadata,
-        pendingAction: action.data
+        pendingActions: action.data
       }
     }
   });
 
-  return Response.json({ ok: true, action: action.data }, { status: 201 });
+  return Response.json({ ok: true, actions: action.data || [], action: action.data?.[0] || null }, { status: 201 });
 }

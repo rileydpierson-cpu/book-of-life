@@ -11,6 +11,7 @@ import org.json.JSONObject
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.security.MessageDigest
 
 class MobileMediaScanWorker(
   context: Context,
@@ -29,11 +30,12 @@ class MobileMediaScanWorker(
         val token = MobileCloudSync.accessToken(store)
         val registration = if (token != null) MobileCloudSync.ensureRegistration(applicationContext, store, token) else null
         val libraryId = registration?.optString("libraryId").orEmpty()
-        val deviceId = registration?.optString("deviceId").orEmpty()
+        val deviceId = registration?.optString("deviceId").orEmpty().ifBlank { store.getState("cloud_device_id").orEmpty() }.ifBlank { "android-local" }
+        val deviceName = registration?.optString("deviceName").orEmpty().ifBlank { "${Build.MANUFACTURER} ${Build.MODEL}".trim() }.ifBlank { "Android" }
         var indexed = 0
         var published = 0
-        indexed += scanCollection(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image", store, token, libraryId, deviceId) { published += it }
-        indexed += scanCollection(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, "video", store, token, libraryId, deviceId) { published += it }
+        indexed += scanCollection(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image", store, token, libraryId, deviceId, deviceName) { published += it }
+        indexed += scanCollection(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, "video", store, token, libraryId, deviceId, deviceName) { published += it }
         store.setState("last_media_scan_at", Instant.now().toString())
         store.setState("last_media_scan_result", JSONObject().put("indexed", indexed).put("published", published).toString())
       }
@@ -62,6 +64,7 @@ class MobileMediaScanWorker(
     token: String?,
     libraryId: String,
     deviceId: String,
+    deviceName: String,
     onPublished: (Int) -> Unit
   ): Int {
     val projection = arrayOf(
@@ -90,8 +93,9 @@ class MobileMediaScanWorker(
         val mediaId = cursor.getLong(idColumn)
         val localUri = Uri.withAppendedPath(collection, mediaId.toString()).toString()
         val localId = "android:$type:$mediaId"
-        val cloudLocalId = "android:$deviceId:$type:$mediaId"
-        val fileName = cursor.getString(nameColumn).orEmpty()
+        val existingRecord = store.getMedia(localId)
+        val cloudLocalId = localId
+        val fileName = cursor.getString(nameColumn).orEmpty().ifBlank { if (type == "video") "Untitled video.mp4" else "Untitled photo.jpg" }
         val capturedMs = cursor.getLong(takenColumn).takeIf { it > 0 } ?: cursor.getLong(modifiedColumn) * 1000
         val capturedAt = Instant.ofEpochMilli(capturedMs).toString()
         val isoDate = DateTimeFormatter.ISO_LOCAL_DATE.format(Instant.ofEpochMilli(capturedMs).atZone(ZoneId.systemDefault()))
@@ -100,10 +104,29 @@ class MobileMediaScanWorker(
         val folder = cursor.getString(pathColumn).orEmpty()
         val size = cursor.getLong(sizeColumn)
         val mimeType = cursor.getString(mimeColumn).orEmpty()
-        store.upsertMedia(localId, localUri, store.mediaCloudId(localId), fileName, type, isoDate, capturedAt, width, height, folder, false, deviceId, Instant.now().toString())
+        val contentHash = hashContent(localUri)
+        val relativePath = listOf(folder.trim('/'), fileName).filter { it.isNotBlank() }.joinToString("/")
+        val location = JSONObject()
+          .put("deviceId", deviceId)
+          .put("deviceName", deviceName)
+          .put("deviceType", "android")
+          .put("localMediaId", localId)
+          .put("fileName", fileName.ifBlank { if (type == "video") "Untitled video.mp4" else "Untitled photo.jpg" })
+          .put("storageRootId", "media-store")
+          .put("storageRootLabel", "Media")
+          .put("relativePath", relativePath)
+          .put("size", size)
+          .put("availability", "available")
+        val locationsJson = mergeLocations(existingRecord?.locationsJson, location, deviceId)
+        store.upsertMedia(localId, localUri, store.mediaCloudId(localId), fileName, type, isoDate, capturedAt, width, height, folder, false, deviceId, Instant.now().toString(), contentHash, "media-store", locationsJson)
         indexed += 1
 
-        if (publishBudget > 0 && token != null && libraryId.isNotBlank() && deviceId.isNotBlank() && store.mediaCloudId(localId).isNullOrBlank()) {
+        val needsCloudRepair = existingRecord?.cloudId.isNullOrBlank()
+          || existingRecord?.contentHash.isNullOrBlank()
+          || existingRecord?.fileName.isNullOrBlank()
+          || existingRecord?.locationsJson.isNullOrBlank()
+          || existingRecord?.locationsJson == "[]"
+        if (publishBudget > 0 && token != null && libraryId.isNotBlank() && deviceId.isNotBlank() && needsCloudRepair) {
           val metadata = JSONObject()
             .put("type", type)
             .put("captured_at", capturedAt)
@@ -115,22 +138,78 @@ class MobileMediaScanWorker(
           val response = MobileCloudSync.request(token, "POST", "/api/media", JSONObject()
             .put("libraryId", libraryId)
             .put("hostDeviceId", deviceId)
+            .put("deviceId", deviceId)
+            .put("contentHash", contentHash)
             .put("localMediaId", cloudLocalId)
+            .put("previousLocalMediaId", "android:$deviceId:$type:$mediaId")
             .put("fileSignature", "$cloudLocalId:$capturedMs:$size")
             .put("isoDate", isoDate)
             .put("fileName", fileName)
             .put("metadata", metadata)
+            .put("location", location)
             .put("originalOnHost", true)
             .put("originalInCloud", false)
             .put("originalSize", size)
             .put("originalContentType", mimeType))
           val cloudId = response.getJSONObject("media").getString("id")
-          store.upsertMedia(localId, localUri, cloudId, fileName, type, isoDate, capturedAt, width, height, folder, false, deviceId, Instant.now().toString())
+          val thumb = MobileCloudSync.uploadThumbnail(applicationContext, token, libraryId, cloudId, localUri)
+          if (thumb != null) {
+            MobileCloudSync.request(token, "POST", "/api/media", JSONObject()
+              .put("libraryId", libraryId)
+              .put("hostDeviceId", deviceId)
+              .put("deviceId", deviceId)
+              .put("contentHash", contentHash)
+              .put("localMediaId", cloudLocalId)
+              .put("previousLocalMediaId", "android:$deviceId:$type:$mediaId")
+              .put("fileSignature", "$cloudLocalId:$capturedMs:$size")
+              .put("isoDate", isoDate)
+              .put("fileName", fileName)
+              .put("metadata", metadata)
+              .put("location", location)
+              .put("hasThumb", true)
+              .put("thumbStoragePath", thumb.getString("storagePath"))
+              .put("thumbContentType", thumb.getString("contentType"))
+              .put("originalOnHost", true)
+              .put("originalInCloud", false)
+              .put("originalSize", size)
+              .put("originalContentType", mimeType))
+          }
+          store.upsertMedia(localId, localUri, cloudId, fileName, type, isoDate, capturedAt, width, height, folder, false, deviceId, Instant.now().toString(), contentHash, "media-store", locationsJson)
           publishBudget -= 1
           onPublished(1)
         }
       }
     }
     return indexed
+  }
+
+  private fun hashContent(localUri: String): String {
+    return try {
+      val digest = MessageDigest.getInstance("SHA-256")
+      applicationContext.contentResolver.openInputStream(Uri.parse(localUri))?.use { input ->
+        val buffer = ByteArray(1024 * 1024)
+        while (true) {
+          val count = input.read(buffer)
+          if (count <= 0) break
+          digest.update(buffer, 0, count)
+        }
+      } ?: return ""
+      digest.digest().joinToString("") { "%02x".format(it) }
+    } catch (_: Throwable) {
+      ""
+    }
+  }
+
+  private fun mergeLocations(existingJson: String?, current: JSONObject, deviceId: String): String {
+    val merged = org.json.JSONArray()
+    try {
+      val existing = org.json.JSONArray(existingJson ?: "[]")
+      for (index in 0 until existing.length()) {
+        val location = existing.getJSONObject(index)
+        if (location.optString("deviceId") != deviceId) merged.put(location)
+      }
+    } catch (_: Throwable) {}
+    merged.put(current)
+    return merged.toString()
   }
 }

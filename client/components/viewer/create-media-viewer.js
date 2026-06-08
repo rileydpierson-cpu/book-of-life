@@ -504,6 +504,11 @@ export function createMediaViewer(options) {
                 <strong class="viewer-field-static-value" data-role="details-meta"></strong>
               </div>
 
+              <div class="viewer-field viewer-field-static viewer-locations-field">
+                <span class="viewer-field-label">Locations</span>
+                <div class="viewer-location-list" data-role="locations"></div>
+              </div>
+
               <div class="viewer-field viewer-cloud-field">
                 <span class="viewer-field-label">Cloud Original</span>
                 <span class="viewer-field-control viewer-cloud-control">
@@ -556,6 +561,7 @@ export function createMediaViewer(options) {
         detailsClose: this.root.querySelector('[data-role="details-close"]'),
         detailsHandle: this.root.querySelector('[data-role="details-handle"]'),
         detailsMeta: this.root.querySelector('[data-role="details-meta"]'),
+        locations: this.root.querySelector('[data-role="locations"]'),
         cloudStatus: this.root.querySelector('[data-role="cloud-status"]'),
         cloudLabel: this.root.querySelector('[data-role="cloud-label"]'),
         cloudToggle: this.root.querySelector('[data-role="cloud-toggle"]'),
@@ -2671,6 +2677,16 @@ export function createMediaViewer(options) {
       this.dom.fileName.value = item?.baseName || (item?.fileName && item?.ext ? item.fileName.slice(0, -item.ext.length) : '') || '';
       this.setFileNameValidationState('valid');
       this.dom.fileExtension.textContent = item?.ext || '';
+      const canEditMedia = item?.canEditMedia !== false;
+      this.dom.fileName.disabled = !canEditMedia;
+      this.dom.folderTrigger.disabled = !canEditMedia;
+      this.dom.description.disabled = !canEditMedia;
+      this.dom.dateTrigger.disabled = !canEditMedia;
+      this.dom.timeTrigger.disabled = !canEditMedia;
+      const editReason = canEditMedia ? '' : 'Changes to this remote media must be made from its source device.';
+      [this.dom.fileName, this.dom.folderTrigger, this.dom.description, this.dom.dateTrigger, this.dom.timeTrigger]
+        .forEach((node) => { node.title = editReason; });
+      this.dom.locations.innerHTML = this.renderLocations(item);
       this.state.selectedFolderRootId = item?.folderRootId || '';
       this.state.selectedFolderPath = item?.folder === '.' ? '' : (item?.folder || '');
       this.updateFolderDraftLabel();
@@ -2687,6 +2703,26 @@ export function createMediaViewer(options) {
       this.refreshCloudOriginalStatus(item).catch((error) => this.handleError(error));
       this.updateStatus(item);
       this.applyDetailsProgress(this.state.detailsProgress, { immediate: true });
+    }
+
+    renderLocations(item) {
+      const locations = Array.isArray(item?.locations) ? item.locations : [];
+      const rows = locations.map((location) => {
+        const device = location.deviceName || location.deviceType || 'Device';
+        const root = location.storageRootLabel || '';
+        const relative = location.relativePath || location.fileName || '';
+        const displayPath = [device, root, relative].filter(Boolean).join(' / ');
+        const state = location.failedActions?.length
+          ? 'action failed'
+          : location.pendingActions?.length
+            ? 'change pending'
+            : location.availability || 'available';
+        return `<div class="viewer-location-row"><span>${escapeHtml(displayPath || device)}</span><strong>${escapeHtml(state)}</strong></div>`;
+      });
+      if (item?.cloudOriginal?.inCloud || item?.availability?.originalInCloud) {
+        rows.push('<div class="viewer-location-row"><span>Cloud original</span><strong>available</strong></div>');
+      }
+      return rows.join('') || '<div class="viewer-location-row"><span>No available location</span><strong>unavailable</strong></div>';
     }
 
     animateCarouselToCurrent(startOffsetX = this.state.carouselDragOffsetX) {
